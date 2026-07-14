@@ -90,7 +90,7 @@ func TestRun_ShellHookNoConfigIsSilentNoOp(t *testing.T) {
 	}
 }
 
-func TestRun_ShellHookMatchDoesNotExecuteButReportsOnStderr(t *testing.T) {
+func TestRun_ShellHookUntrustedMatchReportsOnStderrOnly(t *testing.T) {
 	home := isolateHome(t)
 	writeConfig(t, home, `
 enter /a
@@ -102,13 +102,65 @@ enter /a
 		t.Fatalf("exit code = %d, want 0", code)
 	}
 	if stdout != "" {
-		t.Errorf("shell-hook must never write to stdout yet (no trust mechanism), got %q", stdout)
+		t.Errorf("untrusted config must never write to stdout, got %q", stdout)
 	}
-	if !strings.Contains(stderr, "1 block(s) matched") {
-		t.Errorf("expected stderr to report the match, got %q", stderr)
+	if !strings.Contains(stderr, "1 block(s) matched") || !strings.Contains(stderr, "not trusted") || !strings.Contains(stderr, "envoke allow") {
+		t.Errorf("expected stderr to report the match and hint at `envoke allow`, got %q", stderr)
 	}
 	if _, err := os.Stat(filepath.Join(home, "marker")); !os.IsNotExist(err) {
 		t.Errorf("matched block must not have executed, but marker file exists")
+	}
+}
+
+func TestRun_ShellHookTrustedMatchPrintsRenderedScript(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo hi
+`)
+	if _, _, code := runFor(t, "allow"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+
+	stdout, stderr, code := runFor(t, "shell-hook", "/", "/a")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if stderr != "" {
+		t.Errorf("trusted config should not warn on stderr, got %q", stderr)
+	}
+	if !strings.Contains(stdout, "export ENVOKE_DIR=") || !strings.Contains(stdout, "echo hi") {
+		t.Errorf("expected rendered eval script on stdout, got %q", stdout)
+	}
+}
+
+func TestRun_ShellHookEditingConfigAfterAllowRevokesTrust(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo hi
+`)
+	if _, _, code := runFor(t, "allow"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+
+	// Any edit, even just adding a rule, must require re-approval.
+	writeConfig(t, home, `
+enter /a
+    echo hi
+enter /b
+    echo bye
+`)
+
+	stdout, stderr, code := runFor(t, "shell-hook", "/", "/a")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if stdout != "" {
+		t.Errorf("edited config must not execute until re-approved, got stdout %q", stdout)
+	}
+	if !strings.Contains(stderr, "not trusted") {
+		t.Errorf("expected stderr to report the config as untrusted again, got %q", stderr)
 	}
 }
 
@@ -145,12 +197,71 @@ func TestRun_ShellHookWrongArgCount(t *testing.T) {
 	}
 }
 
+func TestRun_AllowLocatedConfig(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /a\n    echo hi\n")
+
+	stdout, stderr, code := runFor(t, "allow")
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, filepath.Join(home, ".envokerc")) {
+		t.Errorf("expected confirmation to mention the trusted path, got %q", stdout)
+	}
+}
+
+func TestRun_AllowExplicitPath(t *testing.T) {
+	home := isolateHome(t)
+	path := filepath.Join(home, "custom-config")
+	if err := os.WriteFile(path, []byte("enter /a\n    echo hi\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, stderr, code := runFor(t, "allow", path)
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
+	}
+}
+
+func TestRun_AllowNoConfigFound(t *testing.T) {
+	isolateHome(t)
+
+	_, stderr, code := runFor(t, "allow")
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if stderr == "" {
+		t.Errorf("expected an error message on stderr")
+	}
+}
+
+func TestRun_AllowInvalidConfigIsError(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, "not a valid block\n")
+
+	_, stderr, code := runFor(t, "allow")
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if stderr == "" {
+		t.Errorf("expected a parse error on stderr")
+	}
+}
+
+func TestRun_AllowWrongArgCount(t *testing.T) {
+	_, _, code := runFor(t, "allow", "a", "b")
+	if code != 2 {
+		t.Errorf("exit code = %d, want 2", code)
+	}
+}
+
 func isolateHome(t *testing.T) (home string) {
 	t.Helper()
 	home = t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("ENVOKERC", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
 	return home
 }
 

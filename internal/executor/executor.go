@@ -27,23 +27,34 @@ func Run(ctx context.Context, m matcher.Match) error {
 	return nil
 }
 
-// matchEnv builds the ENVOKE_* environment variables exposed to a matched
-// block's script: the directory that matched, the block type, and any regex
-// capture groups from the pattern (ENVOKE_MATCH for the full match,
-// ENVOKE_MATCH_1.. for capture groups).
+// matchEnv builds the ENVOKE_* environment variables for Run's subprocess.
 func matchEnv(m matcher.Match) []string {
-	env := []string{
-		"ENVOKE_DIR=" + m.Dir,
-		"ENVOKE_TYPE=" + m.Block.Type.String(),
+	vars := matchVars(m)
+	env := make([]string, len(vars))
+	for i, v := range vars {
+		env[i] = v[0] + "=" + v[1]
+	}
+	return env
+}
+
+// matchVars lists the ENVOKE_* variables exposed to a matched block's
+// script: the directory that matched, the block type, and any regex capture
+// groups from the pattern (ENVOKE_MATCH for the full match, ENVOKE_MATCH_1..
+// for capture groups). Shared by Run (as subprocess env) and Render (as
+// shell `export` statements) so the two execution paths can't drift apart.
+func matchVars(m matcher.Match) [][2]string {
+	vars := [][2]string{
+		{"ENVOKE_DIR", m.Dir},
+		{"ENVOKE_TYPE", m.Block.Type.String()},
 	}
 
 	groups := m.Block.Pattern.FindStringSubmatch(m.Dir)
 	if len(groups) == 0 {
-		return env
+		return vars
 	}
-	env = append(env, "ENVOKE_MATCH="+groups[0])
+	vars = append(vars, [2]string{"ENVOKE_MATCH", groups[0]})
 	for i, g := range groups[1:] {
-		env = append(env, fmt.Sprintf("ENVOKE_MATCH_%d=%s", i+1, g))
+		vars = append(vars, [2]string{fmt.Sprintf("ENVOKE_MATCH_%d", i+1), g})
 	}
-	return env
+	return vars
 }
