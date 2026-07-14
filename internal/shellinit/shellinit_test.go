@@ -136,9 +136,13 @@ func TestGenerate_PowershellScriptIsSyntacticallyValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	// PowerShell's syntax-check idiom: parse without executing.
+	// PowerShell's syntax-check idiom: parse without executing. $input
+	// (pipeline input as a line-by-line enumerable) is the wrong thing to
+	// feed ParseInput — it drops the newlines that separate statements, so
+	// the parser sees one run-on line. Read stdin as a single raw string
+	// instead.
 	cmd := exec.Command("pwsh", "-NoProfile", "-Command",
-		"$errors = $null; [System.Management.Automation.Language.Parser]::ParseInput($input, [ref]$null, [ref]$errors) | Out-Null; if ($errors) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }")
+		"$errors = $null; $script = [Console]::In.ReadToEnd(); [System.Management.Automation.Language.Parser]::ParseInput($script, [ref]$null, [ref]$errors) | Out-Null; if ($errors) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }")
 	cmd.Stdin = strings.NewReader(script)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Errorf("pwsh parser rejected generated script: %v\n%s\nscript:\n%s", err, out, script)

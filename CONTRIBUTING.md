@@ -23,7 +23,13 @@ go build ./...         # must succeed
 go test ./... -race    # must print "ok" for every package, no FAIL
 ```
 
-There is no Makefile, lint config, or CI pipeline yet — these four commands are the entire verification bar. If all four are clean, the change is ready to submit.
+There is no Makefile yet, but there is a [Dagger](https://dagger.io) pipeline under [`.dagger/`](.dagger/) that mirrors these four commands, adds `golangci-lint`, and runs the shellinit end-to-end tests against a real interpreter for each of the five supported shells (installing whichever one a given check needs, so none of them get silently skipped for lack of the binary the way a local `go test` run does). Run it with:
+
+```sh
+dagger check -m .dagger
+```
+
+This requires the [`dagger` CLI](https://docs.dagger.io/getting-started/installation) and a container runtime (Docker or similar). It isn't wired into GitHub Actions yet, so running it is optional but recommended before a PR that touches `internal/shellinit` or anything shell-integration-related — it's the only way to actually exercise fish/tcsh/powershell if you don't have them installed locally.
 
 ## Code conventions
 

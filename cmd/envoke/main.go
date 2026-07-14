@@ -38,7 +38,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	switch args[0] {
 	case "version":
-		fmt.Fprintln(stdout, "envoke "+version)
+		_, _ = fmt.Fprintln(stdout, "envoke "+version)
 		return 0
 	case "shell-init":
 		return cmdShellInit(args[1:], stdout, stderr)
@@ -52,7 +52,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		usage(stdout)
 		return 0
 	default:
-		fmt.Fprintf(stderr, "envoke: unknown command %q\n\n", args[0])
+		_, _ = fmt.Fprintf(stderr, "envoke: unknown command %q\n\n", args[0])
 		usage(stderr)
 		return 2
 	}
@@ -60,16 +60,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 func cmdShellInit(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 1 {
-		fmt.Fprintln(stderr, "usage: envoke shell-init <bash|zsh>")
+		_, _ = fmt.Fprintln(stderr, "usage: envoke shell-init <bash|zsh>")
 		return 2
 	}
 
 	script, err := shellinit.Generate(args[0])
 	if err != nil {
-		fmt.Fprintln(stderr, "envoke:", err)
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
 		return 1
 	}
-	fmt.Fprint(stdout, script)
+	_, _ = fmt.Fprint(stdout, script)
 	return 0
 }
 
@@ -93,14 +93,14 @@ func cmdShellHook(args []string, stdout, stderr io.Writer) int {
 		args = args[2:]
 	}
 	if len(args) != 2 {
-		fmt.Fprintln(stderr, "usage: envoke shell-hook [--shell <name>] <from> <to>")
+		_, _ = fmt.Fprintln(stderr, "usage: envoke shell-hook [--shell <name>] <from> <to>")
 		return 2
 	}
 	from, to := args[0], args[1]
 
 	path, found, err := config.Locate()
 	if err != nil {
-		fmt.Fprintln(stderr, "envoke:", err)
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
 		return 1
 	}
 	if !found {
@@ -109,13 +109,13 @@ func cmdShellHook(args []string, stdout, stderr io.Writer) int {
 
 	cfg, err := config.ParseFile(path)
 	if err != nil {
-		fmt.Fprintln(stderr, "envoke:", err)
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
 		return 1
 	}
 
 	leaves, enters, err := matcher.Resolve(cfg, from, to)
 	if err != nil {
-		fmt.Fprintln(stderr, "envoke:", err)
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
 		return 1
 	}
 
@@ -126,15 +126,15 @@ func cmdShellHook(args []string, stdout, stderr io.Writer) int {
 
 	trusted, err := trust.IsTrusted(path)
 	if err != nil {
-		fmt.Fprintln(stderr, "envoke:", err)
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
 		return 1
 	}
 	if !trusted {
-		fmt.Fprintf(stderr, "envoke: %d block(s) matched for %s -> %s but %s is not trusted: run `envoke allow %s`\n", total, from, to, path, path)
+		_, _ = fmt.Fprintf(stderr, "envoke: %d block(s) matched for %s -> %s but %s is not trusted: run `envoke allow %s`\n", total, from, to, path, path)
 		return 0
 	}
 
-	fmt.Fprint(stdout, executor.Render(shell, leaves, enters))
+	_, _ = fmt.Fprint(stdout, executor.Render(shell, leaves, enters))
 	return 0
 }
 
@@ -147,30 +147,30 @@ func cmdAllow(args []string, stdout, stderr io.Writer) int {
 	case 0:
 		p, found, err := config.Locate()
 		if err != nil {
-			fmt.Fprintln(stderr, "envoke:", err)
+			_, _ = fmt.Fprintln(stderr, "envoke:", err)
 			return 1
 		}
 		if !found {
-			fmt.Fprintf(stderr, "envoke: no config found (looked for %s); pass a path explicitly: envoke allow <path>\n", p)
+			_, _ = fmt.Fprintf(stderr, "envoke: no config found (looked for %s); pass a path explicitly: envoke allow <path>\n", p)
 			return 1
 		}
 		path = p
 	case 1:
 		path = args[0]
 	default:
-		fmt.Fprintln(stderr, "usage: envoke allow [path]")
+		_, _ = fmt.Fprintln(stderr, "usage: envoke allow [path]")
 		return 2
 	}
 
 	if _, err := config.ParseFile(path); err != nil {
-		fmt.Fprintln(stderr, "envoke:", err)
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
 		return 1
 	}
 	if err := trust.Allow(path); err != nil {
-		fmt.Fprintln(stderr, "envoke:", err)
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "envoke: trusted %s\n", path)
+	_, _ = fmt.Fprintf(stdout, "envoke: trusted %s\n", path)
 	return 0
 }
 
@@ -182,36 +182,36 @@ func cmdAllow(args []string, stdout, stderr io.Writer) int {
 // what's listed here.
 func cmdDebug(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 2 {
-		fmt.Fprintln(stderr, "usage: envoke debug <from> <to>")
+		_, _ = fmt.Fprintln(stderr, "usage: envoke debug <from> <to>")
 		return 2
 	}
 	from, to := args[0], args[1]
 
 	path, found, err := config.Locate()
 	if err != nil {
-		fmt.Fprintln(stderr, "envoke:", err)
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
 		return 1
 	}
 	if !found {
-		fmt.Fprintf(stderr, "envoke: no config found (looked for %s)\n", path)
+		_, _ = fmt.Fprintf(stderr, "envoke: no config found (looked for %s)\n", path)
 		return 1
 	}
 
 	cfg, err := config.ParseFile(path)
 	if err != nil {
-		fmt.Fprintln(stderr, "envoke:", err)
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
 		return 1
 	}
 
 	leaves, enters, err := matcher.Resolve(cfg, from, to)
 	if err != nil {
-		fmt.Fprintln(stderr, "envoke:", err)
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
 		return 1
 	}
 
 	trusted, err := trust.IsTrusted(path)
 	if err != nil {
-		fmt.Fprintln(stderr, "envoke:", err)
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
 		return 1
 	}
 	trustNote := "trusted"
@@ -219,22 +219,22 @@ func cmdDebug(args []string, stdout, stderr io.Writer) int {
 		trustNote = fmt.Sprintf("NOT trusted -- run `envoke allow %s` before these would actually run", path)
 	}
 
-	fmt.Fprintf(stdout, "envoke debug: %s -> %s using %s (%s)\n", from, to, path, trustNote)
+	_, _ = fmt.Fprintf(stdout, "envoke debug: %s -> %s using %s (%s)\n", from, to, path, trustNote)
 	if len(leaves)+len(enters) == 0 {
-		fmt.Fprintln(stdout, "  no blocks would fire")
+		_, _ = fmt.Fprintln(stdout, "  no blocks would fire")
 		return 0
 	}
 	for _, m := range leaves {
-		fmt.Fprintf(stdout, "  %s %s (line %d: %s)\n", m.Block.Type, m.Dir, m.Block.Line, m.Block.RawPattern)
+		_, _ = fmt.Fprintf(stdout, "  %s %s (line %d: %s)\n", m.Block.Type, m.Dir, m.Block.Line, m.Block.RawPattern)
 	}
 	for _, m := range enters {
-		fmt.Fprintf(stdout, "  %s %s (line %d: %s)\n", m.Block.Type, m.Dir, m.Block.Line, m.Block.RawPattern)
+		_, _ = fmt.Fprintf(stdout, "  %s %s (line %d: %s)\n", m.Block.Type, m.Dir, m.Block.Line, m.Block.RawPattern)
 	}
 	return 0
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, `envoke - run shell scripts when you cd into or out of a directory
+	_, _ = fmt.Fprintln(w, `envoke - run shell scripts when you cd into or out of a directory
 
 Usage:
   envoke version                                    print version and exit

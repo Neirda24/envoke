@@ -1,0 +1,169 @@
+// Dagger CI pipeline for envoke.
+//
+// Mirrors the four commands from CONTRIBUTING.md's "Verifying your change"
+// (gofmt, go vet, go build, go test -race), adds golangci-lint, and runs the
+// shellinit end-to-end tests against a real interpreter for each of the five
+// supported shells (bash, zsh, fish, tcsh, powershell) so none of them are
+// silently skipped for lack of the binary, as they are in a plain local
+// `go test` run.
+package main
+
+import (
+	"context"
+	"fmt"
+
+	"dagger/envoke/internal/dagger"
+)
+
+const (
+	goImage          = "golang:1.23-bookworm"
+	golangciLintPath = "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2"
+)
+
+type Envoke struct {
+	// Source is the envoke repository root.
+	Source *dagger.Directory
+}
+
+func New(
+	// +defaultPath="/"
+	source *dagger.Directory,
+) *Envoke {
+	return &Envoke{Source: source}
+}
+
+// goBase is a bare Go toolchain container, before the source tree is
+// mounted, so package-install layers cache independently of source edits.
+func (m *Envoke) goBase() *dagger.Container {
+	// CGO must stay enabled: go test -race requires cgo.
+	return dag.Container().From(goImage)
+}
+
+func (m *Envoke) withSource(c *dagger.Container) *dagger.Container {
+	return c.WithMountedDirectory("/src", m.Source).WithWorkdir("/src")
+}
+
+// aptInstall installs the given Debian packages on top of goBase.
+func (m *Envoke) aptInstall(pkgs ...string) *dagger.Container {
+	return m.goBase().
+		WithExec([]string{"apt-get", "update"}).
+		WithExec(append([]string{"apt-get", "install", "-y", "--no-install-recommends"}, pkgs...))
+}
+
+// powershellBase installs PowerShell (pwsh) via Microsoft's Debian 12 apt
+// repo, per Microsoft's documented install steps.
+func (m *Envoke) powershellBase() *dagger.Container {
+	return m.aptInstall("wget", "apt-transport-https", "software-properties-common").
+		WithExec([]string{"sh", "-c", "wget -q https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb -O /tmp/packages-microsoft-prod.deb"}).
+		WithExec([]string{"dpkg", "-i", "/tmp/packages-microsoft-prod.deb"}).
+		WithExec([]string{"apt-get", "update"}).
+		WithExec([]string{"apt-get", "install", "-y", "powershell"})
+}
+
+// shellinitTest runs the shellinit package's tests (which drive a real
+// interpreter end to end rather than string-match generated scripts) inside
+// the given container.
+func (m *Envoke) shellinitTest(ctx context.Context, c *dagger.Container) error {
+	_, err := m.withSource(c).
+		WithExec([]string{"go", "test", "./internal/shellinit/...", "-race", "-v"}).
+		Sync(ctx)
+	return err
+}
+
+// Fmt checks that every file is gofmt-formatted.
+//
+// +check
+func (m *Envoke) Fmt(ctx context.Context) error {
+	out, err := m.withSource(m.goBase()).
+		WithExec([]string{"gofmt", "-l", "."}).
+		Stdout(ctx)
+	if err != nil {
+		return err
+	}
+	if out != "" {
+		return fmt.Errorf("gofmt found unformatted files:\n%s", out)
+	}
+	return nil
+}
+
+// Vet runs go vet across every package.
+//
+// +check
+func (m *Envoke) Vet(ctx context.Context) error {
+	_, err := m.withSource(m.goBase()).
+		WithExec([]string{"go", "vet", "./..."}).
+		Sync(ctx)
+	return err
+}
+
+// Build compiles every package.
+//
+// +check
+func (m *Envoke) Build(ctx context.Context) error {
+	_, err := m.withSource(m.goBase()).
+		WithExec([]string{"go", "build", "./..."}).
+		Sync(ctx)
+	return err
+}
+
+// Test runs the full test suite with the race detector.
+//
+// +check
+func (m *Envoke) Test(ctx context.Context) error {
+	_, err := m.withSource(m.goBase()).
+		WithExec([]string{"go", "test", "./...", "-race"}).
+		Sync(ctx)
+	return err
+}
+
+// Lint runs golangci-lint.
+//
+// +check
+func (m *Envoke) Lint(ctx context.Context) error {
+	_, err := m.withSource(m.goBase()).
+		// golangci-lint's own go.mod may require a newer Go than this
+		// module's; let the toolchain fetch itself rather than pinning
+		// the base image to whatever golangci-lint currently needs.
+		WithEnvVariable("GOTOOLCHAIN", "auto").
+		WithExec([]string{"go", "install", golangciLintPath}).
+		WithExec([]string{"golangci-lint", "run", "./..."}).
+		Sync(ctx)
+	return err
+}
+
+// TestShellBash runs the shellinit end-to-end tests against a real bash
+// (already present in the base Go image).
+//
+// +check
+func (m *Envoke) TestShellBash(ctx context.Context) error {
+	return m.shellinitTest(ctx, m.goBase())
+}
+
+// TestShellZsh runs the shellinit end-to-end tests against a real zsh.
+//
+// +check
+func (m *Envoke) TestShellZsh(ctx context.Context) error {
+	return m.shellinitTest(ctx, m.aptInstall("zsh"))
+}
+
+// TestShellFish runs the shellinit end-to-end tests against a real fish.
+//
+// +check
+func (m *Envoke) TestShellFish(ctx context.Context) error {
+	return m.shellinitTest(ctx, m.aptInstall("fish"))
+}
+
+// TestShellTcsh runs the shellinit end-to-end tests against a real tcsh.
+//
+// +check
+func (m *Envoke) TestShellTcsh(ctx context.Context) error {
+	return m.shellinitTest(ctx, m.aptInstall("tcsh"))
+}
+
+// TestShellPowershell runs the shellinit end-to-end tests against a real
+// pwsh.
+//
+// +check
+func (m *Envoke) TestShellPowershell(ctx context.Context) error {
+	return m.shellinitTest(ctx, m.powershellBase())
+}

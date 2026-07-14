@@ -110,6 +110,13 @@ end
 //     eval string (not just around the whole alias body) so a directory
 //     name containing a space still reaches shell-hook as one argument once
 //     eval re-tokenizes the string.
+//  3. tcsh has no `command` builtin (unlike bash/zsh/fish, which use it to
+//     bypass a same-named user alias/function) — running one literally
+//     fails with "command: Command not found." tcsh's own way to bypass
+//     alias expansion for a word is a leading backslash, so this invokes
+//     `\envoke` rather than `command envoke`. Caught only by driving a real
+//     tcsh with a same-named alias defined ahead of the hook, not by
+//     string-matching the generated script.
 //
 // A plain (non-merged) pipe keeps stderr going straight to the terminal, so
 // an untrusted-config warning is never fed into source.
@@ -118,7 +125,7 @@ end
 // aliases cwdcmd for something else (a documented tcsh idiom, e.g. setting
 // the xterm title), this claims that slot rather than chaining with it —
 // fold any existing cwdcmd body into _envoke_hook by hand in that case.
-const tcshHook = `alias _envoke_hook 'eval "command envoke shell-hook --shell tcsh '"'"'$owd'"'"' '"'"'$cwd'"'"' | source /dev/stdin"'
+const tcshHook = `alias _envoke_hook 'eval "\envoke shell-hook --shell tcsh '"'"'$owd'"'"' '"'"'$cwd'"'"' | source /dev/stdin"'
 alias cwdcmd _envoke_hook
 `
 
