@@ -92,4 +92,4 @@ envoke shell-init fish | source
 
 ## License
 
-TBD.
+[MIT](LICENSE)
