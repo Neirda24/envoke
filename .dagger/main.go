@@ -18,6 +18,7 @@ import (
 const (
 	goImage          = "golang:1.23-bookworm"
 	golangciLintPath = "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2"
+	goreleaserImage  = "goreleaser/goreleaser:v2.17.0"
 )
 
 type Envoke struct {
@@ -58,6 +59,12 @@ func (m *Envoke) powershellBase() *dagger.Container {
 		WithExec([]string{"dpkg", "-i", "/tmp/packages-microsoft-prod.deb"}).
 		WithExec([]string{"apt-get", "update"}).
 		WithExec([]string{"apt-get", "install", "-y", "powershell"})
+}
+
+// goreleaserBase is a goreleaser container, before the source tree is
+// mounted, so the image layer caches independently of source edits.
+func (m *Envoke) goreleaserBase() *dagger.Container {
+	return dag.Container().From(goreleaserImage)
 }
 
 // shellinitTest runs the shellinit package's tests (which drive a real
@@ -166,4 +173,30 @@ func (m *Envoke) TestShellTcsh(ctx context.Context) error {
 // +check
 func (m *Envoke) TestShellPowershell(ctx context.Context) error {
 	return m.shellinitTest(ctx, m.powershellBase())
+}
+
+// Snapshot runs the full goreleaser pipeline (cross-compile, archive,
+// checksum) for every OS/arch in .goreleaser.yaml, but `--snapshot` implies
+// `--skip=announce,publish,validate` so nothing leaves this container.
+// Returns the dist/ directory for local inspection.
+func (m *Envoke) Snapshot(ctx context.Context) (*dagger.Directory, error) {
+	dist := m.withSource(m.goreleaserBase()).
+		WithExec([]string{"goreleaser", "release", "--snapshot", "--clean"}).
+		Directory("/src/dist")
+	if _, err := dist.Sync(ctx); err != nil {
+		return nil, err
+	}
+	return dist, nil
+}
+
+// Publish builds and publishes a real GitHub Release via goreleaser:
+// cross-platform archives plus a checksums.txt attached to the current git
+// tag. Requires a GITHUB_TOKEN secret with write access to
+// github.com/Neirda24/envoke, and a tag checked out in Source (goreleaser
+// release refuses to run otherwise).
+func (m *Envoke) Publish(ctx context.Context, githubToken *dagger.Secret) (string, error) {
+	return m.withSource(m.goreleaserBase()).
+		WithSecretVariable("GITHUB_TOKEN", githubToken).
+		WithExec([]string{"goreleaser", "release", "--clean"}).
+		Stdout(ctx)
 }
