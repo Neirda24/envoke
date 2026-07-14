@@ -255,6 +255,133 @@ func TestRun_AllowWrongArgCount(t *testing.T) {
 	}
 }
 
+func TestRun_DebugWrongArgCount(t *testing.T) {
+	_, _, code := runFor(t, "debug", "/only-one")
+	if code != 2 {
+		t.Errorf("exit code = %d, want 2", code)
+	}
+}
+
+func TestRun_DebugNoConfigFound(t *testing.T) {
+	isolateHome(t)
+
+	_, stderr, code := runFor(t, "debug", "/a", "/b")
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if stderr == "" {
+		t.Errorf("expected an error message on stderr")
+	}
+}
+
+func TestRun_DebugInvalidConfigReportsError(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, "not a valid block\n")
+
+	_, stderr, code := runFor(t, "debug", "/", "/a")
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if stderr == "" {
+		t.Errorf("expected parse error on stderr")
+	}
+}
+
+func TestRun_DebugNeverExecutesEvenIfTrusted(t *testing.T) {
+	home := isolateHome(t)
+	marker := filepath.Join(home, "marker")
+	writeConfig(t, home, `
+enter /a
+    touch `+marker+`
+`)
+	if _, _, code := runFor(t, "allow"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+
+	stdout, stderr, code := runFor(t, "debug", "/", "/a")
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "enter") || !strings.Contains(stdout, "/a") {
+		t.Errorf("expected the matched enter block described in stdout, got %q", stdout)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Errorf("debug must never execute a block, but marker file exists")
+	}
+}
+
+func TestRun_DebugReportsUntrustedConfig(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo hi
+`)
+
+	stdout, _, code := runFor(t, "debug", "/", "/a")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "NOT trusted") {
+		t.Errorf("expected stdout to flag the config as untrusted, got %q", stdout)
+	}
+}
+
+func TestRun_DebugReportsTrustedConfig(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo hi
+`)
+	if _, _, code := runFor(t, "allow"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+
+	stdout, _, code := runFor(t, "debug", "/", "/a")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if strings.Contains(stdout, "NOT trusted") || !strings.Contains(stdout, "trusted") {
+		t.Errorf("expected stdout to report the config as trusted, got %q", stdout)
+	}
+}
+
+func TestRun_DebugNoMatchReportsNoBlocks(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /never/matches
+    echo hi
+`)
+
+	stdout, _, code := runFor(t, "debug", "/", "/a")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "no blocks would fire") {
+		t.Errorf("expected stdout to report no matches, got %q", stdout)
+	}
+}
+
+func TestRun_DebugReportsLeavesBeforeEnters(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+leave /a
+    echo bye
+
+enter /b
+    echo hi
+`)
+
+	stdout, _, code := runFor(t, "debug", "/a", "/b")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	leaveIdx := strings.Index(stdout, "leave /a")
+	enterIdx := strings.Index(stdout, "enter /b")
+	if leaveIdx == -1 || enterIdx == -1 || leaveIdx > enterIdx {
+		t.Errorf("expected leave block reported before enter block, got %q", stdout)
+	}
+}
+
 func isolateHome(t *testing.T) (home string) {
 	t.Helper()
 	home = t.TempDir()

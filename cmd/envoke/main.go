@@ -1,10 +1,10 @@
 // Command envoke runs shell scripts when you cd into or out of a directory.
 //
-// The matching engine, shell hook plumbing, and config trust are all
-// implemented. `envoke shell-hook` only ever executes blocks from a config
-// that has been through `envoke allow` since its last edit — see
-// CLAUDE.md's non-negotiable trust-before-execution principle. Fish/tcsh/
-// powershell integration, `envoke debug`, and packaging are later MVP
+// The matching engine, shell hook plumbing, config trust, and `envoke debug`
+// dry-run diagnostics are all implemented. `envoke shell-hook` only ever
+// executes blocks from a config that has been through `envoke allow` since
+// its last edit — see CLAUDE.md's non-negotiable trust-before-execution
+// principle. Fish/tcsh/powershell integration and packaging are later MVP
 // steps — see CLAUDE.md's MVP scope order.
 package main
 
@@ -46,6 +46,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdShellHook(args[1:], stdout, stderr)
 	case "allow":
 		return cmdAllow(args[1:], stdout, stderr)
+	case "debug":
+		return cmdDebug(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		usage(stdout)
 		return 0
@@ -161,6 +163,65 @@ func cmdAllow(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// cmdDebug prints which enter/leave blocks would fire for a directory
+// transition, without running them and regardless of trust — a dry-run
+// diagnostic for developing a config without surprises (see README's
+// Diagnostics section). It does note whether the config is currently
+// trusted, since that determines whether shell-hook would actually run
+// what's listed here.
+func cmdDebug(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 2 {
+		fmt.Fprintln(stderr, "usage: envoke debug <from> <to>")
+		return 2
+	}
+	from, to := args[0], args[1]
+
+	path, found, err := config.Locate()
+	if err != nil {
+		fmt.Fprintln(stderr, "envoke:", err)
+		return 1
+	}
+	if !found {
+		fmt.Fprintf(stderr, "envoke: no config found (looked for %s)\n", path)
+		return 1
+	}
+
+	cfg, err := config.ParseFile(path)
+	if err != nil {
+		fmt.Fprintln(stderr, "envoke:", err)
+		return 1
+	}
+
+	leaves, enters, err := matcher.Resolve(cfg, from, to)
+	if err != nil {
+		fmt.Fprintln(stderr, "envoke:", err)
+		return 1
+	}
+
+	trusted, err := trust.IsTrusted(path)
+	if err != nil {
+		fmt.Fprintln(stderr, "envoke:", err)
+		return 1
+	}
+	trustNote := "trusted"
+	if !trusted {
+		trustNote = fmt.Sprintf("NOT trusted -- run `envoke allow %s` before these would actually run", path)
+	}
+
+	fmt.Fprintf(stdout, "envoke debug: %s -> %s using %s (%s)\n", from, to, path, trustNote)
+	if len(leaves)+len(enters) == 0 {
+		fmt.Fprintln(stdout, "  no blocks would fire")
+		return 0
+	}
+	for _, m := range leaves {
+		fmt.Fprintf(stdout, "  %s %s (line %d: %s)\n", m.Block.Type, m.Dir, m.Block.Line, m.Block.RawPattern)
+	}
+	for _, m := range enters {
+		fmt.Fprintf(stdout, "  %s %s (line %d: %s)\n", m.Block.Type, m.Dir, m.Block.Line, m.Block.RawPattern)
+	}
+	return 0
+}
+
 func usage(w io.Writer) {
 	fmt.Fprintln(w, `envoke - run shell scripts when you cd into or out of a directory
 
@@ -168,5 +229,6 @@ Usage:
   envoke version                  print version and exit
   envoke shell-init <bash|zsh>    print shell hook code to eval/source
   envoke allow [path]             trust a config file (default: the located config)
+  envoke debug <from> <to>        print which blocks would fire for a directory change, without running them
   envoke shell-hook <from> <to>   run blocks matching a directory change (internal, called by the shell hook)`)
 }
