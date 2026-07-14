@@ -4,7 +4,7 @@ Guidance for working on `envoke` — see [README.md](README.md) for the user-fac
 
 ## Status
 
-MVP step 1 done: config parser, path matcher, and executor exist under `internal/`, wired together by `internal/envoke.Transition`, with unit + integration tests (`go test ./...`, all packages pass with `-race`). No CLI verbs beyond `-version` yet — `cmd/envoke/main.go` is a placeholder until step 2. Follow the MVP scope below rather than building everything in the design notes at once.
+MVP steps 1–2 done. Step 1: config parser, path matcher, and executor under `internal/`, wired together by `internal/envoke.Transition`. Step 2: `envoke shell-init bash|zsh` generates real hook code (`internal/shellinit`), and `envoke shell-hook <from> <to>` (called by that hook on every `cd`) resolves matches via the config found by `internal/config.Locate` — but **does not execute them yet**. There's no trust mechanism until step 3, and CLAUDE.md's trust-before-execution principle is non-negotiable, so `shell-hook` only reports the match count on stderr; it never writes to stdout, so the hook's `eval "$(envoke shell-hook ...)"` is always a safe no-op today. `go test ./... -race` passes across all packages (60 tests); `gofmt`/`go vet` clean. Follow the MVP scope below rather than building everything in the design notes at once.
 
 ## Design principles (non-negotiable, see README § Design notes)
 
@@ -17,8 +17,8 @@ MVP step 1 done: config parser, path matcher, and executor exist under `internal
 ## MVP scope order
 
 1. ✅ Config parser + path matcher + `enter`/`leave` execution (core loop only).
-2. Shell hook generation for bash and zsh.
-3. `envoke allow` trust mechanism.
+2. ✅ Shell hook generation for bash and zsh (hook plumbing + match reporting; **not** wired to execution yet — see step 3).
+3. `envoke allow` trust mechanism — this is what turns `shell-hook`'s "N block(s) matched but not run" report into an actual `eval`-able script for the shell to run. Until this lands, step 2's hook is intentionally inert.
 4. `envoke debug <from> <to>` dry-run diagnostics.
 5. fish/tcsh/powershell shell integration.
 6. Packaging (goreleaser: binaries, Homebrew tap, Scoop bucket, nfpm deb/rpm).
@@ -32,9 +32,11 @@ Current package layout (`internal/`, not importable outside this module — ther
 - **`internal/config`** — `Parse`/`ParseFile` turn a config file into `[]Block{Type, Pattern, RawPattern, Script, Line}`. Hand-rolled line-oriented parser (see decision below), not a grammar library. Pattern compilation (`pattern.go`) expands a leading `~` and `$VAR`/`${VAR}` as literal (`regexp.QuoteMeta`'d) substitutions, then wraps the result as `^(?:...)$` before `regexp.Compile` — that anchoring is what makes matching segment-based rather than prefix-based (fixes ondir's `/home/foo` vs `/home/foobar` bug structurally, not by convention). Malformed config fails with a positioned `*ParseError{Line, Msg}`, never silently.
 - **`internal/matcher`** — `Transitions(from, to)` walks both paths' ancestor chains via `filepath.Dir` to their common ancestor, returning directories left (deepest-first) and entered (shallowest-first) — this is ondir's traverse behavior: jumping straight from `/a` to `/a/x/y/z` still fires `/a/x` and `/a/x/y`'s rules. `Resolve(cfg, from, to)` runs every block's pattern against the relevant directories and returns ordered `[]Match`.
 - **`internal/executor`** — `Run(ctx, match)` execs the block's script via `sh -c`, `cmd.Dir` set to the matched directory, env extended with `ENVOKE_DIR`, `ENVOKE_TYPE` (`enter`/`leave`), `ENVOKE_MATCH` (full match) and `ENVOKE_MATCH_N` (capture groups). Inherits stdio.
-- **`internal/envoke`** — `Transition(ctx, cfg, from, to)` is the core loop: resolve, then run all leaves, then all enters, stopping at the first failing block (no partial-transition unwind — see the enter/leave independence principle above). This is what integration tests exercise end-to-end (real config files, real temp dirs, real subprocesses).
-- **`cmd/envoke`** — currently just `-version`; no subcommands until step 2+.
-- **Shell integration** (step 2, not built yet): `envoke shell-init <shell>` prints shell code to `eval`/`source`, hooking the shell's own directory-change mechanism (`chpwd_functions` for zsh, `--on-variable PWD` for fish) — never override `cd` directly.
+- **`internal/envoke`** — `Transition(ctx, cfg, from, to)` is the core loop: resolve, then run all leaves, then all enters, stopping at the first failing block (no partial-transition unwind — see the enter/leave independence principle above). This is what integration tests exercise end-to-end (real config files, real temp dirs, real subprocesses). Note this is *not* what the shell hook calls yet (see below) — it's the engine step 3 will wire the hook up to once trust exists.
+- **`internal/config.Locate()`** — resolves the config path: `$ENVOKERC` (used verbatim, even if missing) → `~/.envokerc` if present → `$XDG_CONFIG_HOME/envoke/config` (or `~/.config/envoke/config`) if present → not found (normal state, not an error).
+- **`internal/shellinit`** — `Generate(shell)` returns the literal hook script for `"bash"` or `"zsh"` (static strings, no templating needed since there's no per-user variation). bash has no native "on cd" hook, so it polls via `PROMPT_COMMAND` (comparing `$PWD` to a var saved after the last prompt) — **the baseline var must be seeded once at hook-install time**, not lazily inside the hook function, or the very first `cd` after installing the hook compares the new directory against itself and gets silently missed (this was a real bug, caught by `TestGenerate_BashHookFiresOnFirstCd`, which drives real bash/`PROMPT_COMMAND` end to end). zsh uses the native `chpwd_functions` array, which only fires on a real `cd` and always has `$OLDPWD` already set by the shell itself, so it doesn't need the same seeding trick. Neither hook redefines `cd` (regression-tested).
+- **`cmd/envoke`** — `version`, `shell-init <bash|zsh>` (prints the hook script), and `shell-hook <from> <to>` (invoked by the installed hook on every `cd`; resolves matches via `matcher.Resolve` but **does not call `internal/envoke.Transition` or `internal/executor` — it never executes anything**, since no config is trusted yet; it reports the match count on stderr only). `run(args, stdout, stderr) int` is the testable dispatcher `main()` wraps.
+- **Shell integration**: `envoke shell-init <shell>` prints shell code to `eval`/`source`, hooking the shell's own directory-change mechanism (`chpwd_functions` for zsh, `PROMPT_COMMAND` polling for bash, `--on-variable PWD` for fish once step 5 lands) — never override `cd` directly.
 
 ## Go conventions
 
@@ -42,6 +44,7 @@ Current package layout (`internal/`, not importable outside this module — ther
 - **Config parser: hand-rolled, not participle.** The grammar is a simple line-oriented format (unindented `enter`/`leave` header, indented dedented body) — a hand-rolled scanner keeps positioned error messages straightforward and avoids a dependency for something this small. Revisit only if the grammar grows real nesting/expressions.
 - Table-driven tests via subtests (`Test<Func>_<Scenario>` naming), including regression tests for each ondir bug listed in the README's Design notes table (basename-prefix false positives, `~`/env-var expansion, capture-group exposure, traverse behavior). `go test ./... -race` must pass.
 - Static, dependency-free binaries — avoid cgo. Zero non-stdlib imports so far; keep it that way unless a real need appears.
+- Generated shell code gets tested with the real interpreter, not just string-matching: `<shell> -n -c <script>` for a syntax check, and for behavioral bugs (like the bash first-cd seeding bug above), drive a real subprocess through `exec.Command` with a stub `envoke` binary on `PATH` and assert on what it was called with. `t.Skip` if the interpreter isn't on the test machine's `PATH`.
 
 ## Don't
 

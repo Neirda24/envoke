@@ -12,11 +12,18 @@ Thanks for your interest in contributing. `envoke` is early-stage — see [CLAUD
 
 Requires Go 1.23+. No other tooling — the project has zero non-stdlib dependencies by design; keep it that way unless there's a strong reason to add one.
 
+## Verifying your change
+
+Before opening a PR, run this exact sequence from the repo root. All four commands must exit with status 0 and produce no output (aside from `go build`/`go test`'s normal build/pass messages) — any output from `gofmt -l` or `go vet`, or a non-zero exit from any command, means the change is not ready:
+
 ```sh
-go build ./...
-go test ./... -race
-go vet ./...
+gofmt -l .            # must print nothing — if it prints file names, run: gofmt -w .
+go vet ./...           # must print nothing
+go build ./...         # must succeed
+go test ./... -race    # must print "ok" for every package, no FAIL
 ```
+
+There is no Makefile, lint config, or CI pipeline yet — these four commands are the entire verification bar. If all four are clean, the change is ready to submit.
 
 ## Code conventions
 
@@ -29,7 +36,7 @@ go vet ./...
 
 1. Open an issue first for anything beyond a small fix, so scope and approach can be agreed before you write code.
 2. Keep PRs focused on a single MVP step or bug fix — avoid bundling unrelated cleanup.
-3. Make sure `go test ./... -race` and `go vet ./...` pass.
+3. Run the four commands in [Verifying your change](#verifying-your-change) and confirm all pass.
 4. Describe *why* in the PR description, not just what changed — the "why" is what reviewers and future contributors need most.
 
 ## Reporting bugs
