@@ -4,7 +4,7 @@
 
 It's a spiritual rewrite of [ondir](https://github.com/alecthomas/ondir) in Go: same idea (per-directory `enter`/`leave` hooks matched by path), rewritten to fix a decade of unresolved bugs and to reach every major shell and OS with a single static binary.
 
-> **Status**: early development. The core matching engine, bash/zsh shell hooks, the `envoke allow` trust mechanism, and `envoke debug` dry-run diagnostics all exist and are tested — a `cd` into a trusted, matching directory really does run its `enter` block in your shell today. Still missing: fish/tcsh/powershell integration and packaging/releases. This README describes the target shape of v1. See [CLAUDE.md](CLAUDE.md) for the MVP scope order.
+> **Status**: early development. The core matching engine, shell hooks for bash/zsh/fish/tcsh/PowerShell, the `envoke allow` trust mechanism, and `envoke debug` dry-run diagnostics all exist and are tested — a `cd` into a trusted, matching directory really does run its `enter` block in your shell today. bash, zsh, and tcsh have been verified end to end against real interpreters; fish and PowerShell are implemented against documented behavior but not yet run against real `fish`/`pwsh` interpreters (neither is installed in the environment this was built in). Still missing: packaging/releases. This README describes the target shape of v1. See [CLAUDE.md](CLAUDE.md) for the MVP scope order.
 
 ## Why not just use ondir / direnv?
 
@@ -60,7 +60,7 @@ Bugs in ondir that motivate specific design choices here:
 | Capture groups not exposed to scripts | Matched path and capture groups exposed as env vars |
 | No `ONDIRRC` var / no XDG support | `ENVOKERC` env var + `$XDG_CONFIG_HOME/envoke/config` |
 | Hand-maintained shell scripts per shell (bash/zsh/tcsh/fish) | Single binary generates hooks: `envoke shell-init bash\|zsh\|fish\|tcsh\|powershell` |
-| zsh integration overrides `cd` directly | Proper `chpwd_functions` (zsh), `--on-variable PWD` (fish) |
+| zsh integration overrides `cd` directly | Proper `chpwd_functions` (zsh), `--on-variable PWD` (fish), `cwdcmd` (tcsh), wrapped `prompt` (PowerShell) |
 | No config trust/opt-in | `envoke allow` before executing new/changed config |
 
 ## Installation
@@ -88,6 +88,18 @@ eval "$(envoke shell-init bash)"   # or zsh
 ```fish
 # fish
 envoke shell-init fish | source
+```
+
+```tcsh
+# tcsh — `eval "$(...)"`-style substitution splits multi-line output on
+# newlines in tcsh, so this pipes into source instead.
+envoke shell-init tcsh | source /dev/stdin
+```
+
+```powershell
+# PowerShell — Out-String joins the (possibly multi-line) output into one
+# string before Invoke-Expression evaluates it.
+& envoke shell-init powershell | Out-String | Invoke-Expression
 ```
 
 ## License

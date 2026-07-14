@@ -76,13 +76,24 @@ func cmdShellInit(args []string, stdout, stderr io.Writer) int {
 // cmdShellHook is invoked by the generated shell hook on every directory
 // change. If the config that matched has been allowed (see cmdAllow) and
 // its content hasn't changed since, it prints executor.Render's output to
-// stdout for the shell to eval — running the matched blocks in the caller's
-// own shell process, which is what makes exported vars or `source`d scripts
-// actually take effect. Otherwise it reports the match on stderr only and
-// prints nothing, so `eval "$(envoke shell-hook ...)"` stays a safe no-op.
+// stdout for the shell to eval/source — running the matched blocks in the
+// caller's own shell process, which is what makes exported vars or
+// `source`d scripts actually take effect. Otherwise it reports the match on
+// stderr only and prints nothing, so evaluating the (empty) output stays a
+// safe no-op.
+//
+// --shell <name> tells Render which export syntax to speak (bash/zsh/fish/
+// tcsh/powershell); omitting it (as bash's and zsh's generated hooks do)
+// defaults to the POSIX profile, so existing installs keep working
+// unchanged.
 func cmdShellHook(args []string, stdout, stderr io.Writer) int {
+	shell := ""
+	if len(args) >= 2 && args[0] == "--shell" {
+		shell = args[1]
+		args = args[2:]
+	}
 	if len(args) != 2 {
-		fmt.Fprintln(stderr, "usage: envoke shell-hook <from> <to>")
+		fmt.Fprintln(stderr, "usage: envoke shell-hook [--shell <name>] <from> <to>")
 		return 2
 	}
 	from, to := args[0], args[1]
@@ -123,7 +134,7 @@ func cmdShellHook(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	fmt.Fprint(stdout, executor.Render(leaves, enters))
+	fmt.Fprint(stdout, executor.Render(shell, leaves, enters))
 	return 0
 }
 
@@ -226,9 +237,9 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, `envoke - run shell scripts when you cd into or out of a directory
 
 Usage:
-  envoke version                  print version and exit
-  envoke shell-init <bash|zsh>    print shell hook code to eval/source
-  envoke allow [path]             trust a config file (default: the located config)
-  envoke debug <from> <to>        print which blocks would fire for a directory change, without running them
-  envoke shell-hook <from> <to>   run blocks matching a directory change (internal, called by the shell hook)`)
+  envoke version                                    print version and exit
+  envoke shell-init <bash|zsh|fish|tcsh|powershell>  print shell hook code to eval/source
+  envoke allow [path]                                trust a config file (default: the located config)
+  envoke debug <from> <to>                           print which blocks would fire for a directory change, without running them
+  envoke shell-hook [--shell <name>] <from> <to>      run blocks matching a directory change (internal, called by the shell hook)`)
 }

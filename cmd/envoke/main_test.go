@@ -65,12 +65,42 @@ func TestRun_ShellInitBash(t *testing.T) {
 	}
 }
 
+func TestRun_ShellInitFish(t *testing.T) {
+	stdout, _, code := runFor(t, "shell-init", "fish")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "--on-variable PWD") {
+		t.Errorf("expected fish hook in stdout, got %q", stdout)
+	}
+}
+
+func TestRun_ShellInitTcsh(t *testing.T) {
+	stdout, _, code := runFor(t, "shell-init", "tcsh")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "cwdcmd") {
+		t.Errorf("expected tcsh hook in stdout, got %q", stdout)
+	}
+}
+
+func TestRun_ShellInitPowershell(t *testing.T) {
+	stdout, _, code := runFor(t, "shell-init", "powershell")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "function global:prompt") {
+		t.Errorf("expected powershell hook in stdout, got %q", stdout)
+	}
+}
+
 func TestRun_ShellInitUnsupportedShell(t *testing.T) {
-	_, stderr, code := runFor(t, "shell-init", "fish")
+	_, stderr, code := runFor(t, "shell-init", "cmd")
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
-	if !strings.Contains(stderr, "fish") {
+	if !strings.Contains(stderr, "cmd") {
 		t.Errorf("stderr %q should mention the shell", stderr)
 	}
 }
@@ -194,6 +224,44 @@ func TestRun_ShellHookWrongArgCount(t *testing.T) {
 	_, _, code := runFor(t, "shell-hook", "/only-one")
 	if code != 2 {
 		t.Errorf("exit code = %d, want 2", code)
+	}
+}
+
+func TestRun_ShellHookShellFlagSelectsExportSyntax(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo hi
+`)
+	if _, _, code := runFor(t, "allow"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+
+	stdout, _, code := runFor(t, "shell-hook", "--shell", "fish", "/", "/a")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "set -gx ENVOKE_DIR") {
+		t.Errorf("expected fish export syntax with --shell fish, got %q", stdout)
+	}
+}
+
+func TestRun_ShellHookNoShellFlagDefaultsToPosix(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo hi
+`)
+	if _, _, code := runFor(t, "allow"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+
+	stdout, _, code := runFor(t, "shell-hook", "/", "/a")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "export ENVOKE_DIR") {
+		t.Errorf("expected POSIX export syntax with no --shell flag, got %q", stdout)
 	}
 }
 
