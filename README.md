@@ -1,5 +1,7 @@
 # envoke
 
+**[Documentation](https://neirda24.github.io/envoke/)**
+
 `envoke` runs shell scripts when you `cd` into or out of a directory.
 
 It's a spiritual rewrite of [ondir](https://github.com/alecthomas/ondir) in Go: same idea (per-directory `enter`/`leave` hooks matched by path), rewritten to fix a decade of unresolved bugs and to reach every major shell and OS with a single static binary.

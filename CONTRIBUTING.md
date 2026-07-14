@@ -1,11 +1,11 @@
 # Contributing to envoke
 
-Thanks for your interest in contributing. `envoke` is early-stage — see [CLAUDE.md](CLAUDE.md) for the current MVP scope and what's already done.
+Thanks for your interest in contributing. `envoke` is early-stage — see [CLAUDE.md](https://github.com/Neirda24/envoke/blob/main/CLAUDE.md) for the current MVP scope and what's already done.
 
 ## Before you start
 
-- Read the [README](README.md) for the design rationale and the [Design notes](README.md#design-notes) table listing the ondir bugs this project exists to fix.
-- Read [CLAUDE.md](CLAUDE.md) for the non-negotiable design principles (RE2-only matching, path-segment matching, no implicit enter/leave undo, trust-before-execution) and the MVP scope order.
+- Read the [README](https://github.com/Neirda24/envoke/blob/main/README.md) for the design rationale and the [Design notes](https://github.com/Neirda24/envoke/blob/main/README.md#design-notes) table listing the ondir bugs this project exists to fix.
+- Read [CLAUDE.md](https://github.com/Neirda24/envoke/blob/main/CLAUDE.md) for the non-negotiable design principles (RE2-only matching, path-segment matching, no implicit enter/leave undo, trust-before-execution) and the MVP scope order.
 - Don't jump ahead to a later MVP step before the current one has tests passing — open an issue first if you want to work on something out of order.
 
 ## Development setup
