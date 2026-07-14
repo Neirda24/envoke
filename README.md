@@ -4,7 +4,7 @@
 
 It's a spiritual rewrite of [ondir](https://github.com/alecthomas/ondir) in Go: same idea (per-directory `enter`/`leave` hooks matched by path), rewritten to fix a decade of unresolved bugs and to reach every major shell and OS with a single static binary.
 
-> **Status**: early design phase. No code yet — this README describes the target shape of v1.
+> **Status**: early development. The core matching engine (config parsing, path matching, `enter`/`leave` execution) exists and is tested, but there's no shell integration or CLI yet — this README describes the target shape of v1. See [CLAUDE.md](CLAUDE.md) for the MVP scope order.
 
 ## Why not just use ondir / direnv?
 

@@ -4,7 +4,7 @@ Guidance for working on `envoke` — see [README.md](README.md) for the user-fac
 
 ## Status
 
-Pre-code. Only docs exist. Follow the MVP scope below rather than building everything in the design notes at once.
+MVP step 1 done: config parser, path matcher, and executor exist under `internal/`, wired together by `internal/envoke.Transition`, with unit + integration tests (`go test ./...`, all packages pass with `-race`). No CLI verbs beyond `-version` yet — `cmd/envoke/main.go` is a placeholder until step 2. Follow the MVP scope below rather than building everything in the design notes at once.
 
 ## Design principles (non-negotiable, see README § Design notes)
 
@@ -16,7 +16,7 @@ Pre-code. Only docs exist. Follow the MVP scope below rather than building every
 
 ## MVP scope order
 
-1. Config parser + path matcher + `enter`/`leave` execution (core loop only).
+1. ✅ Config parser + path matcher + `enter`/`leave` execution (core loop only).
 2. Shell hook generation for bash and zsh.
 3. `envoke allow` trust mechanism.
 4. `envoke debug <from> <to>` dry-run diagnostics.
@@ -27,16 +27,21 @@ Don't jump ahead to later stages before earlier ones have tests passing.
 
 ## Architecture sketch
 
-- **Parser**: config → AST of enter/leave blocks with pattern + script body. [participle](https://github.com/alecthomas/participle) is a candidate (same author as ondir — deliberate nod, not a hard requirement); a hand-rolled recursive-descent parser is also acceptable if simpler. Whichever is chosen, it must produce clear, positioned error messages on malformed config — never fail silently (ondir's biggest parser complaint).
-- **Matcher**: given a `(fromPath, toPath)` pair, resolves which `enter`/`leave` blocks fire, including intermediate directories traversed between the two (ondir's traverse behavior — keep it, since several use cases in the README depend on it).
-- **Executor**: runs a matched block's script via `os/exec`, injecting `ENVOKE_MATCH`/`ENVOKE_MATCH_N` env vars for regex capture groups.
-- **Shell integration**: `envoke shell-init <shell>` prints shell code to `eval`/`source`, hooking the shell's own directory-change mechanism (`chpwd_functions` for zsh, `--on-variable PWD` for fish) — never override `cd` directly.
+Current package layout (`internal/`, not importable outside this module — there's no stable public API to commit to yet):
+
+- **`internal/config`** — `Parse`/`ParseFile` turn a config file into `[]Block{Type, Pattern, RawPattern, Script, Line}`. Hand-rolled line-oriented parser (see decision below), not a grammar library. Pattern compilation (`pattern.go`) expands a leading `~` and `$VAR`/`${VAR}` as literal (`regexp.QuoteMeta`'d) substitutions, then wraps the result as `^(?:...)$` before `regexp.Compile` — that anchoring is what makes matching segment-based rather than prefix-based (fixes ondir's `/home/foo` vs `/home/foobar` bug structurally, not by convention). Malformed config fails with a positioned `*ParseError{Line, Msg}`, never silently.
+- **`internal/matcher`** — `Transitions(from, to)` walks both paths' ancestor chains via `filepath.Dir` to their common ancestor, returning directories left (deepest-first) and entered (shallowest-first) — this is ondir's traverse behavior: jumping straight from `/a` to `/a/x/y/z` still fires `/a/x` and `/a/x/y`'s rules. `Resolve(cfg, from, to)` runs every block's pattern against the relevant directories and returns ordered `[]Match`.
+- **`internal/executor`** — `Run(ctx, match)` execs the block's script via `sh -c`, `cmd.Dir` set to the matched directory, env extended with `ENVOKE_DIR`, `ENVOKE_TYPE` (`enter`/`leave`), `ENVOKE_MATCH` (full match) and `ENVOKE_MATCH_N` (capture groups). Inherits stdio.
+- **`internal/envoke`** — `Transition(ctx, cfg, from, to)` is the core loop: resolve, then run all leaves, then all enters, stopping at the first failing block (no partial-transition unwind — see the enter/leave independence principle above). This is what integration tests exercise end-to-end (real config files, real temp dirs, real subprocesses).
+- **`cmd/envoke`** — currently just `-version`; no subcommands until step 2+.
+- **Shell integration** (step 2, not built yet): `envoke shell-init <shell>` prints shell code to `eval`/`source`, hooking the shell's own directory-change mechanism (`chpwd_functions` for zsh, `--on-variable PWD` for fish) — never override `cd` directly.
 
 ## Go conventions
 
-- CLI framework: not yet decided between `cobra`/`urfave-cli` and the stdlib `flag` package — decide when starting step 1, don't block on it.
-- Table-driven tests, especially regression tests for each ondir bug listed in the README's Design notes table (regex hangs, basename-prefix false positives, `~` expansion, capture-group exposure, traverse behavior).
-- Static, dependency-free binaries — avoid cgo.
+- **CLI framework: stdlib `flag`**, decided at step 1. No subcommands existed yet to justify `cobra`/`urfave-cli`'s added dependency; revisit once step 2 (shell-init) or step 3 (allow) needs real subcommand parsing.
+- **Config parser: hand-rolled, not participle.** The grammar is a simple line-oriented format (unindented `enter`/`leave` header, indented dedented body) — a hand-rolled scanner keeps positioned error messages straightforward and avoids a dependency for something this small. Revisit only if the grammar grows real nesting/expressions.
+- Table-driven tests via subtests (`Test<Func>_<Scenario>` naming), including regression tests for each ondir bug listed in the README's Design notes table (basename-prefix false positives, `~`/env-var expansion, capture-group exposure, traverse behavior). `go test ./... -race` must pass.
+- Static, dependency-free binaries — avoid cgo. Zero non-stdlib imports so far; keep it that way unless a real need appears.
 
 ## Don't
 
