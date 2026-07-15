@@ -19,6 +19,8 @@ const (
 	goImage          = "golang:1.23-bookworm"
 	golangciLintPath = "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2"
 	goreleaserImage  = "goreleaser/goreleaser:v2.17.0"
+	pythonImage      = "python:3.12-slim"
+	docsPort         = 8000
 )
 
 type Envoke struct {
@@ -65,6 +67,16 @@ func (m *Envoke) powershellBase() *dagger.Container {
 // mounted, so the image layer caches independently of source edits.
 func (m *Envoke) goreleaserBase() *dagger.Container {
 	return dag.Container().From(goreleaserImage)
+}
+
+// docsBase installs the pinned mkdocs-material version from
+// docs/requirements.txt only, so this layer caches independently of
+// unrelated source edits (it only invalidates when requirements.txt itself
+// changes, not on every doc page edit).
+func (m *Envoke) docsBase() *dagger.Container {
+	return dag.Container().From(pythonImage).
+		WithFile("/tmp/requirements.txt", m.Source.File("docs/requirements.txt")).
+		WithExec([]string{"pip", "install", "--no-cache-dir", "-r", "/tmp/requirements.txt"})
 }
 
 // shellinitTest runs the shellinit package's tests (which drive a real
@@ -199,4 +211,17 @@ func (m *Envoke) Publish(ctx context.Context, githubToken *dagger.Secret) (strin
 		WithSecretVariable("GITHUB_TOKEN", githubToken).
 		WithExec([]string{"goreleaser", "release", "--clean"}).
 		Stdout(ctx)
+}
+
+// Docs starts a live-reloading mkdocs dev server for the docs/ site, bound
+// to docsPort. Run it with:
+//
+//	dagger -m ./.dagger call docs up --ports 8000:8000
+//
+// then open http://localhost:8000 — edits under docs/ or mkdocs.yml
+// live-reload without restarting the service.
+func (m *Envoke) Docs() *dagger.Service {
+	return m.withSource(m.docsBase()).
+		WithExposedPort(docsPort).
+		AsService(dagger.ContainerAsServiceOpts{Args: []string{"mkdocs", "serve", "-a", fmt.Sprintf("0.0.0.0:%d", docsPort)}})
 }

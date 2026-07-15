@@ -31,6 +31,20 @@ dagger check -m .dagger
 
 This requires the [`dagger` CLI](https://docs.dagger.io/getting-started/installation) and a container runtime (Docker or similar). It isn't wired into GitHub Actions yet, so running it is optional but recommended before a PR that touches `internal/shellinit` or anything shell-integration-related — it's the only way to actually exercise fish/tcsh/powershell if you don't have them installed locally.
 
+## Previewing documentation changes
+
+The [docs site](https://neirda24.github.io/envoke/) lives under `docs/` + `mkdocs.yml`. Preview it locally before opening a PR that touches either:
+
+```sh
+pip install -r docs/requirements.txt && mkdocs serve   # localhost:8000, live-reload
+```
+
+Or, without installing Python, via the same Dagger CLI as above:
+
+```sh
+dagger -m ./.dagger call docs up --ports 8000:8000
+```
+
 ## Code conventions
 
 - Table-driven tests via subtests, named `Test<Func>_<Scenario>`.
