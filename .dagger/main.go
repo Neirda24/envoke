@@ -187,9 +187,11 @@ func (m *Envoke) actionsUpBase() *dagger.Container {
 
 // Zizmor lints GitHub Actions workflows for common security issues
 // (unpinned actions, excessive permissions, credential persistence, etc.)
-// via https://github.com/zizmorcore/zizmor.
-//
-// +check
+// via https://github.com/zizmorcore/zizmor. Deliberately not a +check: the
+// `check` CLI verb never forwards constructor flags (confirmed — see
+// CLAUDE.md), so a token-authenticated run only works via `dagger call
+// zizmor --gh-auth-token=...`; keeping it out of `+check` means CI's
+// unauthenticated `dagger check` run never needs to know about it either.
 func (m *Envoke) Zizmor(ctx context.Context) error {
 	_, err := m.withSource(m.zizmorBase()).
 		WithExec([]string{"zizmor", ".", "--cache-dir=/zizmor-cache"}).
@@ -208,9 +210,8 @@ type actionsUpReport struct {
 // ActionsUp checks that every `uses:` reference under .github is pinned to
 // a commit SHA and at its latest compatible version, via
 // https://github.com/azat-io/actions-up. On failure it re-runs verbosely so
-// the error message shows exactly what's out of date.
-//
-// +check
+// the error message shows exactly what's out of date. Deliberately not a
+// +check, for the same reason as Zizmor above.
 func (m *Envoke) ActionsUp(ctx context.Context) error {
 	c := m.withSource(m.actionsUpBase())
 
