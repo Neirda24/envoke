@@ -30,6 +30,12 @@ release:
   github:
     owner: Neirda24
     name: envoke
+  footer: |
+    ## Install / upgrade
+
+    - **Homebrew** (macOS/Linux): `brew install neirda24/tap/envoke`, or `brew upgrade envoke` if already installed.
+    - **Manual download**: grab the archive for your OS/arch from the Assets above, extract it, and put `envoke` on your `PATH`. Verify against `checksums.txt`.
+    - **Go toolchain**: `go install github.com/Neirda24/envoke/cmd/envoke@{{ .Tag }}`
 
 homebrew_casks:
   - name: envoke

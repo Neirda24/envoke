@@ -71,3 +71,4 @@ A user-facing docs site (`mkdocs.yml` + `docs/`) is separate from this file and 
 
 - Don't add a feature from the README's "Use cases" section before the MVP step it depends on is done.
 - Don't add implicit/automatic leave behavior — re-read the "enter/leave are independent" principle above before adding anything that feels like convenience state management.
+- Don't let a GitHub Release go out without install/upgrade instructions in its notes. `.goreleaser.yaml`'s `release.footer` template is the mechanism — it's appended after the auto-generated changelog on every release, so this is automatic, not something to add by hand per release. If a new install method ships (Scoop, nfpm, the install script), update the footer template too, not just the README's Installation section.
