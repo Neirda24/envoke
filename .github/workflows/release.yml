@@ -1,0 +1,24 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dagger/dagger-for-github@v8
+        with:
+          version: "0.21.7"
+          module: .dagger
+          call: publish --github-token=env://PUBLISH_HOMEBREW_TAP
+        env:
+          PUBLISH_HOMEBREW_TAP: ${{ secrets.PUBLISH_HOMEBREW_TAP }}
