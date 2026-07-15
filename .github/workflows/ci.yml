@@ -22,6 +22,4 @@ jobs:
         with:
           version: "0.21.7"
           module: .dagger
-          call: check --gh-auth-token=env://GITHUB_TOKEN
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          check: "true"
