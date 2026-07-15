@@ -1,25 +1,27 @@
-name: Release
+name: CI
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 3 * * *"
 
 permissions:
   contents: read
 
 jobs:
-  publish:
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          fetch-depth: 0
           persist-credentials: false
       - uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
         with:
           version: "0.21.7"
           module: .dagger
-          call: publish --github-token=env://PUBLISH_HOMEBREW_TAP
+          call: check --gh-auth-token=env://GITHUB_TOKEN
         env:
-          PUBLISH_HOMEBREW_TAP: ${{ secrets.PUBLISH_HOMEBREW_TAP }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

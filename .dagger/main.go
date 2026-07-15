@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"dagger/envoke/internal/dagger"
@@ -20,19 +21,27 @@ const (
 	golangciLintPath = "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2"
 	goreleaserImage  = "goreleaser/goreleaser:v2.17.0"
 	pythonImage      = "python:3.12-slim"
+	zizmorImage      = "ghcr.io/zizmorcore/zizmor:latest"
+	nodeImage        = "node:22-alpine"
 	docsPort         = 8000
 )
 
 type Envoke struct {
 	// Source is the envoke repository root.
 	Source *dagger.Directory
+	// GhAuthToken authenticates zizmor's and actions-up's GitHub API calls,
+	// raising their unauthenticated 60/hr rate limit. Optional: both tools
+	// still work without it, just slower/flakier on a busy day.
+	GhAuthToken *dagger.Secret
 }
 
 func New(
 	// +defaultPath="/"
 	source *dagger.Directory,
+	// +optional
+	ghAuthToken *dagger.Secret,
 ) *Envoke {
-	return &Envoke{Source: source}
+	return &Envoke{Source: source, GhAuthToken: ghAuthToken}
 }
 
 // goBase is a bare Go toolchain container, before the source tree is
@@ -148,6 +157,109 @@ func (m *Envoke) Lint(ctx context.Context) error {
 		WithExec([]string{"golangci-lint", "run", "./..."}).
 		Sync(ctx)
 	return err
+}
+
+// zizmorBase is a zizmor container, before the source tree is mounted, with
+// a persistent cache volume for zizmor's own audit cache so repeat runs
+// don't re-fetch what they already know.
+func (m *Envoke) zizmorBase() *dagger.Container {
+	c := dag.Container().From(zizmorImage).
+		WithMountedCache("/zizmor-cache", dag.CacheVolume("zizmor"))
+	if m.GhAuthToken != nil {
+		c = c.WithSecretVariable("ZIZMOR_GITHUB_TOKEN", m.GhAuthToken)
+	}
+	return c
+}
+
+// actionsUpBase is a Node container, before the source tree is mounted.
+func (m *Envoke) actionsUpBase() *dagger.Container {
+	c := dag.Container().From(nodeImage)
+	if m.GhAuthToken != nil {
+		c = c.WithSecretVariable("GITHUB_TOKEN", m.GhAuthToken)
+	}
+	return c
+}
+
+// Zizmor lints GitHub Actions workflows for common security issues
+// (unpinned actions, excessive permissions, credential persistence, etc.)
+// via https://github.com/zizmorcore/zizmor.
+//
+// +check
+func (m *Envoke) Zizmor(ctx context.Context) error {
+	_, err := m.withSource(m.zizmorBase()).
+		WithExec([]string{"zizmor", ".", "--cache-dir=/zizmor-cache"}).
+		Sync(ctx)
+	return err
+}
+
+// actionsUpReport is the subset of `actions-up --json`'s output this
+// function reads to decide pass/fail.
+type actionsUpReport struct {
+	Summary struct {
+		TotalUpdates int `json:"totalUpdates"`
+	} `json:"summary"`
+}
+
+// ActionsUp checks that every `uses:` reference under .github is pinned to
+// a commit SHA and at its latest compatible version, via
+// https://github.com/azat-io/actions-up. On failure it re-runs verbosely so
+// the error message shows exactly what's out of date.
+//
+// +check
+func (m *Envoke) ActionsUp(ctx context.Context) error {
+	c := m.withSource(m.actionsUpBase())
+
+	out, err := c.WithExec([]string{"npx", "-y", "actions-up", "--dry-run", "--json"}).Stdout(ctx)
+	if err != nil {
+		return err
+	}
+
+	var report actionsUpReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		return fmt.Errorf("parsing actions-up JSON output: %w", err)
+	}
+	if report.Summary.TotalUpdates == 0 {
+		return nil
+	}
+
+	verbose, verboseErr := c.WithExec([]string{"npx", "-y", "actions-up", "--dry-run", "--yes"}).Stdout(ctx)
+	if verboseErr != nil {
+		verbose = verboseErr.Error()
+	}
+	return fmt.Errorf("%d GitHub Actions reference(s) need updates:\n\n%s", report.Summary.TotalUpdates, verbose)
+}
+
+// Autofix applies every automatic fix zizmor and actions-up know how to
+// make: zizmor's own `--fix=all` first, then actions-up's pinning/update
+// pass against the zizmor-fixed tree, returning the combined diff. Apply it
+// locally with:
+//
+//	dagger -m .dagger call autofix export --path=.
+//
+// then re-run the Zizmor/ActionsUp checks to confirm only genuinely
+// unfixable issues (if any) remain: `zizmor --fix=all` exits non-zero
+// whenever findings remain after fixing (e.g. ones needing the riskier
+// `--fix=unsafe`, which this deliberately doesn't pass), even though the
+// safe fixes were applied successfully — so this step must tolerate any
+// exit code rather than the default success-only expectation.
+func (m *Envoke) Autofix(ctx context.Context) (*dagger.Changeset, error) {
+	zizmorFixed := m.withSource(m.zizmorBase()).
+		WithExec([]string{"zizmor", ".", "--cache-dir=/zizmor-cache", "--fix=all"}, dagger.ContainerWithExecOpts{
+			Expect: dagger.ReturnTypeAny,
+		}).
+		Directory("/src")
+
+	actionsUpFixed := m.actionsUpBase().
+		WithMountedDirectory("/src", zizmorFixed).
+		WithWorkdir("/src").
+		WithExec([]string{"npx", "-y", "actions-up", "--yes"}).
+		Directory("/src")
+
+	changes := actionsUpFixed.Changes(m.Source)
+	if _, err := changes.Sync(ctx); err != nil {
+		return nil, err
+	}
+	return changes, nil
 }
 
 // TestShellBash runs the shellinit end-to-end tests against a real bash

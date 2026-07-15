@@ -23,13 +23,41 @@ go build ./...         # must succeed
 go test ./... -race    # must print "ok" for every package, no FAIL
 ```
 
-There is no Makefile yet, but there is a [Dagger](https://dagger.io) pipeline under [`.dagger/`](.dagger/) that mirrors these four commands, adds `golangci-lint`, and runs the shellinit end-to-end tests against a real interpreter for each of the five supported shells (installing whichever one a given check needs, so none of them get silently skipped for lack of the binary the way a local `go test` run does). Run it with:
+There is no Makefile yet, but there is a [Dagger](https://dagger.io) pipeline under [`.dagger/`](.dagger/) that mirrors these four commands, adds `golangci-lint`, runs the shellinit end-to-end tests against a real interpreter for each of the five supported shells (installing whichever one a given check needs, so none of them get silently skipped for lack of the binary the way a local `go test` run does), and lints/audits the GitHub Actions workflows themselves (see below). Run the whole suite with:
 
 ```sh
 dagger check -m .dagger
 ```
 
-This requires the [`dagger` CLI](https://docs.dagger.io/getting-started/installation) and a container runtime (Docker or similar). It isn't wired into GitHub Actions yet, so running it is optional but recommended before a PR that touches `internal/shellinit` or anything shell-integration-related — it's the only way to actually exercise fish/tcsh/powershell if you don't have them installed locally.
+This requires the [`dagger` CLI](https://docs.dagger.io/getting-started/installation) and a container runtime (Docker or similar). `.github/workflows/ci.yml` runs the exact same `dagger check` on every push/PR to `main` and on a daily schedule, so a local run before opening a PR just gets you the same feedback sooner — it's also the only way to actually exercise fish/tcsh/powershell if you don't have them installed locally.
+
+### Keeping GitHub Actions workflows secure and current
+
+Two of the checks above audit `.github/workflows/*.yml` itself, rather than the Go code:
+
+- [`zizmor`](https://docs.zizmor.sh/) — static security analysis for GitHub Actions (unpinned `uses:` refs, overly broad `permissions:`, credential persistence, etc.)
+- [`actions-up`](https://github.com/azat-io/actions-up) — checks every `uses:` is pinned to a commit SHA and at its latest compatible version
+
+Run either standalone:
+
+```sh
+dagger -m .dagger call zizmor
+dagger -m .dagger call actions-up
+```
+
+Both benefit from an authenticated GitHub API call (the unauthenticated rate limit is 60/hr) via an optional `--gh-auth-token` flag on the module itself — reuse your own `gh` CLI session rather than minting a PAT:
+
+```sh
+dagger -m .dagger call --gh-auth-token='cmd://gh auth token' zizmor
+```
+
+When either check fails, fix what's auto-fixable in one pass and inspect the diff before applying it:
+
+```sh
+dagger -m .dagger call autofix export --path=.
+```
+
+`autofix` runs zizmor's `--fix=all` first, then `actions-up --yes` against the zizmor-fixed tree, and returns the combined diff — it does not overwrite anything until you `export` it. Re-run `zizmor`/`actions-up` afterward: some findings (e.g. `permissions:` set at the workflow level instead of scoped to the one job that needs it) require a manual restructure that neither tool will do for you.
 
 ## Previewing documentation changes
 
