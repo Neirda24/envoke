@@ -21,6 +21,12 @@
       "description": "Group the Dagger pipeline's own base images.",
       "matchFileNames": [".dagger/main.go"],
       "groupName": "dagger pipeline images"
+    },
+    {
+      "description": ".dagger/go.mod's dependencies are dictated by the Dagger Go SDK's codegen for the engineVersion pinned in .dagger/dagger.json, and only meant to move via `dagger develop -m .dagger` — not independently. Renovate also can't compute go.sum here anyway: `go get -t ./...` fails because it imports the generated, gitignored `internal/dagger` package that only exists after `dagger develop` runs locally (confirmed by a real 'Artifact update problem' on this module before this rule was added).",
+      "matchManagers": ["gomod"],
+      "matchFileNames": [".dagger/**"],
+      "enabled": false
     }
   ],
   "customManagers": [
