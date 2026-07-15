@@ -31,16 +31,18 @@ release:
     owner: Neirda24
     name: envoke
 
-brews:
+homebrew_casks:
   - name: envoke
+    binaries: [envoke]
     repository:
       owner: Neirda24
       name: homebrew-tap
-    directory: Formula
+    directory: Casks
     homepage: "https://github.com/Neirda24/envoke"
     description: "Runs shell scripts when you cd into or out of a directory"
-    license: "MIT"
-    install: |
-      bin.install "envoke"
-    test: |
-      system "#{bin}/envoke", "version"
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/envoke"]
+          end
