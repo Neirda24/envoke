@@ -18,12 +18,12 @@ import (
 
 const (
 	// renovate: datasource=docker
-	goImage          = "golang:1.23-bookworm@sha256:167053a2bb901972bf2c1611f8f52c44d5fe7e762e5cab213708d82c421614db"
+	goImage          = "golang:1.26-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651"
 	golangciLintPath = "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2"
 	// renovate: datasource=docker
 	goreleaserImage = "goreleaser/goreleaser:v2.17.0@sha256:054eefd282c02233a2556ce2d1a60cd2f51dc565ffc2520dc38b5deb4dd1ad30"
 	// renovate: datasource=docker
-	pythonImage = "python:3.12-slim@sha256:c3d81d25b3154142b0b42eb1e61300024426268edeb5b5a26dd7ddf64d9daf28"
+	pythonImage = "python:3.14-slim@sha256:d3400aa122fa42cf0af0dbe8ec3091b047eac5c8f7e3539f7135e86d855dc015"
 	// zizmorImage intentionally tracks :latest, not a pinned tag — no renovate hint.
 	zizmorImage = "ghcr.io/zizmorcore/zizmor:latest"
 	// renovate: datasource=docker
