@@ -1,0 +1,65 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "timezone": "Europe/Paris",
+  "schedule": ["before 6am on monday"],
+  "labels": ["dependencies"],
+  "postUpdateOptions": ["gomodTidy"],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on monday"]
+  },
+  "packageRules": [
+    {
+      "description": "Group the dagger.json engineVersion and the dagger-for-github `version:` inputs into one PR — they're meant to move together.",
+      "matchDatasources": ["github-releases"],
+      "matchPackageNames": ["dagger/dagger"],
+      "groupName": "dagger engine/CLI version",
+      "versioning": "semver-coerced"
+    },
+    {
+      "description": "Group the Dagger pipeline's own base images.",
+      "matchFileNames": [".dagger/main.go"],
+      "groupName": "dagger pipeline images"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Dagger engine version pinned in .dagger/dagger.json",
+      "managerFilePatterns": [".dagger/dagger.json"],
+      "matchStrings": ["\"engineVersion\":\\s*\"(?<currentValue>[^\"]+)\""],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "dagger/dagger"
+    },
+    {
+      "customType": "regex",
+      "description": "Dagger CLI version passed to dagger-for-github (kept in sync with .dagger/dagger.json's engineVersion by hand — see CLAUDE.md)",
+      "managerFilePatterns": [".github/workflows/ci.yml", ".github/workflows/release.yml"],
+      "matchStrings": [
+        "dagger/dagger-for-github@[a-f0-9]+ # v[0-9.]+\\s*\\n\\s*with:\\s*\\n\\s*version:\\s*\"(?<currentValue>[^\"]+)\""
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "dagger/dagger"
+    },
+    {
+      "customType": "regex",
+      "description": "Docker images pinned (tag + digest) as Go string constants in .dagger/main.go, flagged with a `// renovate: datasource=docker` comment",
+      "managerFilePatterns": [".dagger/main.go"],
+      "matchStrings": [
+        "// renovate: datasource=docker\\s*\\n\\s*\\w+\\s*=\\s*\"(?<depName>[a-zA-Z0-9._/-]+):(?<currentValue>[a-zA-Z0-9._-]+)@(?<currentDigest>sha256:[a-f0-9]+)\""
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "golangci-lint version installed via `go install` in .dagger/main.go",
+      "managerFilePatterns": [".dagger/main.go"],
+      "matchStrings": [
+        "golangciLintPath\\s*=\\s*\"github.com/golangci/golangci-lint/v2/cmd/golangci-lint@(?<currentValue>v[0-9][a-zA-Z0-9.-]*)\""
+      ],
+      "datasourceTemplate": "go",
+      "depNameTemplate": "github.com/golangci/golangci-lint/v2"
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+name: Actions autofix
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  autofix:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+        with:
+          version: "0.21.7"
+          module: .dagger
+          call: autofix export --path=.
+      - name: Open a PR if autofix changed anything
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet; then
+            echo "Nothing for zizmor/actions-up to fix."
+            exit 0
+          fi
+          branch="actions-autofix/$(date -u +%Y-%m-%d)"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add -A
+          git commit -m "Apply zizmor/actions-up autofix"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64)" \
+            push --force origin "$branch"
+          gh pr create \
+            --title "Apply zizmor/actions-up autofix" \
+            --body "Automated: \`dagger call autofix\` found pending GitHub Actions/security fixes and applied them. Runs daily, ahead of Renovate's own schedule, so Renovate's GitHub Actions PRs only need to step in for whatever this doesn't catch." \
+            --head "$branch" --base main \
+            || gh pr edit "$branch" --title "Apply zizmor/actions-up autofix"
