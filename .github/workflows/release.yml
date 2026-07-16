@@ -35,6 +35,6 @@ jobs:
           # id-token: write above; env:// reads them from here and forwards
           # them into the Dagger-executed container as secrets (see
           # .dagger/main.go's Publish for why that forwarding is necessary).
-          call: publish --github-token=env://PUBLISH_HOMEBREW_TAP --actions-id-token-request-url=env://ACTIONS_ID_TOKEN_REQUEST_URL --actions-id-token-request-token=env://ACTIONS_ID_TOKEN_REQUEST_TOKEN
+          call: publish --github-token=env://PUBLISH_HOMEBREW_TAP --actions-idtoken-request-url=env://ACTIONS_ID_TOKEN_REQUEST_URL --actions-idtoken-request-token=env://ACTIONS_ID_TOKEN_REQUEST_TOKEN
         env:
           PUBLISH_HOMEBREW_TAP: ${{ secrets.PUBLISH_HOMEBREW_TAP }}
