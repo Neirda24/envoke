@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -20,8 +21,14 @@ func TestRun_Version(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
-	if !strings.Contains(stdout, "envoke") {
-		t.Errorf("stdout %q should mention envoke", stdout)
+	// Under `go test`, ldflags are never set, so version/commit/date keep
+	// their zero-value defaults -- assert on that structure/format, not
+	// literal injected values a unit test can't control (see .goreleaser.yaml
+	// for where the real values come from at release time).
+	for _, want := range []string{"envoke dev", "commit unknown", "built unknown", runtime.Version(), runtime.GOOS, runtime.GOARCH} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("stdout %q should contain %q", stdout, want)
+		}
 	}
 }
 

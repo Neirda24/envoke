@@ -15,6 +15,14 @@ builds:
     goarch:
       - amd64
       - arm64
+    # -s -w strip debug info (smaller release binaries; appropriate here
+    # since this build is release-only, not a dev build). -X injects the
+    # main.version/commit/date vars cmd/envoke/main.go declares specifically
+    # for this purpose -- without this block every release binary printed
+    # "envoke dev" regardless of the actual tag, since those vars otherwise
+    # keep their zero-value defaults.
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
 
 archives:
   - id: envoke
