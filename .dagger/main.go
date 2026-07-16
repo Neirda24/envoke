@@ -308,10 +308,15 @@ func (m *Envoke) TestShellPowershell(ctx context.Context) error {
 // Snapshot runs the full goreleaser pipeline (cross-compile, archive,
 // checksum) for every OS/arch in .goreleaser.yaml, but `--snapshot` implies
 // `--skip=announce,publish,validate` so nothing leaves this container.
+// `sign` is skipped explicitly too, on top of that: unlike the others,
+// --snapshot does NOT skip it automatically (confirmed by running this
+// function before this fix existed — it hung for the OIDC device-flow's
+// full 5-minute timeout, then failed, since cosign's keyless signing needs
+// a real GitHub Actions OIDC token that a local/snapshot run never has).
 // Returns the dist/ directory for local inspection.
 func (m *Envoke) Snapshot(ctx context.Context) (*dagger.Directory, error) {
 	dist := m.withSource(m.goreleaserBase()).
-		WithExec([]string{"goreleaser", "release", "--snapshot", "--clean"}).
+		WithExec([]string{"goreleaser", "release", "--snapshot", "--clean", "--skip=sign"}).
 		Directory("/src/dist")
 	if _, err := dist.Sync(ctx); err != nil {
 		return nil, err
@@ -321,12 +326,26 @@ func (m *Envoke) Snapshot(ctx context.Context) (*dagger.Directory, error) {
 
 // Publish builds and publishes a real GitHub Release via goreleaser:
 // cross-platform archives plus a checksums.txt attached to the current git
-// tag. Requires a GITHUB_TOKEN secret with write access to
+// tag, keylessly signed with cosign (see .goreleaser.yaml's signs: block).
+// Requires a GITHUB_TOKEN secret with write access to
 // github.com/Neirda24/envoke, and a tag checked out in Source (goreleaser
 // release refuses to run otherwise).
-func (m *Envoke) Publish(ctx context.Context, githubToken *dagger.Secret) (string, error) {
+//
+// actionsIDTokenRequestURL/actionsIDTokenRequestToken are GitHub Actions'
+// OIDC token-minting endpoint and its bearer credential
+// (ACTIONS_ID_TOKEN_REQUEST_URL/ACTIONS_ID_TOKEN_REQUEST_TOKEN) — the
+// runner injects both automatically into every step's process environment
+// once the job has `permissions: id-token: write`, but a Dagger container
+// is isolated from that ambient environment by design, so they have to be
+// forwarded explicitly for cosign's GitHub Actions ambient-credential
+// detection to find them and mint a Fulcio certificate. Threaded the same
+// way as githubToken (see release.yml's `call: publish
+// --github-token=... --actions-id-token-request-url=env://... `).
+func (m *Envoke) Publish(ctx context.Context, githubToken *dagger.Secret, actionsIDTokenRequestURL *dagger.Secret, actionsIDTokenRequestToken *dagger.Secret) (string, error) {
 	return m.withSource(m.goreleaserBase()).
 		WithSecretVariable("GITHUB_TOKEN", githubToken).
+		WithSecretVariable("ACTIONS_ID_TOKEN_REQUEST_URL", actionsIDTokenRequestURL).
+		WithSecretVariable("ACTIONS_ID_TOKEN_REQUEST_TOKEN", actionsIDTokenRequestToken).
 		WithExec([]string{"goreleaser", "release", "--clean"}).
 		Stdout(ctx)
 }

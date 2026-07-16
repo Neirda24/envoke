@@ -11,6 +11,15 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # id-token: write is needed for cosign's keyless (Sigstore/Fulcio OIDC)
+    # signing of checksums.txt (see .goreleaser.yaml's signs: block) — scoped
+    # to this job, not the workflow, matching this repo's minimal-permissions
+    # pattern (see docs.yml's deploy job). Job-level permissions replace the
+    # workflow-level default rather than adding to it, so contents: read is
+    # repeated here even though it matches the workflow default.
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -20,6 +29,12 @@ jobs:
         with:
           version: "0.21.7"
           module: .dagger
-          call: publish --github-token=env://PUBLISH_HOMEBREW_TAP
+          # ACTIONS_ID_TOKEN_REQUEST_URL/ACTIONS_ID_TOKEN_REQUEST_TOKEN are
+          # injected by the runner into this step's process environment
+          # automatically (no secrets.* wiring needed) because the job has
+          # id-token: write above; env:// reads them from here and forwards
+          # them into the Dagger-executed container as secrets (see
+          # .dagger/main.go's Publish for why that forwarding is necessary).
+          call: publish --github-token=env://PUBLISH_HOMEBREW_TAP --actions-id-token-request-url=env://ACTIONS_ID_TOKEN_REQUEST_URL --actions-id-token-request-token=env://ACTIONS_ID_TOKEN_REQUEST_TOKEN
         env:
           PUBLISH_HOMEBREW_TAP: ${{ secrets.PUBLISH_HOMEBREW_TAP }}

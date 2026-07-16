@@ -26,6 +26,29 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
+# Keyless (Sigstore/Fulcio OIDC) signing of checksums.txt via cosign, which
+# ships inside the goreleaser/goreleaser Docker image already used to run
+# this whole config (confirmed: `cosign version` succeeds in that image).
+# Signing checksums.txt is sufficient — every other release artifact is
+# already covered because checksums.txt itself hashes them all. Requires
+# `id-token: write` on the GitHub Actions job (release.yml) and the
+# ACTIONS_ID_TOKEN_REQUEST_URL/ACTIONS_ID_TOKEN_REQUEST_TOKEN env vars to
+# reach the container cosign runs in (see .dagger/main.go's Publish
+# function) — cosign's GitHub Actions ambient-credential detection reads
+# those to mint a short-lived OIDC identity, no key material stored
+# anywhere. `--yes` skips the interactive confirmation prompt that
+# publishing to the public Rekor transparency log would otherwise require.
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args:
+      - "sign-blob"
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+    output: true
+
 release:
   github:
     owner: Neirda24
@@ -36,6 +59,19 @@ release:
     - **Homebrew** (macOS/Linux): `brew install neirda24/tap/envoke`, or `brew upgrade envoke` if already installed.
     - **Manual download**: grab the archive for your OS/arch from the Assets above, extract it, and put `envoke` on your `PATH`. Verify against `checksums.txt`.
     - **Go toolchain**: `go install github.com/Neirda24/envoke/cmd/envoke@{{ .Tag }}`
+
+    ## Verifying releases
+
+    `checksums.txt` is signed keylessly with [cosign](https://docs.sigstore.dev/cosign/) via GitHub Actions OIDC (Sigstore/Fulcio) — no long-lived signing key exists. `checksums.txt.sigstore.json` (in Assets above) bundles the signature, signing certificate, and Rekor transparency-log entry. Verify with:
+
+    ```sh
+    cosign verify-blob checksums.txt \
+      --bundle checksums.txt.sigstore.json \
+      --certificate-identity-regexp "^https://github\.com/Neirda24/envoke/\.github/workflows/release\.yml@.*$" \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com
+    ```
+
+    A successful verification proves `checksums.txt` (and, transitively, every archive it hashes) was built and signed by this repository's own `release.yml` workflow, not tampered with in transit.
 
 homebrew_casks:
   - name: envoke
