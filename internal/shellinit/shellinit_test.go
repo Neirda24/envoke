@@ -304,6 +304,125 @@ func TestGenerate_TcshHookSetenvPersistsInCallingShell(t *testing.T) {
 	}
 }
 
+// TestGenerate_ZshHookSetenvPersistsInCallingShell drives a real zsh through
+// the generated chpwd_functions hook and asserts that a variable exported by
+// the matched block is actually visible in the calling shell afterward —
+// not just that envoke was invoked with the right args. Unlike bash (no
+// baseline seeding needed: chpwd_functions fires on a real `cd` and
+// $OLDPWD is already maintained by zsh itself) and unlike tcsh (no cwdcmd
+// pipe/eval restrictions to work around), this is a plain behavioral check.
+func TestGenerate_ZshHookSetenvPersistsInCallingShell(t *testing.T) {
+	requireInterpreter(t, "zsh")
+	script, err := Generate("zsh")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	stubDir := t.TempDir()
+	writeEnvokeSetenvStubZsh(t, stubDir, "ENVOKE_TEST_MARKER", "hit")
+
+	startDir := t.TempDir()
+	targetDir := t.TempDir()
+
+	driver := "cd " + shellQuote(startDir) + "\n" +
+		script + "\n" +
+		"cd " + shellQuote(targetDir) + "\n" +
+		`echo "MARKER=$ENVOKE_TEST_MARKER"` + "\n"
+
+	cmd := exec.Command("zsh", "--no-rcs", "-c", driver)
+	cmd.Env = append(os.Environ(), "PATH="+stubDir+":"+os.Getenv("PATH"))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("driver script failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "MARKER=hit") {
+		t.Errorf("expected setenv from the hooked block to persist in the calling shell, got:\n%s", out)
+	}
+}
+
+// TestGenerate_FishHookSetenvPersistsInCallingShell drives a real fish
+// through the generated --on-variable PWD hook and asserts a variable set
+// (via `set -gx`) by the matched block persists in the calling shell. The
+// driver is written to a temp .fish file and run as `fish <file>` (fish's
+// own non-interactive script mode) rather than passed via `-c`, since a
+// multi-statement `-c` string is more fragile to get right than a real
+// script file — this also exercises `string collect`'s multi-line-output
+// handling exactly as it runs when sourced from a real fish rc file.
+func TestGenerate_FishHookSetenvPersistsInCallingShell(t *testing.T) {
+	requireInterpreter(t, "fish")
+	script, err := Generate("fish")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	stubDir := t.TempDir()
+	writeEnvokeSetenvStubFish(t, stubDir, "ENVOKE_TEST_MARKER", "hit")
+
+	startDir := t.TempDir()
+	targetDir := t.TempDir()
+
+	driver := "cd " + shellQuote(startDir) + "\n" +
+		script + "\n" +
+		"cd " + shellQuote(targetDir) + "\n" +
+		`echo "MARKER=$ENVOKE_TEST_MARKER"` + "\n"
+
+	driverPath := filepath.Join(t.TempDir(), "driver.fish")
+	if err := os.WriteFile(driverPath, []byte(driver), 0o644); err != nil {
+		t.Fatalf("WriteFile driver: %v", err)
+	}
+
+	cmd := exec.Command("fish", "--no-config", driverPath)
+	cmd.Env = append(os.Environ(), "PATH="+stubDir+":"+os.Getenv("PATH"))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("driver script failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "MARKER=hit") {
+		t.Errorf("expected setenv from the hooked block to persist in the calling shell, got:\n%s", out)
+	}
+}
+
+// TestGenerate_PowershellHookSetenvPersistsInCallingShell drives a real
+// pwsh through the generated prompt-wrapping hook and asserts a variable
+// set (via `$env:NAME = ...`) by the matched block persists in the calling
+// shell. Unlike bash/zsh/fish/tcsh, PowerShell's hook has no native
+// "on cd" event at all — it piggybacks on the `prompt` function, which an
+// interactive shell calls before every prompt redraw. There's no REPL here,
+// so the driver calls `prompt` explicitly right after Set-Location to
+// simulate that redraw. Its return value is discarded via `$null = prompt`
+// rather than `prompt | Out-Null`: piping swallowed output during manual
+// verification (see security_audit.md, Finding 1), so the final assertion
+// uses a separate, unpiped Write-Output instead.
+func TestGenerate_PowershellHookSetenvPersistsInCallingShell(t *testing.T) {
+	requireInterpreter(t, "pwsh")
+	script, err := Generate("powershell")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	stubDir := t.TempDir()
+	writeEnvokeSetenvStubPowershell(t, stubDir, "ENVOKE_TEST_MARKER", "hit")
+
+	startDir := t.TempDir()
+	targetDir := t.TempDir()
+
+	driver := "Set-Location " + psQuote(startDir) + "\n" +
+		script + "\n" +
+		"Set-Location " + psQuote(targetDir) + "\n" +
+		"$null = prompt\n" +
+		`Write-Output "MARKER=$env:ENVOKE_TEST_MARKER"` + "\n"
+
+	cmd := exec.Command("pwsh", "-NoProfile", "-Command", driver)
+	cmd.Env = append(os.Environ(), "PATH="+stubDir+":"+os.Getenv("PATH"))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("driver script failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "MARKER=hit") {
+		t.Errorf("expected setenv from the hooked block to persist in the calling shell, got:\n%s", out)
+	}
+}
+
 func writeEnvokeSetenvStub(t *testing.T, dir, name, value string) {
 	t.Helper()
 	stub := "#!/bin/sh\n" +
@@ -312,6 +431,56 @@ func writeEnvokeSetenvStub(t *testing.T, dir, name, value string) {
 	if err := os.WriteFile(path, []byte(stub), 0o755); err != nil {
 		t.Fatalf("WriteFile stub: %v", err)
 	}
+}
+
+// writeEnvokeStubEmitting writes an `envoke` stub whose `shell-hook`
+// subcommand prints exactly line (verbatim, one line) to stdout. It uses a
+// quoted heredoc (`<<'ENVOKE_EOF'`) rather than a plain `echo "..."`, so line
+// can safely contain shell metacharacters meaningful to *other* shells —
+// notably PowerShell's `$env:NAME = 'value'`, whose leading `$` would
+// otherwise be expanded by the /bin/sh stub script itself before it ever
+// reaches stdout.
+func writeEnvokeStubEmitting(t *testing.T, dir, line string) {
+	t.Helper()
+	stub := "#!/bin/sh\n" +
+		`if [ "$1" = "shell-hook" ]; then cat <<'ENVOKE_EOF'` + "\n" +
+		line + "\n" +
+		"ENVOKE_EOF\n" +
+		"fi\n"
+	path := filepath.Join(dir, "envoke")
+	if err := os.WriteFile(path, []byte(stub), 0o755); err != nil {
+		t.Fatalf("WriteFile stub: %v", err)
+	}
+}
+
+// writeEnvokeSetenvStubZsh emits POSIX `export NAME=VALUE` syntax — the zsh
+// hook invokes `command envoke shell-hook` with no `--shell` flag, so
+// executor.Render falls back to its POSIX profile (see internal/executor's
+// profileFor: "" and unrecognized names both default to posixProfile).
+func writeEnvokeSetenvStubZsh(t *testing.T, dir, name, value string) {
+	t.Helper()
+	writeEnvokeStubEmitting(t, dir, "export "+name+"="+value)
+}
+
+// writeEnvokeSetenvStubFish emits fish's `set -gx NAME VALUE` syntax, the
+// fish profile's export spelling (internal/executor's fishExport).
+func writeEnvokeSetenvStubFish(t *testing.T, dir, name, value string) {
+	t.Helper()
+	writeEnvokeStubEmitting(t, dir, "set -gx "+name+" "+value)
+}
+
+// writeEnvokeSetenvStubPowershell emits PowerShell's `$env:NAME = 'VALUE'`
+// syntax, the powershell profile's export spelling
+// (internal/executor's powershellExport).
+func writeEnvokeSetenvStubPowershell(t *testing.T, dir, name, value string) {
+	t.Helper()
+	writeEnvokeStubEmitting(t, dir, "$env:"+name+" = '"+value+"'")
+}
+
+// psQuote quotes s as a PowerShell single-quoted literal (a literal `'` is
+// written as `”`), matching internal/executor's powershellQuote.
+func psQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
 func writeEnvokeStub(t *testing.T, dir, logPath string) {
