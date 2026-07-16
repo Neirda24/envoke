@@ -157,7 +157,119 @@ func TestAllow_UsesXDGDataHomeWhenSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected trust record under XDG_DATA_HOME, ReadDir: %v", err)
 	}
-	if len(entries) != 1 {
-		t.Errorf("expected exactly 1 trust record, got %d", len(entries))
+	if len(entries) != 2 {
+		t.Errorf("expected exactly 2 entries (hash record + content file), got %d", len(entries))
+	}
+}
+
+func TestAllow_PreviousContentRoundTrips(t *testing.T) {
+	home := isolateEnv(t)
+	path := filepath.Join(home, "envokerc")
+	const cfg = "enter /a\n    echo hi\n"
+	writeConfig(t, path, cfg)
+
+	if err := Allow(path); err != nil {
+		t.Fatalf("Allow: %v", err)
+	}
+
+	content, ok, err := PreviousContent(path)
+	if err != nil {
+		t.Fatalf("PreviousContent: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected ok=true after Allow")
+	}
+	if content != cfg {
+		t.Errorf("PreviousContent = %q, want %q", content, cfg)
+	}
+}
+
+func TestPreviousContent_NeverAllowedIsNotOkNotError(t *testing.T) {
+	home := isolateEnv(t)
+	path := filepath.Join(home, "envokerc")
+	writeConfig(t, path, "enter /a\n    echo hi\n")
+
+	content, ok, err := PreviousContent(path)
+	if err != nil {
+		t.Fatalf("PreviousContent: %v", err)
+	}
+	if ok {
+		t.Errorf("expected ok=false for a config that was never allowed")
+	}
+	if content != "" {
+		t.Errorf("expected empty content, got %q", content)
+	}
+}
+
+func TestAllow_ReapprovingSupersedesPreviousContent(t *testing.T) {
+	home := isolateEnv(t)
+	path := filepath.Join(home, "envokerc")
+	writeConfig(t, path, "enter /a\n    echo hi\n")
+	if err := Allow(path); err != nil {
+		t.Fatalf("Allow: %v", err)
+	}
+
+	const updated = "enter /a\n    echo bye\n"
+	writeConfig(t, path, updated)
+	if err := Allow(path); err != nil {
+		t.Fatalf("Allow (re-approve): %v", err)
+	}
+
+	content, ok, err := PreviousContent(path)
+	if err != nil {
+		t.Fatalf("PreviousContent: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected ok=true after re-approval")
+	}
+	if content != updated {
+		t.Errorf("PreviousContent = %q, want %q (the re-approved content)", content, updated)
+	}
+
+	trusted, err := IsTrusted(path)
+	if err != nil {
+		t.Fatalf("IsTrusted: %v", err)
+	}
+	if !trusted {
+		t.Errorf("expected re-approved config to be trusted")
+	}
+}
+
+func TestIsTrusted_And_PreviousContent_HandlePreUpgradeHashOnlyRecord(t *testing.T) {
+	home := isolateEnv(t)
+	path := filepath.Join(home, "envokerc")
+	const cfg = "enter /a\n    echo hi\n"
+	writeConfig(t, path, cfg)
+
+	// Simulate a trust record written by a pre-upgrade version of envoke:
+	// only the hash file exists, no sibling .content file.
+	recPath, err := recordPath(path)
+	if err != nil {
+		t.Fatalf("recordPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(recPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(recPath, []byte(hashContent([]byte(cfg))), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	trusted, err := IsTrusted(path)
+	if err != nil {
+		t.Fatalf("IsTrusted: %v", err)
+	}
+	if !trusted {
+		t.Errorf("expected hash-only pre-upgrade record to still report trusted")
+	}
+
+	content, ok, err := PreviousContent(path)
+	if err != nil {
+		t.Fatalf("PreviousContent: %v", err)
+	}
+	if ok {
+		t.Errorf("expected ok=false for a pre-upgrade record with no content file")
+	}
+	if content != "" {
+		t.Errorf("expected empty content, got %q", content)
 	}
 }

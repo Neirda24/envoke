@@ -4,6 +4,16 @@
 // until Allow runs again. This is what CLAUDE.md's trust-before-execution
 // principle requires: envoke must never auto-execute a new or modified
 // config.
+//
+// Alongside the trust hash, Allow also persists a copy of the approved
+// content itself (see PreviousContent), so a future "diff on allow" feature
+// can show what changed between the previously approved config and the one
+// being approved now. That copy lives in a new sibling file next to the
+// existing hash record (see contentPath) rather than folded into the hash
+// record's own format, so upgrading never revokes an existing user's trust:
+// a pre-upgrade record is just a hash file with no matching content file,
+// and both IsTrusted and PreviousContent treat that as a normal, valid
+// state rather than an error.
 package trust
 
 import (
@@ -40,12 +50,15 @@ func IsTrusted(configPath string) (bool, error) {
 }
 
 // Allow records configPath's current content as trusted, superseding any
-// previous approval for that path.
+// previous approval for that path. It also persists a copy of that content
+// (see PreviousContent) so a later Allow call can show what changed since
+// the prior approval.
 func Allow(configPath string) error {
-	hash, err := contentHash(configPath)
+	content, err := os.ReadFile(configPath)
 	if err != nil {
 		return fmt.Errorf("allow %s: %w", configPath, err)
 	}
+	hash := hashContent(content)
 
 	recPath, err := recordPath(configPath)
 	if err != nil {
@@ -57,7 +70,33 @@ func Allow(configPath string) error {
 	if err := os.WriteFile(recPath, []byte(hash), 0o600); err != nil {
 		return fmt.Errorf("allow %s: %w", configPath, err)
 	}
+	if err := os.WriteFile(contentPath(recPath), content, 0o600); err != nil {
+		return fmt.Errorf("allow %s: %w", configPath, err)
+	}
 	return nil
+}
+
+// PreviousContent returns the content that was approved by the most
+// recent Allow call for configPath, and whether a prior approval exists at
+// all. A config that was never approved reports ok=false, not an error —
+// same "not an error" convention as IsTrusted for the equivalent case. A
+// config whose approval predates this feature (a hash record with no
+// content file yet, see the package doc comment) also reports ok=false
+// rather than erroring, since that's a legitimate pre-upgrade state, not
+// corruption.
+func PreviousContent(configPath string) (content string, ok bool, err error) {
+	recPath, err := recordPath(configPath)
+	if err != nil {
+		return "", false, err
+	}
+	b, err := os.ReadFile(contentPath(recPath))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("trust: %w", err)
+	}
+	return string(b), true, nil
 }
 
 func readRecord(configPath string) (string, error) {
@@ -76,7 +115,10 @@ func readRecord(configPath string) (string, error) {
 }
 
 // recordPath maps a config path to its trust record file, named by the hash
-// of its own absolute path so distinct config files never collide.
+// of its own absolute path so distinct config files never collide. This is
+// the same path/format Allow has always written the trust hash to — kept
+// stable so upgrading to a version of envoke that also writes contentPath
+// never revokes an existing user's trust.
 func recordPath(configPath string) (string, error) {
 	dir, err := storeDir()
 	if err != nil {
@@ -90,13 +132,26 @@ func recordPath(configPath string) (string, error) {
 	return filepath.Join(dir, hex.EncodeToString(sum[:])), nil
 }
 
+// contentPath is the sibling file next to a hash record (recPath) that
+// holds the approved content itself, for PreviousContent. Deriving it from
+// recPath rather than giving it an independent name keeps the two files
+// tied together mechanically and makes the "new, additive artifact" nature
+// of this file obvious at the call site.
+func contentPath(recPath string) string {
+	return recPath + ".content"
+}
+
+func hashContent(content []byte) string {
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
+}
+
 func contentHash(configPath string) (string, error) {
 	content, err := os.ReadFile(configPath)
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(content)
-	return hex.EncodeToString(sum[:]), nil
+	return hashContent(content), nil
 }
 
 // storeDir is $XDG_DATA_HOME/envoke/allow, or ~/.local/share/envoke/allow
