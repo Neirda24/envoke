@@ -1,30 +1,35 @@
 # Contributing to envoke
 
-Thanks for your interest in contributing. `envoke` is early-stage — see
-[CLAUDE.md](https://github.com/Neirda24/envoke/blob/main/CLAUDE.md) for the
-current scope and architecture.
+Thanks for your interest in contributing. `envoke` is early-stage — see the
+README's [Status](https://github.com/Neirda24/envoke/blob/main/README.md#status)
+section for what's implemented and tested.
 
 ## Before you start
 
 - Read the [README](https://github.com/Neirda24/envoke/blob/main/README.md)
   for the pitch and [docs/design-notes.md](https://github.com/Neirda24/envoke/blob/main/docs/design-notes.md)
-  for the specific points this project departs from ondir on.
-- Read [CLAUDE.md](https://github.com/Neirda24/envoke/blob/main/CLAUDE.md)
   for the non-negotiable design principles (RE2-only matching, path-segment
   matching, no implicit enter/leave undo, trust-before-execution) and the
-  current status of what's implemented.
-- Don't start work on something that depends on a capability that isn't
-  built and tested yet — check CLAUDE.md's Status section first, and open
-  an issue if you want to work on something out of that order.
+  specific points this project departs from ondir on.
+- Proposing something that doesn't exist yet is exactly what issues are
+  for — see [How to help](#how-to-help) below. The thing to watch for is
+  *implementing* out of the codebase's own build order (matching engine,
+  then shell integration, then trust, then packaging): if what you want to
+  build depends on a piece that isn't solid yet, say so in the issue and
+  it'll get sequenced, rather than starting a PR that's blocked on
+  something else landing first.
+- If you're diving into the code itself, [CLAUDE.md](https://github.com/Neirda24/envoke/blob/main/CLAUDE.md)
+  has the full package-by-package architecture map — it's written for
+  whoever (human or AI) is editing this codebase locally, not required
+  reading just to open a PR.
 
 ## How to help
 
 - **Bug reports and small fixes** are always welcome without prior
   discussion — see [Reporting bugs](#reporting-bugs) below.
 - **Anything bigger** (a new capability, a new shell, a new packaging
-  target) — open an issue first so scope and approach can be agreed before
-  you write code. Check CLAUDE.md's Status section to see what's already
-  in progress.
+  target) — open an issue first so scope, approach, and where it fits in
+  the current build order can be agreed before you write code.
 - **Docs** are a good place to start if you're new to the codebase: `docs/`
   is a normal MkDocs site, no Go toolchain required to preview it.
 
@@ -54,6 +59,7 @@ Pick the command that matches what you changed:
 | Just want a quick loop while iterating | `dagger call -m .dagger fmt`, `vet`, `build`, or `test` individually |
 | `internal/shellinit` (shell hook generation) | `dagger call -m .dagger test-shell-bash` (swap in `zsh`/`fish`/`tcsh`/`powershell`) — each spins up a container with only that one interpreter installed, so nothing silently skips for lack of a binary |
 | `.github/workflows/*.yml` | `dagger -m .dagger call zizmor` and `dagger -m .dagger call actions-up` (see below) |
+| `.github/ISSUE_TEMPLATE/`, `.github/DISCUSSION_TEMPLATE/`, or any other YAML under `.github/` | `dagger call -m .dagger yaml-lint` (also runs as part of the full `dagger check -m .dagger`) |
 | `docs/` or `mkdocs.yml` | `mkdocs serve` or `dagger -m ./.dagger call docs up --ports 8000:8000` (see [Previewing documentation](#previewing-documentation-changes)) |
 | `.dagger/main.go` itself | No dedicated check yet — build it manually (`docker run` against the pinned Go image, or `dagger develop -m .dagger` to confirm it still generates) |
 
@@ -126,6 +132,31 @@ dagger -m ./.dagger call docs up --ports 8000:8000
 - Static, dependency-free binaries — no cgo, no new imports unless the
   change genuinely requires one (discuss in the issue/PR first).
 
+## Breaking changes
+
+A change is breaking if an existing setup stops working, or starts behaving
+differently, without the user changing anything on their end. Concretely,
+that covers:
+
+- Config file syntax: block keywords (`enter`/`leave`), pattern syntax,
+  `~`/env-var expansion rules.
+- The CLI surface: subcommand names, flags, positional arguments, and exit
+  codes a script might branch on.
+- What a matched script sees: the `ENVOKE_DIR`/`ENVOKE_TYPE`/`ENVOKE_MATCH`/
+  `ENVOKE_MATCH_N` env vars — their names, when they're set, what they
+  contain.
+- Generated shell hook output (`envoke shell-init <shell>`), if the change
+  alters what an already-installed hook does.
+- The trust store's format or location (`envoke allow`), if the change
+  silently invalidates or relocates existing trust records.
+
+Not breaking: anything under `internal/` (no stable public API is committed
+to outside this module), behavior-neutral refactors, new opt-in
+flags/blocks that don't change existing behavior when unused, doc wording.
+
+If your PR is breaking, say so in the PR description — there's a checkbox
+for it — and explain the migration path, if there is one.
+
 ## Submitting changes
 
 1. Open an issue first for anything beyond a small fix, so scope and
@@ -136,6 +167,8 @@ dagger -m ./.dagger call docs up --ports 8000:8000
    and confirm everything passes.
 4. Describe *why* in the PR description, not just what changed — the "why"
    is what reviewers and future contributors need most.
+5. Flag whether the change is breaking (see [Breaking changes](#breaking-changes)
+   above) in the PR description.
 
 ## Reporting bugs
 

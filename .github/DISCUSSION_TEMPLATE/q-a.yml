@@ -1,0 +1,22 @@
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before asking, check the [docs](https://neirda24.github.io/envoke/) and
+        [README](https://github.com/Neirda24/envoke/blob/main/README.md) — your question
+        might already be answered there.
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Config / setup context
+      description: Relevant `enter`/`leave` blocks, shell, OS — whatever's relevant to your question.
+      render: shell
+    validations:
+      required: false

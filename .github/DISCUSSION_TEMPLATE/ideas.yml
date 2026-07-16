@@ -1,0 +1,20 @@
+labels: ["idea"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is for early brainstorming — no commitment needed to write here. Once an idea
+        firms up, it can graduate to a
+        [feature request issue](https://github.com/Neirda24/envoke/issues/new/choose).
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+    validations:
+      required: true
+  - type: textarea
+    id: motivation
+    attributes:
+      label: What prompted this?
+    validations:
+      required: false

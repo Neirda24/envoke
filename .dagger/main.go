@@ -23,7 +23,8 @@ const (
 	// renovate: datasource=docker
 	goreleaserImage = "goreleaser/goreleaser:v2.17.0@sha256:054eefd282c02233a2556ce2d1a60cd2f51dc565ffc2520dc38b5deb4dd1ad30"
 	// renovate: datasource=docker
-	pythonImage = "python:3.14-slim@sha256:d3400aa122fa42cf0af0dbe8ec3091b047eac5c8f7e3539f7135e86d855dc015"
+	pythonImage     = "python:3.14-slim@sha256:d3400aa122fa42cf0af0dbe8ec3091b047eac5c8f7e3539f7135e86d855dc015"
+	yamllintVersion = "1.37.1"
 	// zizmorImage intentionally tracks :latest, not a pinned tag — no renovate hint.
 	zizmorImage = "ghcr.io/zizmorcore/zizmor:latest"
 	// renovate: datasource=docker
@@ -93,6 +94,14 @@ func (m *Envoke) docsBase() *dagger.Container {
 		WithExec([]string{"pip", "install", "--no-cache-dir", "-r", "/tmp/requirements.txt"})
 }
 
+// yamllintBase installs yamllint on top of the pinned Python image, kept
+// separate from docsBase so this layer caches independently of
+// docs/requirements.txt edits.
+func (m *Envoke) yamllintBase() *dagger.Container {
+	return dag.Container().From(pythonImage).
+		WithExec([]string{"pip", "install", "--no-cache-dir", "yamllint==" + yamllintVersion})
+}
+
 // shellinitTest runs the shellinit package's tests (which drive a real
 // interpreter end to end rather than string-match generated scripts) inside
 // the given container.
@@ -160,6 +169,20 @@ func (m *Envoke) Lint(ctx context.Context) error {
 		WithEnvVariable("GOTOOLCHAIN", "auto").
 		WithExec([]string{"go", "install", golangciLintPath}).
 		WithExec([]string{"golangci-lint", "run", "./..."}).
+		Sync(ctx)
+	return err
+}
+
+// YamlLint checks the syntax of every YAML file under .github — workflows,
+// issue forms, discussion templates, the issue-template config — with the
+// relaxed profile (style warnings like line length don't fail the check;
+// real mistakes like a bad indent or a duplicate key do). Catches a broken
+// issue-form field before it silently breaks GitHub's "New issue" picker.
+//
+// +check
+func (m *Envoke) YamlLint(ctx context.Context) error {
+	_, err := m.withSource(m.yamllintBase()).
+		WithExec([]string{"yamllint", "-d", "relaxed", ".github"}).
 		Sync(ctx)
 	return err
 }
