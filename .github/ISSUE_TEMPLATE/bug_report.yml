@@ -1,0 +1,65 @@
+name: Bug report
+description: Something in envoke isn't behaving as documented.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. See [CONTRIBUTING.md](https://github.com/Neirda24/envoke/blob/main/CONTRIBUTING.md#reporting-bugs)
+        for what's most helpful to include.
+  - type: textarea
+    id: config
+    attributes:
+      label: Config block
+      description: The `enter`/`leave` block that triggers the problem. Redact anything sensitive.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: from-to
+    attributes:
+      label: from / to paths
+      description: The directories involved in the transition.
+      placeholder: "from: /home/me/project  to: /home/me/project/sub"
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: envoke version
+      description: Output of `envoke version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: shell
+    attributes:
+      label: Shell
+      options:
+        - bash
+        - zsh
+        - fish
+        - tcsh
+        - PowerShell
+        - other / not shell-related
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS / platform
+      placeholder: "e.g. macOS 15, Ubuntu 24.04"
+    validations:
+      required: true

@@ -1,0 +1,34 @@
+name: Feature request
+description: Propose a new capability, shell, or packaging target.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Per [CONTRIBUTING.md](https://github.com/Neirda24/envoke/blob/main/CONTRIBUTING.md#how-to-help),
+        anything beyond a small fix should be scoped here before code is written. Proposing
+        something that doesn't exist yet is exactly what this is for — if it depends on a
+        piece that isn't built yet (see the README's
+        [Status](https://github.com/Neirda24/envoke/blob/main/README.md#status) section),
+        that's fine, it'll just get sequenced accordingly.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: What are you trying to do that envoke doesn't support today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: How would this work? Feel free to sketch config syntax, CLI flags, etc.
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false

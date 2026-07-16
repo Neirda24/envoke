@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Neirda24/envoke/security/advisories/new
+    about: Please report security issues privately instead of opening a public issue — see SECURITY.md.
+  - name: Questions & usage help
+    url: https://github.com/Neirda24/envoke/discussions/categories/q-a
+    about: Ask usage questions in Discussions instead of opening an issue.
+  - name: Ideas / brainstorming
+    url: https://github.com/Neirda24/envoke/discussions/categories/ideas
+    about: Not ready to write a formal feature request? Discuss it first.
