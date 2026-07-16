@@ -45,5 +45,6 @@ nav:
   - Configuration: configuration.md
   - Trust Model: trust.md
   - Debugging: debugging.md
+  - Uninstalling: uninstall.md
   - Design Notes: design-notes.md
   - Contributing: contributing.md
