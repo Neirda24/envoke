@@ -508,6 +508,180 @@ func TestRun_AllowPrintsLineNumberPerBlock(t *testing.T) {
 	}
 }
 
+func TestRun_AllowFirstTimeShowsFullDump(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /a\n    echo hi\n")
+
+	stdout, _, code := runFor(t, "allow", "--yes")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "review each block below") || !strings.Contains(stdout, "echo hi") {
+		t.Errorf("expected full block dump on first-time allow, got %q", stdout)
+	}
+	if strings.Contains(stdout, "changed since it was last trusted") || strings.Contains(stdout, "unchanged since it was last trusted") {
+		t.Errorf("first-time allow must not mention a diff or unchanged state, got %q", stdout)
+	}
+}
+
+func TestRun_AllowReallowUnchangedSkipsPromptAndReview(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /a\n    echo hi\n")
+
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("first allow failed")
+	}
+
+	// Empty stdin would abort under the default y/N prompt -- if the
+	// unchanged case still prompted, this would fail with code 1.
+	stdout, stderr, code := runForStdin(t, "", "allow")
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q, want 0", code, stderr)
+	}
+	if !strings.Contains(stdout, "unchanged since it was last trusted") {
+		t.Errorf("expected unchanged-state message, got %q", stdout)
+	}
+	if strings.Contains(stdout, "review each block below") {
+		t.Errorf("unchanged re-allow must not re-dump the full config, got %q", stdout)
+	}
+	if strings.Contains(stdout, "envoke: trusted") {
+		t.Errorf("unchanged re-allow should report the already-trusted state, not re-announce trust, got %q", stdout)
+	}
+
+	debugOut, _, dcode := runFor(t, "debug", "/", "/a")
+	if dcode != 0 {
+		t.Fatalf("debug exit code = %d, want 0", dcode)
+	}
+	if strings.Contains(debugOut, "NOT trusted") {
+		t.Errorf("expected config to remain trusted after an unchanged re-allow, got %q", debugOut)
+	}
+}
+
+func TestRun_AllowReallowChangedShowsDiffNotFullDump(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /a\n    echo hi\n")
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("first allow failed")
+	}
+
+	writeConfig(t, home, "enter /a\n    echo hi\n    echo new-line\n")
+
+	stdout, _, code := runFor(t, "allow", "--yes")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "changed since it was last trusted") {
+		t.Errorf("expected diff header on a changed re-allow, got %q", stdout)
+	}
+	if !strings.Contains(stdout, "+ "+"    echo new-line") {
+		t.Errorf("expected added line marked with '+ ', got %q", stdout)
+	}
+	if strings.Contains(stdout, "review each block below") {
+		t.Errorf("changed re-allow must show a diff, not the full block dump, got %q", stdout)
+	}
+	// The unchanged "echo hi" line must not be re-printed as changed.
+	if strings.Contains(stdout, "- "+"    echo hi") || strings.Contains(stdout, "+ "+"    echo hi") {
+		t.Errorf("unchanged line must not appear in the diff, got %q", stdout)
+	}
+}
+
+func TestRun_AllowReallowShowsRemovedAndAddedLines(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /a\n    echo old-line\n")
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("first allow failed")
+	}
+
+	writeConfig(t, home, "enter /a\n    echo new-line\n")
+
+	stdout, _, code := runFor(t, "allow", "--yes")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "- "+"    echo old-line") {
+		t.Errorf("expected removed line marked with '- ', got %q", stdout)
+	}
+	if !strings.Contains(stdout, "+ "+"    echo new-line") {
+		t.Errorf("expected added line marked with '+ ', got %q", stdout)
+	}
+}
+
+func TestRun_AllowReallowChangedStillHonorsAbort(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /a\n    echo hi\n")
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("first allow failed")
+	}
+
+	writeConfig(t, home, "enter /a\n    echo bye\n")
+
+	stdout, stderr, code := runForStdin(t, "n\n", "allow")
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr, "aborted") {
+		t.Errorf("expected abort on stderr, got %q", stderr)
+	}
+	if strings.Contains(stdout, "envoke: trusted") {
+		t.Errorf("must not report trusted after aborting a changed re-allow, got %q", stdout)
+	}
+
+	debugOut, _, dcode := runFor(t, "debug", "/", "/a")
+	if dcode != 0 {
+		t.Fatalf("debug exit code = %d, want 0", dcode)
+	}
+	if !strings.Contains(debugOut, "NOT trusted") {
+		t.Errorf("expected config to be untrusted after aborting a changed re-allow, got %q", debugOut)
+	}
+}
+
+func TestDiffLines(t *testing.T) {
+	tests := []struct {
+		name string
+		old  []string
+		new  []string
+		want []string
+	}{
+		{
+			name: "identical",
+			old:  []string{"a", "b", "c"},
+			new:  []string{"a", "b", "c"},
+			want: nil,
+		},
+		{
+			name: "single line added",
+			old:  []string{"a", "b"},
+			new:  []string{"a", "b", "c"},
+			want: []string{"+ c"},
+		},
+		{
+			name: "single line removed",
+			old:  []string{"a", "b", "c"},
+			new:  []string{"a", "b"},
+			want: []string{"- c"},
+		},
+		{
+			name: "single line changed in the middle",
+			old:  []string{"a", "b", "c"},
+			new:  []string{"a", "x", "c"},
+			want: []string{"- b", "+ x"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := diffLines(tt.old, tt.new)
+			if len(got) != len(tt.want) {
+				t.Fatalf("diffLines(%v, %v) = %v, want %v", tt.old, tt.new, got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("diffLines(%v, %v)[%d] = %q, want %q", tt.old, tt.new, i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestRun_DebugWrongArgCount(t *testing.T) {
 	_, _, code := runFor(t, "debug", "/only-one")
 	if code != 2 {

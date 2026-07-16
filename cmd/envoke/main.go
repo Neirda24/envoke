@@ -164,8 +164,23 @@ func cmdShellHook(args []string, stdout, stderr io.Writer) int {
 // blocks matched against it from now on until it's edited again. With no
 // path argument it trusts the config found by config.Locate.
 //
-// By default this reads a y/N confirmation from stdin after printing the
-// blocks for review, and aborts (without calling trust.Allow) on anything
+// What gets shown for review depends on whether there's a prior approval to
+// compare against (trust.PreviousContent):
+//   - No prior approval: the full block dump (printBlocksForReview), same as
+//     always -- there's nothing to diff against, so a full read-through is
+//     the right thing for a first-time trust.
+//   - Prior approval, content unchanged: nothing to review at all. Reports
+//     that the config is already trusted and returns immediately, without
+//     prompting or touching the trust record again -- see the comment at the
+//     call site for why.
+//   - Prior approval, content changed: a labeled +/- line diff
+//     (printDiff/diffLines) against the previously-approved content, instead
+//     of the full dump -- this is the actual point of the feature: reviewing
+//     a small edit to an already-trusted config shouldn't require re-reading
+//     the whole file.
+//
+// In the first and third cases, this then reads a y/N confirmation from
+// stdin by default, and aborts (without calling trust.Allow) on anything
 // other than "y"/"yes" (case-insensitive), including empty input or EOF.
 // --yes/-y skips the prompt entirely, for scripts/CI. The flag may appear
 // anywhere in args, before or after the optional path.
@@ -209,7 +224,36 @@ func cmdAllow(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 		return 1
 	}
 
-	printBlocksForReview(stdout, path, cfg.Blocks)
+	current, err := os.ReadFile(path)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		return 1
+	}
+	previous, hadPrevious, err := trust.PreviousContent(path)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		return 1
+	}
+
+	if hadPrevious && previous == string(current) {
+		// The file wasn't actually edited since it was last approved --
+		// trust.IsTrusted already reports this config as trusted, so there's
+		// nothing to review and nothing new to approve. Re-printing the full
+		// block dump (or even just re-running the y/N prompt) would be pure
+		// busywork: the user would be asked to confirm that nothing changed,
+		// for a config they already reviewed and approved verbatim. Report
+		// the state honestly and return without prompting or re-recording
+		// trust -- --yes is a no-op here for the same reason: there was
+		// never a prompt in this branch for it to skip.
+		_, _ = fmt.Fprintf(stdout, "envoke: %s is unchanged since it was last trusted -- nothing to review\n", path)
+		return 0
+	}
+
+	if hadPrevious {
+		printDiff(stdout, path, previous, string(current))
+	} else {
+		printBlocksForReview(stdout, path, cfg.Blocks)
+	}
 
 	if !yes {
 		_, _ = fmt.Fprint(stdout, "envoke: trust and run these blocks on every matching cd? [y/N] ")
@@ -234,7 +278,9 @@ func cmdAllow(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 // can't be run as a blind habitual reflex (see CLAUDE.md's
 // trust-before-execution principle and the audit this addresses): a user
 // approving a config gets the actual code that will run on every matching
-// `cd`, not just a hash getting recorded silently.
+// `cd`, not just a hash getting recorded silently. Used for a first-time
+// trust, where there's no prior approval to diff against (see printDiff for
+// the re-allow-after-an-edit case).
 func printBlocksForReview(stdout io.Writer, path string, blocks []config.Block) {
 	_, _ = fmt.Fprintf(stdout, "envoke: about to trust %s -- review each block below before confirming:\n\n", path)
 	if len(blocks) == 0 {
@@ -249,6 +295,79 @@ func printBlocksForReview(stdout io.Writer, path string, blocks []config.Block) 
 		}
 		_, _ = fmt.Fprintln(stdout)
 	}
+}
+
+// printDiff prints a labeled +/- line diff (see diffLines) between the
+// previously-approved content and the config's current content, in place of
+// printBlocksForReview's full dump, when there's a prior approval to compare
+// against. Only the lines that actually changed are shown, so re-approving
+// a config after a small edit doesn't require re-reading the entire file to
+// spot what's different -- the whole point of this feature (see CLAUDE.md's
+// Status entry on diff-on-allow).
+func printDiff(stdout io.Writer, path, previous, current string) {
+	_, _ = fmt.Fprintf(stdout, "envoke: %s changed since it was last trusted -- here's what's different:\n\n", path)
+	for _, line := range diffLines(strings.Split(previous, "\n"), strings.Split(current, "\n")) {
+		_, _ = fmt.Fprintln(stdout, line)
+	}
+	_, _ = fmt.Fprintln(stdout)
+}
+
+// diffLines computes a simple LCS-based (longest common subsequence) line
+// diff between old and new, returning only the lines that differ, each
+// prefixed "- " (present in old, removed) or "+ " (present in new, added)
+// -- the same convention as `diff -u`/git's unified diff output, so it reads
+// immediately without an explanation. Lines common to both are aligned via
+// the LCS and omitted entirely rather than printed as context, so an edit
+// that only touches one block doesn't drag the rest of an unchanged config
+// into the output -- that's the actual problem this feature solves (see
+// CLAUDE.md's Status entry). This is a classic O(len(old)*len(new)) DP
+// table, not a full Myers diff: config files are small (a handful of
+// blocks), so the simpler algorithm is both correct and fast enough, and
+// needs no dependency beyond the stdlib slices/strings already in use here
+// (see CLAUDE.md's zero-non-stdlib-dependency rule).
+func diffLines(oldLines, newLines []string) []string {
+	n, m := len(oldLines), len(newLines)
+	// lcs[i][j] = length of the longest common subsequence of
+	// oldLines[i:] and newLines[j:].
+	lcs := make([][]int, n+1)
+	for i := range lcs {
+		lcs[i] = make([]int, m+1)
+	}
+	for i := n - 1; i >= 0; i-- {
+		for j := m - 1; j >= 0; j-- {
+			switch {
+			case oldLines[i] == newLines[j]:
+				lcs[i][j] = lcs[i+1][j+1] + 1
+			case lcs[i+1][j] >= lcs[i][j+1]:
+				lcs[i][j] = lcs[i+1][j]
+			default:
+				lcs[i][j] = lcs[i][j+1]
+			}
+		}
+	}
+
+	var out []string
+	i, j := 0, 0
+	for i < n && j < m {
+		switch {
+		case oldLines[i] == newLines[j]:
+			i++
+			j++
+		case lcs[i+1][j] >= lcs[i][j+1]:
+			out = append(out, "- "+oldLines[i])
+			i++
+		default:
+			out = append(out, "+ "+newLines[j])
+			j++
+		}
+	}
+	for ; i < n; i++ {
+		out = append(out, "- "+oldLines[i])
+	}
+	for ; j < m; j++ {
+		out = append(out, "+ "+newLines[j])
+	}
+	return out
 }
 
 // cmdDebug prints which enter/leave blocks would fire for a directory
