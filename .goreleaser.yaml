@@ -31,6 +31,29 @@ archives:
       - goos: windows
         formats: [zip]
 
+# .deb/.rpm packages for Linux, built by the nfpm packager nfpm ships bundled
+# inside the goreleaser Docker image already used to run this whole config.
+# goreleaser only feeds nfpm the linux/{amd64,arm64} artifacts from the
+# `envoke` build above -- darwin/windows binaries are skipped automatically
+# since a deb/rpm doesn't make sense for either. These are release assets
+# only (attached to the GitHub Release, included in checksums.txt below),
+# not a hosted apt/yum repository -- installing means downloading the
+# package manually and running dpkg/rpm, same as the manual-download path
+# in release.footer.
+nfpms:
+  - id: envoke
+    package_name: envoke
+    file_name_template: "{{ .ConventionalFileName }}"
+    vendor: Neirda24
+    homepage: "https://github.com/Neirda24/envoke"
+    maintainer: "Adrien Roches <adrien@roc-it.tech>"
+    description: "Runs shell scripts when you cd into or out of a directory"
+    license: MIT
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/bin
+
 checksum:
   name_template: "checksums.txt"
 
@@ -65,6 +88,9 @@ release:
     ## Install / upgrade
 
     - **Homebrew** (macOS/Linux): `brew install neirda24/tap/envoke`, or `brew upgrade envoke` if already installed.
+    - **Scoop** (Windows): `scoop bucket add neirda24 https://github.com/Neirda24/scoop-bucket`, then `scoop install envoke`, or `scoop update envoke` if already installed.
+    - **Debian/Ubuntu**: download the `.deb` from the Assets above and `sudo dpkg -i envoke_*.deb`.
+    - **Fedora/RHEL**: download the `.rpm` from the Assets above and `sudo rpm -i envoke_*.rpm`.
     - **Manual download**: grab the archive for your OS/arch from the Assets above, extract it, and put `envoke` on your `PATH`. Verify against `checksums.txt`.
     - **Go toolchain**: `go install github.com/Neirda24/envoke/cmd/envoke@{{ .Tag }}`
 
@@ -90,9 +116,11 @@ homebrew_casks:
       # Deliberately not GITHUB_TOKEN (the default this would otherwise
       # inherit) -- that's scoped to envoke only. This push needs a
       # separate, narrower credential with write access to homebrew-tap
-      # specifically: a short-lived GitHub App installation token minted
-      # per run (see .dagger/main.go's Publish and security_audit.md's
-      # Finding 6 for why this replaced a long-lived cross-repo PAT).
+      # (and, since this same token is reused below for scoops.repository,
+      # scoop-bucket) specifically: a short-lived GitHub App installation
+      # token minted per run (see .dagger/main.go's Publish and
+      # security_audit.md's Finding 6 for why this replaced a long-lived
+      # cross-repo PAT).
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     directory: Casks
     homepage: "https://github.com/Neirda24/envoke"
@@ -103,3 +131,18 @@ homebrew_casks:
           if OS.mac?
             system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/envoke"]
           end
+
+scoops:
+  - name: envoke
+    repository:
+      owner: Neirda24
+      name: scoop-bucket
+      # Same GitHub App installation token as homebrew_casks.repository
+      # above, just scoped to an additional repo (scoop-bucket) rather than
+      # a second App/secret -- see that block's comment for the full
+      # rationale on why this isn't the ambient GITHUB_TOKEN.
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: bucket
+    homepage: "https://github.com/Neirda24/envoke"
+    description: "Runs shell scripts when you cd into or out of a directory"
+    license: MIT

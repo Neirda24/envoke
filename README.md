@@ -76,22 +76,21 @@ Full point-by-point comparison in [Design Notes](https://neirda24.github.io/envo
 
 ```sh
 brew install neirda24/tap/envoke                          # Homebrew (macOS/Linux)
+scoop bucket add neirda24 https://github.com/Neirda24/scoop-bucket && scoop install envoke  # Scoop (Windows)
 go install github.com/Neirda24/envoke/cmd/envoke@latest   # Go toolchain
 ```
 
-Or grab a prebuilt binary from [Releases](https://github.com/Neirda24/envoke/releases)
+Or grab a prebuilt binary, `.deb`, or `.rpm` from [Releases](https://github.com/Neirda24/envoke/releases)
 for macOS/Linux/Windows (amd64/arm64) — each release's `checksums.txt` is
 [cosign](https://docs.sigstore.dev/cosign/)-signed, see the release notes to verify.
-
-Scoop (Windows) and `.deb`/`.rpm` packages are planned but not yet published.
 
 ## Status
 
 Early development. The matching engine, all five shell integrations, the
 trust mechanism, and `envoke debug` are implemented and tested end-to-end
-against real interpreters. Packaging is partially done (Homebrew and GitHub
-Releases are live; Scoop and Linux packages aren't yet). See
-[CLAUDE.md](CLAUDE.md) for exact scope and architecture.
+against real interpreters. Packaging is live: Homebrew, Scoop, GitHub
+Releases, and `.deb`/`.rpm` packages. See [CLAUDE.md](CLAUDE.md) for exact
+scope and architecture.
 
 ## Contributing
 

@@ -4,10 +4,12 @@
 
 ```sh
 brew install neirda24/tap/envoke                          # Homebrew (macOS/Linux)
+scoop bucket add neirda24 https://github.com/Neirda24/scoop-bucket && scoop install envoke  # Scoop (Windows)
 go install github.com/Neirda24/envoke/cmd/envoke@latest   # Go toolchain
 ```
 
-Or download a prebuilt binary from [GitHub Releases](https://github.com/Neirda24/envoke/releases)
+Or download a prebuilt binary, `.deb`, or `.rpm` from
+[GitHub Releases](https://github.com/Neirda24/envoke/releases)
 for macOS/Linux/Windows (amd64/arm64), built with [goreleaser](https://goreleaser.com/).
 Each release's `checksums.txt` is signed keylessly with
 [cosign](https://docs.sigstore.dev/cosign/) — see the release notes for the

@@ -21,10 +21,12 @@ bash/zsh/fish/tcsh/PowerShell, the `envoke allow` trust mechanism, `envoke
 debug` dry-run diagnostics, and a Dagger-based CI pipeline (`.dagger/`) that
 also audits the GitHub Actions workflows themselves (zizmor, actions-up).
 
-Packaging is partially done: GitHub Releases, Homebrew tap, and
-tag-triggered release CI are live and have been exercised against real
-tagged releases. A Scoop bucket and `.deb`/`.rpm` (nfpm) packaging aren't
-wired into `.goreleaser.yaml` yet.
+Packaging: GitHub Releases, Homebrew tap, and tag-triggered release CI are
+live and have been exercised against real tagged releases. A Scoop bucket
+and `.deb`/`.rpm` (nfpm) packaging are wired into `.goreleaser.yaml` but not
+yet exercised against a real release — pending the one-time manual setup
+in Packaging below (creating the `scoop-bucket` repo and granting the
+existing tap GitHub App access to it).
 
 Build in the order the codebase already establishes — matching engine, then
 shell integration, then trust, then packaging — rather than adding polish
@@ -183,18 +185,24 @@ public API to commit to yet):
 
 `Snapshot` runs `goreleaser release --snapshot --clean` (cross-compiles for
 linux/darwin/windows × amd64/arm64, never touches GitHub — safe to run
-anytime). `Publish` runs `goreleaser release --clean` against a pushed `v*`
-tag to cut a real GitHub Release and push the Homebrew cask
-(`homebrew_casks:`, not the deprecated `brews:` key) to
-`Neirda24/homebrew-tap`. The tap push uses a short-lived GitHub App
-installation token scoped to that one repo (minted per-run in
+anytime; this is what exercises the `nfpms:` deb/rpm build locally, since
+those don't need any external repo). `Publish` runs `goreleaser release
+--clean` against a pushed `v*` tag to cut a real GitHub Release (attaching
+the `.deb`/`.rpm` packages as release assets alongside the archives) and
+push the Homebrew cask (`homebrew_casks:`, not the deprecated `brews:` key)
+to `Neirda24/homebrew-tap` plus the Scoop manifest (`scoops:`) to
+`Neirda24/scoop-bucket`. Both pushes share one short-lived GitHub App
+installation token scoped to just those two repos (minted per-run in
 `release.yml`, not a long-lived cross-repo PAT) — the ambient per-job
-`GITHUB_TOKEN` only ever needs write access to `envoke` itself.
-`release.footer` in `.goreleaser.yaml` appends install/upgrade instructions
-(Homebrew, manual download, `go install`) to every release's notes — update
-this template, not the README, if a new install method ships. `goreleaser`
-itself only ever runs inside the Dagger container, never installed on the
-dev machine.
+`GITHUB_TOKEN` only ever needs write access to `envoke` itself. Unlike the
+Homebrew tap, `scoop-bucket` isn't provisioned yet — see the repo's
+`.goreleaser.yaml` for what a first `Publish` run needs the App's
+installation to already have access to. `release.footer` in
+`.goreleaser.yaml` appends install/upgrade instructions (Homebrew, Scoop,
+`.deb`/`.rpm`, manual download, `go install`) to every release's notes —
+update this template, not the README, if a new install method ships.
+`goreleaser` itself only ever runs inside the Dagger container, never
+installed on the dev machine.
 
 ## Go conventions
 
