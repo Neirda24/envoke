@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 
 	"github.com/Neirda24/envoke/internal/config"
@@ -23,6 +24,12 @@ import (
 
 // version is overridden at build time via -ldflags "-X main.version=...".
 var version = "dev"
+
+// commit is overridden at build time via -ldflags "-X main.commit=...".
+var commit = "unknown"
+
+// date is overridden at build time via -ldflags "-X main.date=...".
+var date = "unknown"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -39,7 +46,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	switch args[0] {
 	case "version":
-		_, _ = fmt.Fprintln(stdout, "envoke "+version)
+		printVersion(stdout)
 		return 0
 	case "shell-init":
 		return cmdShellInit(args[1:], stdout, stderr)
@@ -57,6 +64,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		usage(stderr)
 		return 2
 	}
+}
+
+// printVersion prints the version, commit, and build date (as injected by
+// goreleaser's ldflags -- see .goreleaser.yaml -- or "dev"/"unknown" for a
+// local `go build`/`go test`, which never sets them) plus the Go toolchain
+// and OS/arch the binary was built with, on two lines.
+func printVersion(stdout io.Writer) {
+	_, _ = fmt.Fprintf(stdout, "envoke %s (commit %s, built %s)\n", version, commit, date)
+	_, _ = fmt.Fprintf(stdout, "%s %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
 }
 
 func cmdShellInit(args []string, stdout, stderr io.Writer) int {
@@ -298,7 +314,7 @@ func usage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, `envoke - run shell scripts when you cd into or out of a directory
 
 Usage:
-  envoke version                                    print version and exit
+  envoke version                                    print version, commit, build date, and Go/OS/arch info, then exit
   envoke shell-init <bash|zsh|fish|tcsh|powershell>  print shell hook code to eval/source
   envoke allow [path]                                trust a config file (default: the located config)
   envoke debug <from> <to>                           print which blocks would fire for a directory change, without running them
