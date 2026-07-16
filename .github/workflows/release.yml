@@ -12,29 +12,58 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     # id-token: write is needed for cosign's keyless (Sigstore/Fulcio OIDC)
-    # signing of checksums.txt (see .goreleaser.yaml's signs: block) — scoped
-    # to this job, not the workflow, matching this repo's minimal-permissions
-    # pattern (see docs.yml's deploy job). Job-level permissions replace the
-    # workflow-level default rather than adding to it, so contents: read is
-    # repeated here even though it matches the workflow default.
+    # signing of checksums.txt (see .goreleaser.yaml's signs: block).
+    # contents: write is needed for the ambient GITHUB_TOKEN to create the
+    # envoke release itself -- the homebrew-tap push uses a separate,
+    # narrower-scoped GitHub App installation token instead (see the
+    # create-github-app-token step below and security_audit.md's Finding 6),
+    # so this job never holds a credential with write access to more than
+    # one repo at a time. Both permissions scoped to this job, not the
+    # workflow, matching this repo's minimal-permissions pattern (see
+    # docs.yml's deploy job). Job-level permissions replace the
+    # workflow-level default rather than adding to it, so contents is
+    # repeated here even though read vs. write differs from the default.
     permissions:
-      contents: read
+      contents: write
       id-token: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           persist-credentials: false
+      # Mints a short-lived (~1h) installation token scoped only to
+      # homebrew-tap, via a GitHub App installed on that one repo alone --
+      # replaces the old long-lived PUBLISH_HOMEBREW_TAP PAT that had write
+      # access to both envoke and homebrew-tap (security_audit.md's
+      # Finding 6). TAP_APP_ID/TAP_APP_PRIVATE_KEY identify the App itself;
+      # nothing here can reach envoke.
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: tap-token
+        with:
+          app-id: ${{ secrets.TAP_APP_ID }}
+          private-key: ${{ secrets.TAP_APP_PRIVATE_KEY }}
+          owner: Neirda24
+          repositories: homebrew-tap
+          # Explicit, on top of the App's own configured permissions (zizmor's
+          # github-app audit flags a bare create-github-app-token call as
+          # "dangerous" otherwise): without this, the minted token inherits
+          # whatever permissions the App has at the time, not just what this
+          # workflow actually needs. This caps it at Contents: write even if
+          # the App is ever granted more later.
+          permission-contents: write
       - uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
         with:
           version: "0.21.7"
           module: .dagger
-          # ACTIONS_ID_TOKEN_REQUEST_URL/ACTIONS_ID_TOKEN_REQUEST_TOKEN are
+          # GITHUB_TOKEN (ambient, contents: write above) authenticates the
+          # envoke release itself. ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN are
           # injected by the runner into this step's process environment
           # automatically (no secrets.* wiring needed) because the job has
-          # id-token: write above; env:// reads them from here and forwards
-          # them into the Dagger-executed container as secrets (see
-          # .dagger/main.go's Publish for why that forwarding is necessary).
-          call: publish --github-token=env://PUBLISH_HOMEBREW_TAP --actions-idtoken-request-url=env://ACTIONS_ID_TOKEN_REQUEST_URL --actions-idtoken-request-token=env://ACTIONS_ID_TOKEN_REQUEST_TOKEN
+          # id-token: write above, and are forwarded for cosign's keyless
+          # signing (see .dagger/main.go's Publish for why that forwarding
+          # is necessary). HOMEBREW_TAP_GITHUB_TOKEN is the App token minted
+          # above, forwarded for the homebrew-tap push only.
+          call: publish --github-token=env://GITHUB_TOKEN --actions-idtoken-request-url=env://ACTIONS_ID_TOKEN_REQUEST_URL --actions-idtoken-request-token=env://ACTIONS_ID_TOKEN_REQUEST_TOKEN --homebrew-tap-token=env://HOMEBREW_TAP_GITHUB_TOKEN
         env:
-          PUBLISH_HOMEBREW_TAP: ${{ secrets.PUBLISH_HOMEBREW_TAP }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ steps.tap-token.outputs.token }}

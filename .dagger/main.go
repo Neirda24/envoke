@@ -327,9 +327,9 @@ func (m *Envoke) Snapshot(ctx context.Context) (*dagger.Directory, error) {
 // Publish builds and publishes a real GitHub Release via goreleaser:
 // cross-platform archives plus a checksums.txt attached to the current git
 // tag, keylessly signed with cosign (see .goreleaser.yaml's signs: block).
-// Requires a GITHUB_TOKEN secret with write access to
-// github.com/Neirda24/envoke, and a tag checked out in Source (goreleaser
-// release refuses to run otherwise).
+// githubToken needs write access to github.com/Neirda24/envoke only (the
+// ambient per-run GITHUB_TOKEN covers this) — a tag must be checked out in
+// Source, goreleaser release refuses to run otherwise.
 //
 // actionsIDTokenRequestURL/actionsIDTokenRequestToken are GitHub Actions'
 // OIDC token-minting endpoint and its bearer credential
@@ -340,12 +340,21 @@ func (m *Envoke) Snapshot(ctx context.Context) (*dagger.Directory, error) {
 // forwarded explicitly for cosign's GitHub Actions ambient-credential
 // detection to find them and mint a Fulcio certificate. Threaded the same
 // way as githubToken (see release.yml's `call: publish
-// --github-token=... --actions-id-token-request-url=env://... `).
-func (m *Envoke) Publish(ctx context.Context, githubToken *dagger.Secret, actionsIDTokenRequestURL *dagger.Secret, actionsIDTokenRequestToken *dagger.Secret) (string, error) {
+// --github-token=... --actions-idtoken-request-url=env://... `).
+//
+// homebrewTapToken authenticates only the homebrew_casks push to
+// Neirda24/homebrew-tap (.goreleaser.yaml's homebrew_casks.repository.token
+// override) — deliberately a separate, narrower-scoped credential from
+// githubToken (see security_audit.md's Finding 6): a short-lived GitHub App
+// installation token scoped to homebrew-tap alone, minted per run by
+// release.yml's create-github-app-token step, rather than the old
+// long-lived PAT with write access to both repos.
+func (m *Envoke) Publish(ctx context.Context, githubToken *dagger.Secret, actionsIDTokenRequestURL *dagger.Secret, actionsIDTokenRequestToken *dagger.Secret, homebrewTapToken *dagger.Secret) (string, error) {
 	return m.withSource(m.goreleaserBase()).
 		WithSecretVariable("GITHUB_TOKEN", githubToken).
 		WithSecretVariable("ACTIONS_ID_TOKEN_REQUEST_URL", actionsIDTokenRequestURL).
 		WithSecretVariable("ACTIONS_ID_TOKEN_REQUEST_TOKEN", actionsIDTokenRequestToken).
+		WithSecretVariable("HOMEBREW_TAP_GITHUB_TOKEN", homebrewTapToken).
 		WithExec([]string{"goreleaser", "release", "--clean"}).
 		Stdout(ctx)
 }
