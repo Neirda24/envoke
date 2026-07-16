@@ -32,6 +32,7 @@ See [Design Notes](design-notes.md) for the full, point-by-point comparison.
 - [Configuration](configuration.md) — the config file syntax, path patterns, and what a matched script sees.
 - [Trust Model](trust.md) — why `envoke allow` exists and how it works.
 - [Debugging](debugging.md) — inspect what would fire before trusting a config.
+- [Uninstalling](uninstall.md) — remove the shell hook and the binary, per install method.
 - [Design Notes](design-notes.md) — the specific points where envoke departs from ondir.
 
 ## License
