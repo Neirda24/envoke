@@ -9,6 +9,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -25,13 +26,15 @@ import (
 var version = "dev"
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, os.Stdin))
 }
 
 // run dispatches a subcommand, writing to the given streams instead of
 // os.Stdout/os.Stderr directly so it can be exercised in tests without
-// capturing process output.
-func run(args []string, stdout, stderr io.Writer) int {
+// capturing process output. stdin is threaded through for the one
+// subcommand that reads it (allow's confirmation prompt) rather than having
+// every subcommand accept a reader it ignores.
+func run(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 	if len(args) == 0 {
 		usage(stderr)
 		return 2
@@ -46,7 +49,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "shell-hook":
 		return cmdShellHook(args[1:], stdout, stderr)
 	case "allow":
-		return cmdAllow(args[1:], stdout, stderr)
+		return cmdAllow(args[1:], stdout, stderr, stdin)
 	case "debug":
 		return cmdDebug(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -143,10 +146,27 @@ func cmdShellHook(args []string, stdout, stderr io.Writer) int {
 
 // cmdAllow trusts a config file's current content, so shell-hook will run
 // blocks matched against it from now on until it's edited again. With no
-// argument it trusts the config found by config.Locate.
-func cmdAllow(args []string, stdout, stderr io.Writer) int {
+// path argument it trusts the config found by config.Locate.
+//
+// By default this reads a y/N confirmation from stdin after printing the
+// blocks for review, and aborts (without calling trust.Allow) on anything
+// other than "y"/"yes" (case-insensitive), including empty input or EOF.
+// --yes/-y skips the prompt entirely, for scripts/CI. The flag may appear
+// anywhere in args, before or after the optional path.
+func cmdAllow(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
+	yes := false
+	var positional []string
+	for _, a := range args {
+		switch a {
+		case "--yes", "-y":
+			yes = true
+		default:
+			positional = append(positional, a)
+		}
+	}
+
 	var path string
-	switch len(args) {
+	switch len(positional) {
 	case 0:
 		p, found, err := config.Locate()
 		if err != nil {
@@ -159,9 +179,9 @@ func cmdAllow(args []string, stdout, stderr io.Writer) int {
 		}
 		path = p
 	case 1:
-		path = args[0]
+		path = positional[0]
 	default:
-		_, _ = fmt.Fprintln(stderr, "usage: envoke allow [path]")
+		_, _ = fmt.Fprintln(stderr, "usage: envoke allow [--yes|-y] [path]")
 		return 2
 	}
 
@@ -174,6 +194,16 @@ func cmdAllow(args []string, stdout, stderr io.Writer) int {
 	}
 
 	printBlocksForReview(stdout, path, cfg.Blocks)
+
+	if !yes {
+		_, _ = fmt.Fprint(stdout, "envoke: trust and run these blocks on every matching cd? [y/N] ")
+		line, _ := bufio.NewReader(stdin).ReadString('\n')
+		answer := strings.ToLower(strings.TrimSpace(line))
+		if answer != "y" && answer != "yes" {
+			_, _ = fmt.Fprintln(stderr, "envoke: aborted, not trusted")
+			return 1
+		}
+	}
 
 	if err := trust.Allow(path); err != nil {
 		_, _ = fmt.Fprintln(stderr, "envoke:", err)
@@ -300,7 +330,7 @@ func usage(w io.Writer) {
 Usage:
   envoke version                                    print version and exit
   envoke shell-init <bash|zsh|fish|tcsh|powershell>  print shell hook code to eval/source
-  envoke allow [path]                                trust a config file (default: the located config)
+  envoke allow [--yes|-y] [path]                     trust a config file after reviewing and confirming it (default: the located config; --yes/-y skips the y/N prompt)
   envoke debug <from> <to>                           print which blocks would fire for a directory change, without running them
   envoke shell-hook [--shell <name>] <from> <to>      run blocks matching a directory change (internal, called by the shell hook)`)
 }

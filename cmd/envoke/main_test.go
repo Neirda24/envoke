@@ -10,8 +10,15 @@ import (
 
 func runFor(t *testing.T, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
+	return runForStdin(t, "", args...)
+}
+
+// runForStdin is like runFor but also feeds stdin content to run, for
+// exercising cmdAllow's confirmation prompt.
+func runForStdin(t *testing.T, stdin string, args ...string) (stdout, stderr string, code int) {
+	t.Helper()
 	var out, errBuf bytes.Buffer
-	code = run(args, &out, &errBuf)
+	code = run(args, &out, &errBuf, strings.NewReader(stdin))
 	return out.String(), errBuf.String(), code
 }
 
@@ -148,7 +155,7 @@ func TestRun_ShellHookTrustedMatchPrintsRenderedScript(t *testing.T) {
 enter /a
     echo hi
 `)
-	if _, _, code := runFor(t, "allow"); code != 0 {
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
 		t.Fatalf("allow failed")
 	}
 
@@ -170,7 +177,7 @@ func TestRun_ShellHookEditingConfigAfterAllowRevokesTrust(t *testing.T) {
 enter /a
     echo hi
 `)
-	if _, _, code := runFor(t, "allow"); code != 0 {
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
 		t.Fatalf("allow failed")
 	}
 
@@ -233,7 +240,7 @@ func TestRun_ShellHookShellFlagSelectsExportSyntax(t *testing.T) {
 enter /a
     echo hi
 `)
-	if _, _, code := runFor(t, "allow"); code != 0 {
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
 		t.Fatalf("allow failed")
 	}
 
@@ -252,7 +259,7 @@ func TestRun_ShellHookNoShellFlagDefaultsToPosix(t *testing.T) {
 enter /a
     echo hi
 `)
-	if _, _, code := runFor(t, "allow"); code != 0 {
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
 		t.Fatalf("allow failed")
 	}
 
@@ -269,7 +276,7 @@ func TestRun_AllowLocatedConfig(t *testing.T) {
 	home := isolateHome(t)
 	writeConfig(t, home, "enter /a\n    echo hi\n")
 
-	stdout, stderr, code := runFor(t, "allow")
+	stdout, stderr, code := runFor(t, "allow", "--yes")
 	if code != 0 {
 		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
 	}
@@ -285,7 +292,7 @@ func TestRun_AllowExplicitPath(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	_, stderr, code := runFor(t, "allow", path)
+	_, stderr, code := runFor(t, "allow", "--yes", path)
 	if code != 0 {
 		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
 	}
@@ -323,6 +330,135 @@ func TestRun_AllowWrongArgCount(t *testing.T) {
 	}
 }
 
+func TestRun_AllowYesFlagWrongArgCountStillErrors(t *testing.T) {
+	_, _, code := runForStdin(t, "", "allow", "--yes", "a", "b")
+	if code != 2 {
+		t.Errorf("exit code = %d, want 2", code)
+	}
+}
+
+func TestRun_AllowDefaultAbortsOnNoConfirmation(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /a\n    echo hi\n")
+
+	stdout, stderr, code := runForStdin(t, "n\n", "allow")
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr, "aborted") || !strings.Contains(stderr, "not trusted") {
+		t.Errorf("expected stderr to report the abort, got %q", stderr)
+	}
+	if strings.Contains(stdout, "envoke: trusted") {
+		t.Errorf("must not report trusted after aborting, got %q", stdout)
+	}
+
+	debugOut, _, dcode := runFor(t, "debug", "/", "/a")
+	if dcode != 0 {
+		t.Fatalf("debug exit code = %d, want 0", dcode)
+	}
+	if !strings.Contains(debugOut, "NOT trusted") {
+		t.Errorf("expected config to remain untrusted after aborting allow, got %q", debugOut)
+	}
+}
+
+func TestRun_AllowDefaultAbortsOnEmptyStdin(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /a\n    echo hi\n")
+
+	_, stderr, code := runForStdin(t, "", "allow")
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr, "aborted") {
+		t.Errorf("expected stderr to report the abort, got %q", stderr)
+	}
+
+	debugOut, _, dcode := runFor(t, "debug", "/", "/a")
+	if dcode != 0 {
+		t.Fatalf("debug exit code = %d, want 0", dcode)
+	}
+	if !strings.Contains(debugOut, "NOT trusted") {
+		t.Errorf("expected config to remain untrusted after empty-stdin abort, got %q", debugOut)
+	}
+}
+
+func TestRun_AllowDefaultProceedsOnYesConfirmation(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /a\n    echo hi\n")
+
+	stdout, _, code := runForStdin(t, "y\n", "allow")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "envoke: trusted") {
+		t.Errorf("expected trusted confirmation, got %q", stdout)
+	}
+
+	debugOut, _, dcode := runFor(t, "debug", "/", "/a")
+	if dcode != 0 {
+		t.Fatalf("debug exit code = %d, want 0", dcode)
+	}
+	if strings.Contains(debugOut, "NOT trusted") {
+		t.Errorf("expected config to be trusted after confirming, got %q", debugOut)
+	}
+}
+
+func TestRun_AllowDefaultConfirmationIsCaseInsensitive(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /a\n    echo hi\n")
+
+	stdout, _, code := runForStdin(t, "YES\n", "allow")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "envoke: trusted") {
+		t.Errorf("expected trusted confirmation, got %q", stdout)
+	}
+}
+
+func TestRun_AllowYesFlagSkipsPromptEntirely(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /a\n    echo hi\n")
+
+	// Empty stdin would abort under the default prompt; --yes must never
+	// read it.
+	stdout, _, code := runForStdin(t, "", "allow", "--yes")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "envoke: trusted") {
+		t.Errorf("expected trusted confirmation, got %q", stdout)
+	}
+}
+
+func TestRun_AllowShortYesFlagSkipsPromptEntirely(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /a\n    echo hi\n")
+
+	stdout, _, code := runForStdin(t, "", "allow", "-y")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "envoke: trusted") {
+		t.Errorf("expected trusted confirmation, got %q", stdout)
+	}
+}
+
+func TestRun_AllowYesFlagComposesWithPathBeforeOrAfter(t *testing.T) {
+	home := isolateHome(t)
+	path := filepath.Join(home, "custom-config")
+	if err := os.WriteFile(path, []byte("enter /a\n    echo hi\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, _, code := runForStdin(t, "", "allow", "--yes", path); code != 0 {
+		t.Errorf("--yes before path: exit code = %d, want 0", code)
+	}
+	if _, _, code := runForStdin(t, "", "allow", path, "--yes"); code != 0 {
+		t.Errorf("--yes after path: exit code = %d, want 0", code)
+	}
+}
+
 func TestRun_AllowPrintsBlockScriptBeforeTrusting(t *testing.T) {
 	home := isolateHome(t)
 	writeConfig(t, home, `
@@ -334,7 +470,7 @@ leave /b
     deactivate
 `)
 
-	stdout, _, code := runFor(t, "allow")
+	stdout, _, code := runFor(t, "allow", "--yes")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -356,7 +492,7 @@ func TestRun_AllowPrintsLineNumberPerBlock(t *testing.T) {
 	home := isolateHome(t)
 	writeConfig(t, home, "enter /a\n    echo hi\n")
 
-	stdout, _, code := runFor(t, "allow")
+	stdout, _, code := runFor(t, "allow", "--yes")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -404,7 +540,7 @@ func TestRun_DebugNeverExecutesEvenIfTrusted(t *testing.T) {
 enter /a
     touch `+marker+`
 `)
-	if _, _, code := runFor(t, "allow"); code != 0 {
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
 		t.Fatalf("allow failed")
 	}
 
@@ -442,7 +578,7 @@ func TestRun_DebugReportsTrustedConfig(t *testing.T) {
 enter /a
     echo hi
 `)
-	if _, _, code := runFor(t, "allow"); code != 0 {
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
 		t.Fatalf("allow failed")
 	}
 
@@ -563,7 +699,7 @@ func TestRun_AllowWarnsOnUnsafeConfigPermissions(t *testing.T) {
 		t.Fatalf("Chmod: %v", err)
 	}
 
-	_, stderr, code := runFor(t, "allow")
+	_, stderr, code := runFor(t, "allow", "--yes")
 	if code != 0 {
 		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
 	}
