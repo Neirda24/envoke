@@ -17,6 +17,23 @@ until published.
 This is a one-person project with no formal SLA; expect an initial response
 within a few days. Please don't disclose publicly until a fix has shipped.
 
+## Secrets and tokens
+
+The release pipeline (`.github/workflows/release.yml`, `.dagger/main.go`'s
+`Publish` function) never holds a single credential with write access to more
+than one repository at a time:
+
+- The `envoke` GitHub Release itself is created with the ambient per-run
+  `GITHUB_TOKEN` — scoped to this repository only, expires with the run.
+- The Homebrew tap update (`Neirda24/homebrew-tap`) uses a short-lived
+  (~1 hour) installation token minted from a GitHub App installed on that
+  one repository alone, via `actions/create-github-app-token`.
+
+This replaced an earlier setup that used a single long-lived personal access
+token with write access to both repositories — if that token had ever
+leaked, it would have meant direct push access to what every `brew upgrade`
+pulls, for as long as the token remained valid.
+
 ## Verifying release artifacts
 
 Every release's `checksums.txt` is signed keylessly with
