@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/Neirda24/envoke/internal/config"
 	"github.com/Neirda24/envoke/internal/executor"
@@ -107,6 +108,8 @@ func cmdShellHook(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
+	warnUnsafePermissions(stderr, path)
+
 	cfg, err := config.ParseFile(path)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "envoke:", err)
@@ -162,16 +165,44 @@ func cmdAllow(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	if _, err := config.ParseFile(path); err != nil {
+	warnUnsafePermissions(stderr, path)
+
+	cfg, err := config.ParseFile(path)
+	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "envoke:", err)
 		return 1
 	}
+
+	printBlocksForReview(stdout, path, cfg.Blocks)
+
 	if err := trust.Allow(path); err != nil {
 		_, _ = fmt.Fprintln(stderr, "envoke:", err)
 		return 1
 	}
 	_, _ = fmt.Fprintf(stdout, "envoke: trusted %s\n", path)
 	return 0
+}
+
+// printBlocksForReview prints the full contents (type, pattern, line, and
+// script body) of every block in cfg before it's trusted, so `envoke allow`
+// can't be run as a blind habitual reflex (see CLAUDE.md's
+// trust-before-execution principle and the audit this addresses): a user
+// approving a config gets the actual code that will run on every matching
+// `cd`, not just a hash getting recorded silently.
+func printBlocksForReview(stdout io.Writer, path string, blocks []config.Block) {
+	_, _ = fmt.Fprintf(stdout, "envoke: about to trust %s -- review each block below before confirming:\n\n", path)
+	if len(blocks) == 0 {
+		_, _ = fmt.Fprintln(stdout, "  (no blocks defined)")
+		_, _ = fmt.Fprintln(stdout)
+		return
+	}
+	for _, b := range blocks {
+		_, _ = fmt.Fprintf(stdout, "  %s %s (line %d)\n", b.Type, b.RawPattern, b.Line)
+		for _, line := range strings.Split(b.Script, "\n") {
+			_, _ = fmt.Fprintf(stdout, "    %s\n", line)
+		}
+		_, _ = fmt.Fprintln(stdout)
+	}
 }
 
 // cmdDebug prints which enter/leave blocks would fire for a directory
@@ -196,6 +227,8 @@ func cmdDebug(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "envoke: no config found (looked for %s)\n", path)
 		return 1
 	}
+
+	warnUnsafePermissions(stderr, path)
 
 	cfg, err := config.ParseFile(path)
 	if err != nil {
@@ -226,11 +259,39 @@ func cmdDebug(args []string, stdout, stderr io.Writer) int {
 	}
 	for _, m := range leaves {
 		_, _ = fmt.Fprintf(stdout, "  %s %s (line %d: %s)\n", m.Block.Type, m.Dir, m.Block.Line, m.Block.RawPattern)
+		printIndentedScript(stdout, m.Block.Script)
 	}
 	for _, m := range enters {
 		_, _ = fmt.Fprintf(stdout, "  %s %s (line %d: %s)\n", m.Block.Type, m.Dir, m.Block.Line, m.Block.RawPattern)
+		printIndentedScript(stdout, m.Block.Script)
 	}
 	return 0
+}
+
+// printIndentedScript prints a block's script body indented further than the
+// summary line above it, so `envoke debug` shows the actual code that would
+// run, not just metadata about the match.
+func printIndentedScript(stdout io.Writer, script string) {
+	for _, line := range strings.Split(script, "\n") {
+		_, _ = fmt.Fprintf(stdout, "    %s\n", line)
+	}
+}
+
+// warnUnsafePermissions prints a non-fatal stderr warning if the config file
+// at path is writable by group or other — relevant on shared homes, NFS, or
+// multi-user machines, where such a file could be tampered with by someone
+// other than its owner. internal/trust's content-hash revocation already
+// stops a silently-modified config from running unapproved; this warns
+// proactively about a config whose permissions make that tampering possible
+// in the first place. Never blocks execution: a Stat failure or safe mode is
+// silently ignored here, since the caller's own config.Locate/ParseFile call
+// already handles a genuinely missing or unreadable file.
+func warnUnsafePermissions(stderr io.Writer, path string) {
+	unsafe, mode, err := config.UnsafePermissions(path)
+	if err != nil || !unsafe {
+		return
+	}
+	_, _ = fmt.Fprintf(stderr, "envoke: warning: %s is writable by group/other (mode %o) -- consider tightening its permissions\n", path, mode)
 }
 
 func usage(w io.Writer) {

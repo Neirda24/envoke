@@ -323,6 +323,48 @@ func TestRun_AllowWrongArgCount(t *testing.T) {
 	}
 }
 
+func TestRun_AllowPrintsBlockScriptBeforeTrusting(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo hi
+    echo bye
+
+leave /b
+    deactivate
+`)
+
+	stdout, _, code := runFor(t, "allow")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+
+	for _, want := range []string{"enter /a", "echo hi", "echo bye", "leave /b", "deactivate"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("expected stdout to contain %q for review, got %q", want, stdout)
+		}
+	}
+
+	reviewIdx := strings.Index(stdout, "echo hi")
+	trustedIdx := strings.Index(stdout, "envoke: trusted")
+	if reviewIdx == -1 || trustedIdx == -1 || reviewIdx > trustedIdx {
+		t.Errorf("expected the script body to be shown before the trusted confirmation, got %q", stdout)
+	}
+}
+
+func TestRun_AllowPrintsLineNumberPerBlock(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /a\n    echo hi\n")
+
+	stdout, _, code := runFor(t, "allow")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "line 1") {
+		t.Errorf("expected stdout to mention the block's line number, got %q", stdout)
+	}
+}
+
 func TestRun_DebugWrongArgCount(t *testing.T) {
 	_, _, code := runFor(t, "debug", "/only-one")
 	if code != 2 {
@@ -429,6 +471,29 @@ enter /never/matches
 	}
 }
 
+func TestRun_DebugPrintsMatchedBlockScript(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo hi
+    echo bye
+`)
+
+	stdout, _, code := runFor(t, "debug", "/", "/a")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "echo hi") || !strings.Contains(stdout, "echo bye") {
+		t.Errorf("expected stdout to include the matched block's script body, got %q", stdout)
+	}
+
+	summaryIdx := strings.Index(stdout, "enter /a")
+	scriptIdx := strings.Index(stdout, "echo hi")
+	if summaryIdx == -1 || scriptIdx == -1 || summaryIdx > scriptIdx {
+		t.Errorf("expected the script body to appear after the block's summary line, got %q", stdout)
+	}
+}
+
 func TestRun_DebugReportsLeavesBeforeEnters(t *testing.T) {
 	home := isolateHome(t)
 	writeConfig(t, home, `
@@ -447,6 +512,83 @@ enter /b
 	enterIdx := strings.Index(stdout, "enter /b")
 	if leaveIdx == -1 || enterIdx == -1 || leaveIdx > enterIdx {
 		t.Errorf("expected leave block reported before enter block, got %q", stdout)
+	}
+}
+
+func TestRun_ShellHookWarnsOnUnsafeConfigPermissions(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo hi
+`)
+	path := filepath.Join(home, ".envokerc")
+	if err := os.Chmod(path, 0o666); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+
+	_, stderr, code := runFor(t, "shell-hook", "/", "/a")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stderr, "writable by group/other") || !strings.Contains(stderr, path) {
+		t.Errorf("expected stderr to warn about unsafe permissions, got %q", stderr)
+	}
+}
+
+func TestRun_ShellHookNoWarningOnSafeConfigPermissions(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /never/matches
+    echo hi
+`)
+	path := filepath.Join(home, ".envokerc")
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+
+	_, stderr, code := runFor(t, "shell-hook", "/", "/a")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if strings.Contains(stderr, "writable by group/other") {
+		t.Errorf("expected no permissions warning for a safe-mode config, got %q", stderr)
+	}
+}
+
+func TestRun_AllowWarnsOnUnsafeConfigPermissions(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /a\n    echo hi\n")
+	path := filepath.Join(home, ".envokerc")
+	if err := os.Chmod(path, 0o664); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+
+	_, stderr, code := runFor(t, "allow")
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "writable by group/other") || !strings.Contains(stderr, path) {
+		t.Errorf("expected stderr to warn about unsafe permissions, got %q", stderr)
+	}
+}
+
+func TestRun_DebugWarnsOnUnsafeConfigPermissions(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo hi
+`)
+	path := filepath.Join(home, ".envokerc")
+	if err := os.Chmod(path, 0o620); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+
+	_, stderr, code := runFor(t, "debug", "/", "/a")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stderr, "writable by group/other") || !strings.Contains(stderr, path) {
+		t.Errorf("expected stderr to warn about unsafe permissions, got %q", stderr)
 	}
 }
 
