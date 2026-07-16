@@ -2,13 +2,19 @@
 
 ## Installation
 
-Not yet published. Planned distribution, once v1 is buildable:
+```sh
+brew install neirda24/tap/envoke                          # Homebrew (macOS/Linux)
+go install github.com/Neirda24/envoke/cmd/envoke@latest   # Go toolchain
+```
 
-- **GitHub Releases** — prebuilt static binaries for macOS/Linux/Windows (amd64 + arm64), built with [goreleaser](https://goreleaser.com/).
-- **Homebrew** (macOS/Linux) — `brew install neirda24/tap/envoke`.
-- **Scoop** (Windows) — `scoop bucket add neirda24 https://github.com/Neirda24/scoop-bucket && scoop install envoke`.
-- **Linux packages** — `.deb`/`.rpm` built via [nfpm](https://nfpm.goreleaser.com/) as part of the goreleaser pipeline.
-- **Go toolchain** — `go install github.com/Neirda24/envoke@latest` for Go users who prefer building from source.
+Or download a prebuilt binary from [GitHub Releases](https://github.com/Neirda24/envoke/releases)
+for macOS/Linux/Windows (amd64/arm64), built with [goreleaser](https://goreleaser.com/).
+Each release's `checksums.txt` is signed keylessly with
+[cosign](https://docs.sigstore.dev/cosign/) — see the release notes for the
+exact verification command.
+
+Not yet published: a **Scoop** bucket (Windows) and `.deb`/`.rpm` **Linux
+packages** via [nfpm](https://nfpm.goreleaser.com/).
 
 ## Shell integration
 

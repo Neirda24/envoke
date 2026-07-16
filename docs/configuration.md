@@ -31,11 +31,11 @@ A malformed config fails with a positioned error (line number + message) rather 
 
 ## Path patterns
 
-Patterns are matched with Go's `regexp` package (RE2) — linear-time matching, no catastrophic backtracking, unlike ondir's POSIX regex.
+Patterns are matched with Go's `regexp` package (RE2) — linear-time matching, guaranteed regardless of the pattern.
 
 - A leading `~` expands to your home directory.
 - `$VAR` / `${VAR}` expand as literal substitutions (not re-interpreted as regex) before the pattern is compiled.
-- The final pattern is anchored as `^(?:...)$` against each path segment being tested — this is what makes matching **segment-based** rather than a raw string prefix, so `~/Projects/foo` never falsely matches `~/Projects/foobar` (a real ondir bug).
+- The final pattern is anchored as `^(?:...)$` against each path segment being tested — this is what makes matching **segment-based** rather than a raw string prefix, so `~/Projects/foo` never falsely matches `~/Projects/foobar` (unlike ondir's raw prefix matching).
 
 ## What a matched script sees
 
@@ -50,13 +50,51 @@ Each matched block runs with these environment variables set:
 
 For example, `enter ~/Projects/([^/]+)` exposes the matched project name via `ENVOKE_MATCH_1`, so one generic block can handle every directory under `~/Projects` instead of duplicating config per project.
 
-## Example use cases
+## Example envokerc
 
-- **Python (or any) virtualenv activation** — `enter` sources `venv/bin/activate`, `leave` runs `deactivate`.
-- **Per-directory umask** — `enter` tightens `umask` for a sensitive tree, `leave` restores the default explicitly.
-- **Project-scoped environment variables** — `enter` exports API keys/endpoints/feature flags, `leave` unsets them.
-- **Cloud/k8s context switching** — `enter` runs `kubectl config use-context ...` / sets `AWS_PROFILE` / activates a `gcloud` configuration; `leave` switches back explicitly.
-- **Dev toolchain version switching** — `enter` swaps Node/Ruby/Go versions for a project tree without depending on each tool's own per-directory convention.
+Blocks are separated by a blank line; a line starting with `#` outside a
+block is a comment. Here's a single config combining several common cases:
+
+```
+# ~/.envokerc
+
+# --- Python virtualenv, activated per project ---
+enter ~/Projects/([^/]+)
+    source venv/bin/activate
+
+leave ~/Projects/([^/]+)
+    deactivate
+
+# --- Project-scoped secrets ---
+enter ~/Projects/api-server
+    export API_KEY=$(cat ~/.secrets/api-server-key)
+    export API_ENV=staging
+
+leave ~/Projects/api-server
+    unset API_KEY API_ENV
+
+# --- Kubernetes context per infra repo ---
+enter ~/Projects/infra
+    kubectl config use-context staging
+
+leave ~/Projects/infra
+    kubectl config use-context default
+
+# --- Node version per project, from the matched directory name ---
+enter ~/Projects/node/([^/]+)
+    nvm use --silent
+
+# --- Tighten umask for a sensitive tree, restore it on the way out ---
+enter ~/Projects/secrets
+    umask 077
+
+leave ~/Projects/secrets
+    umask 022
+```
+
+Save this as `~/.envokerc` (or wherever [`Locate()`](#locating-the-config-file)
+resolves for you), then run `envoke allow` to review and approve it — no
+block in this file runs until you do.
 
 ## A note on `envoke shell-hook`'s execution model
 

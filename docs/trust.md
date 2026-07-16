@@ -78,6 +78,23 @@ When `envoke shell-hook` runs, it recomputes the current file's content hash and
 
 Any edit to the config — even whitespace — changes the content hash and revokes trust until you run `envoke allow` again. This means there's no way to silently smuggle a change into an already-trusted config; every modification requires a fresh, explicit approval.
 
+## File permission warnings
+
+Content-hash revocation protects you from *silently* running a config that
+changed since you last trusted it — but on a shared machine (multi-user
+box, NFS home), nothing stops another local user from editing a config
+you've already approved. `envoke allow`, `envoke shell-hook`, and `envoke
+debug` all check whether the config file is writable by anyone other than
+its owner (group or other write bits set) and print a non-fatal warning to
+stderr if so:
+
+```
+envoke: warning: /home/you/.envokerc is writable by group/other (mode 664) -- consider tightening its permissions
+```
+
+This is a warning, not a block — fix it with `chmod go-w ~/.envokerc` if you
+see it unexpectedly.
+
 ## Why this is non-negotiable
 
 Trust-before-execution is one of envoke's core design principles: no code path is allowed to auto-execute an unapproved config, including "convenience" paths. If you're ever unsure what a config would do before trusting it, use [`envoke debug`](debugging.md) — it reports matches without executing anything, trusted or not.

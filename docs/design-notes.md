@@ -1,11 +1,15 @@
 # Design Notes
 
-Bugs in [ondir](https://github.com/alecthomas/ondir) that motivate specific design choices in envoke:
+[ondir](https://github.com/alecthomas/ondir) is feature-complete by its own
+maintainer's account and still works for plenty of people, but it's had no
+release in years. This page lists the specific, concrete points where
+envoke's design departs from it — not a bug list, a rationale for a rewrite
+instead of a fork:
 
-| ondir issue | envoke fix |
+| ondir behavior | envoke's approach |
 |---|---|
-| Catastrophic backtracking hangs (glibc POSIX regex) | Go's `regexp` (RE2), linear-time matching guaranteed |
-| Basename-prefix false positives (`/home/foo` matches `/home/foobar`) | Path-segment matching, not raw string prefix |
+| Worst-case (exponential-time) matching on some patterns, via glibc's POSIX regex | Go's `regexp` (RE2), linear-time matching guaranteed |
+| Basename-prefix matching (`/home/foo` matches `/home/foobar`) | Path-segment matching, not raw string prefix |
 | No `~` expansion in config paths | Explicit `~`/env-var expansion |
 | Capture groups not exposed to scripts | Matched path and capture groups exposed as env vars |
 | No `ONDIRRC` var / no XDG support | `ENVOKERC` env var + `$XDG_CONFIG_HOME/envoke/config` |
@@ -17,7 +21,7 @@ Bugs in [ondir](https://github.com/alecthomas/ondir) that motivate specific desi
 
 These hold across the whole codebase, not just as a starting point:
 
-- **RE2 matching only** — always Go's standard `regexp`, never a backtracking engine (that's what reintroduces ondir's hang bug).
+- **RE2 matching only** — always Go's standard `regexp`, never a backtracking engine (backtracking engines can take exponential time on certain patterns; RE2 guarantees linear time regardless of the pattern).
 - **Path-segment matching, not string-prefix matching** — a pattern must match whole path segments.
 - **Enter/leave are independent and explicit** — no automatic state snapshot/restore on leave.
 - **Trust before execution** — any new or modified config must go through an explicit `envoke allow` before its blocks run, with no exceptions for "convenience" code paths.
