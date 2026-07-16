@@ -1,0 +1,7 @@
+# Normalize line endings to LF regardless of contributor OS/editor config.
+#
+# internal/shellinit/shellinit.go embeds shell hook scripts as raw string
+# literals with real newlines — CRLF here would inject \r into scripts
+# eval'd/sourced by bash/zsh/fish/tcsh/powershell (see CLAUDE.md's notes on
+# fish's `string collect` and tcsh's `source /dev/stdin` handling).
+* text=auto eol=lf
