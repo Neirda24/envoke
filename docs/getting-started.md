@@ -38,6 +38,16 @@ envoke shell-init tcsh | source /dev/stdin
 
 Restart your shell (or re-source your rc file) after adding the hook.
 
+## Checking your version
+
+```sh
+$ envoke version
+envoke 0.1.1-SNAPSHOT-e4b0eb5 (commit e4b0eb554c40b05a566ae1e01a427dc08e12ac47, built 2026-07-16T13:28:55Z)
+go1.26.4 darwin/arm64
+```
+
+Useful to have on hand for bug reports — it prints the real version, commit, and build date for a released binary, plus the Go toolchain and OS/arch it was built with. A binary built locally without goreleaser's release `ldflags` (e.g. a plain `go build`) prints `envoke dev (commit unknown, built unknown)` instead, since those values are only injected at release build time.
+
 ## Your first config
 
 Create `~/.envokerc`:
@@ -50,10 +60,20 @@ leave ~/Projects/([^/]+)
     deactivate
 ```
 
-Then approve it — envoke never runs a new or edited config unconditionally:
+Then approve it — envoke never runs a new or edited config unconditionally. `envoke allow` shows you the blocks it's about to trust and asks for confirmation before recording anything:
 
 ```sh
-envoke allow
+$ envoke allow
+envoke: about to trust /home/you/.envokerc -- review each block below before confirming:
+
+  enter ~/Projects/([^/]+) (line 1)
+    source venv/bin/activate
+
+  leave ~/Projects/([^/]+) (line 4)
+    deactivate
+
+envoke: trust and run these blocks on every matching cd? [y/N] y
+envoke: trusted /home/you/.envokerc
 ```
 
-`cd` into a matching directory and the `enter` block runs in your current shell; `cd` back out and `leave` runs. See [Trust Model](trust.md) for why the `allow` step exists, and [Debugging](debugging.md) for inspecting matches before trusting a config.
+`cd` into a matching directory and the `enter` block runs in your current shell; `cd` back out and `leave` runs. For non-interactive setups (dotfiles bootstrap scripts, provisioning), pass `--yes`/`-y` to skip the confirmation prompt: `envoke allow --yes`. See [Trust Model](trust.md) for the full confirm/diff/`--yes` behavior, and [Debugging](debugging.md) for inspecting matches before trusting a config.

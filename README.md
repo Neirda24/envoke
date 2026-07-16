@@ -46,6 +46,8 @@ leave ~/Projects/([^/]+)
 
 Any config that runs arbitrary shell code on `cd` needs an opt-in step before it executes for the first time, direnv-style (`direnv allow`). ondir has no such mechanism — any `~/.ondirrc` runs unconditionally. `envoke` requires an explicit `envoke allow` (or equivalent) before a new or changed config block is executed.
 
+`envoke allow` shows you what you're about to trust and, by default, asks `[y/N]` before recording it — nothing runs on a bare `enter` key. Pass `--yes`/`-y` to skip the prompt for scripts and dotfiles bootstraps. Re-approving a config you've edited since the last `allow` shows a diff of just what changed, not the whole file again — see [Trust Model](docs/trust.md) for the full picture.
+
 ## Diagnostics
 
 `envoke debug <from> <to>` prints which `enter`/`leave` blocks would fire for a given directory transition, without running them — for developing a config without surprises.

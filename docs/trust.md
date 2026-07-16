@@ -11,9 +11,65 @@ envoke allow /path/to/config   # trusts an explicit path
 
 `envoke allow` refuses to trust a config that doesn't even parse — you can't accidentally approve something broken.
 
+Before recording trust, `envoke allow` shows you what you're about to approve (see below for the first-time-vs-re-approval cases) and then asks for confirmation:
+
+```
+envoke: trust and run these blocks on every matching cd? [y/N]
+```
+
+Only `y` or `yes` (case-insensitive) proceeds; anything else — a different answer, an empty line, or closing stdin (EOF) — aborts without trusting anything:
+
+```
+$ envoke allow
+envoke: about to trust /home/you/.envokerc -- review each block below before confirming:
+
+  enter ~/Projects/([^/]+) (line 1)
+    source venv/bin/activate
+
+  leave ~/Projects/([^/]+) (line 4)
+    deactivate
+
+envoke: trust and run these blocks on every matching cd? [y/N] y
+envoke: trusted /home/you/.envokerc
+```
+
+Answering anything but `y`/`yes` prints `envoke: aborted, not trusted` to stderr and exits non-zero, leaving the config untrusted.
+
+For non-interactive use — dotfiles bootstrap scripts, CI, provisioning — pass `--yes` (or `-y`) to skip the prompt and trust immediately, the same as answering `y`:
+
+```sh
+envoke allow --yes
+envoke allow -y /path/to/config
+```
+
+The flag can appear anywhere among `allow`'s arguments, before or after the path.
+
+## Re-approving a changed config
+
+What `envoke allow` shows you before the confirmation prompt depends on whether the config was trusted before, and whether it's changed since:
+
+- **First time trusting this config** — the full block-by-block dump shown above: every block's type, pattern, source line, and script body.
+- **Trusted before, content byte-for-byte unchanged** — nothing to review. `envoke allow` prints a one-line status and returns immediately, without prompting and without touching the trust record again (it's already trusted):
+  ```
+  $ envoke allow
+  envoke: /home/you/.envokerc is unchanged since it was last trusted -- nothing to review
+  ```
+  `--yes` is a no-op here, since there's no prompt to skip.
+- **Trusted before, content changed** — a line-level diff against the previously-approved content, instead of the full dump, so a small edit to an already-trusted config doesn't require re-reading the whole file:
+  ```
+  $ envoke allow
+  envoke: /home/you/.envokerc changed since it was last trusted -- here's what's different:
+
+  -     echo old-line
+  +     echo new-line
+
+  envoke: trust and run these blocks on every matching cd? [y/N]
+  ```
+  Lines prefixed `-` were removed, lines prefixed `+` were added — the same convention as `diff -u`/`git diff`. Unchanged lines are omitted entirely. The `[y/N]` prompt (or `--yes`) still applies in this case, same as first-time trust.
+
 ## How trust is tracked
 
-Trust is a SHA-256 hash of the config file's **content**, recorded under `$XDG_DATA_HOME/envoke/allow/<sha256(abs path)>` (or `~/.local/share/envoke/allow/...` if `$XDG_DATA_HOME` isn't set) — one record file per config path, so distinct configs never collide.
+Trust is a SHA-256 hash of the config file's **content**, recorded under `$XDG_DATA_HOME/envoke/allow/<sha256(abs path)>` (or `~/.local/share/envoke/allow/...` if `$XDG_DATA_HOME` isn't set) — one record file per config path, so distinct configs never collide. `envoke allow` also persists a copy of the approved content itself, in a sibling `<record>.content` file — this is what makes the diff in the previous section possible; a pre-upgrade trust record with no content file yet is treated as a normal "no prior content to compare" state, not an error.
 
 When `envoke shell-hook` runs, it recomputes the current file's content hash and compares it to the trusted record:
 
