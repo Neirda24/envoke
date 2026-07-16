@@ -12,7 +12,7 @@ few specific long-standing rough edges, and reaches every major shell and
 OS with a single static binary.
 
 !!! warning "Status: early development"
-    The matching engine, shell hooks for bash/zsh/fish/tcsh/PowerShell, the `envoke allow` trust mechanism, and `envoke debug` dry-run diagnostics all exist and are tested end-to-end against real interpreters — a `cd` into a trusted, matching directory really does run its `enter` block in your shell today. GitHub Releases and a Homebrew tap are live; a Scoop bucket and Linux packages aren't yet. See the [README's Status section](https://github.com/Neirda24/envoke/blob/main/README.md#status) for exact scope.
+    The matching engine, shell hooks for bash/zsh/fish/tcsh/PowerShell, the `envoke allow` trust mechanism, and `envoke debug` dry-run diagnostics all exist and are tested end-to-end against real interpreters — a `cd` into a trusted, matching directory really does run its `enter` block in your shell today. GitHub Releases, a Homebrew tap, a Scoop bucket, and `.deb`/`.rpm` packages are all live. See the [README's Status section](https://github.com/Neirda24/envoke/blob/main/README.md#status) for exact scope.
 
 ## Why not just use ondir / direnv?
 

@@ -365,13 +365,15 @@ func (m *Envoke) Snapshot(ctx context.Context) (*dagger.Directory, error) {
 // way as githubToken (see release.yml's `call: publish
 // --github-token=... --actions-idtoken-request-url=env://... `).
 //
-// homebrewTapToken authenticates only the homebrew_casks push to
-// Neirda24/homebrew-tap (.goreleaser.yaml's homebrew_casks.repository.token
-// override) — deliberately a separate, narrower-scoped credential from
-// githubToken (see security_audit.md's Finding 6): a short-lived GitHub App
-// installation token scoped to homebrew-tap alone, minted per run by
-// release.yml's create-github-app-token step, rather than the old
-// long-lived PAT with write access to both repos.
+// homebrewTapToken authenticates the homebrew_casks push to
+// Neirda24/homebrew-tap and the scoops push to Neirda24/scoop-bucket
+// (.goreleaser.yaml's homebrew_casks.repository.token and
+// scoops.repository.token overrides) — deliberately a separate,
+// narrower-scoped credential from githubToken (see security_audit.md's
+// Finding 6): a short-lived GitHub App installation token scoped to just
+// those two repos, minted per run by release.yml's create-github-app-token
+// step, rather than the old long-lived PAT with write access to both envoke
+// and homebrew-tap.
 func (m *Envoke) Publish(ctx context.Context, githubToken *dagger.Secret, actionsIDTokenRequestURL *dagger.Secret, actionsIDTokenRequestToken *dagger.Secret, homebrewTapToken *dagger.Secret) (string, error) {
 	return m.withSource(m.goreleaserBase()).
 		WithSecretVariable("GITHUB_TOKEN", githubToken).
