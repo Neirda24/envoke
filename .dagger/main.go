@@ -24,7 +24,7 @@ const (
 	goreleaserImage = "goreleaser/goreleaser:v2.17.0@sha256:054eefd282c02233a2556ce2d1a60cd2f51dc565ffc2520dc38b5deb4dd1ad30"
 	// renovate: datasource=docker
 	pythonImage     = "python:3.14-slim@sha256:d3400aa122fa42cf0af0dbe8ec3091b047eac5c8f7e3539f7135e86d855dc015"
-	yamllintVersion = "1.37.1"
+	yamllintVersion = "1.38.0"
 	// zizmorImage intentionally tracks :latest, not a pinned tag — no renovate hint.
 	zizmorImage = "ghcr.io/zizmorcore/zizmor:latest"
 	// renovate: datasource=docker
