@@ -25,24 +25,16 @@ jobs:
           call: --gh-auth-token=env://GITHUB_TOKEN autofix export --path=.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Open a PR if autofix changed anything
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if git diff --quiet; then
-            echo "Nothing for zizmor/actions-up to fix."
-            exit 0
-          fi
-          branch="actions-autofix/$(date -u +%Y-%m-%d)"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$branch"
-          git add -A
-          git commit -m "Apply zizmor/actions-up autofix"
-          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64)" \
-            push --force origin "$branch"
-          gh pr create \
-            --title "Apply zizmor/actions-up autofix" \
-            --body "Automated: \`dagger call autofix\` found pending GitHub Actions/security fixes and applied them. Runs daily, ahead of Renovate's own schedule, so Renovate's GitHub Actions PRs only need to step in for whatever this doesn't catch." \
-            --head "$branch" --base main \
-            || gh pr edit "$branch" --title "Apply zizmor/actions-up autofix"
+      - name: Open or update a PR if autofix changed anything
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: actions-autofix
+          delete-branch: true
+          commit-message: "Apply zizmor/actions-up autofix"
+          title: "Apply zizmor/actions-up autofix"
+          body: |
+            Automated: `dagger call autofix` found pending GitHub Actions/security
+            fixes and applied them. Runs daily, ahead of Renovate's own schedule, so
+            Renovate's GitHub Actions PRs only need to step in for whatever this
+            doesn't catch.
