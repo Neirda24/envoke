@@ -246,9 +246,7 @@ public API to commit to yet):
   mirror the manual commands in CONTRIBUTING.md; `lint` runs golangci-lint;
   `cross-build` compiles + vets every OS/arch `.goreleaser.yaml` ships
   (linux/darwin/windows × amd64/arm64), which is also the only thing that
-  type-checks the GOOS-gated test files the Linux containers never load —
-  it is a *compile*-level guarantee only, nothing proves runtime behaviour
-  off Linux;
+  type-checks the GOOS-gated test files the Linux containers never load;
   `test-shell-{bash,zsh,fish,tcsh,powershell}` each build a container with
   exactly one shell installed and run `internal/shellinit`'s **and
   `internal/executor`'s** suites in it (both emit shell code, both `t.Skip`
@@ -318,6 +316,26 @@ installed on the dev machine.
   `+check` — a fixed-duration run per target would tax every CI run for a
   low hit rate). Adding a target means adding it to `fuzzTargets` in
   `.dagger/main.go` too; it is listed explicitly so the omission is visible.
+- **Windows and macOS are tested on real runners, not in Dagger.** Dagger's
+  engine runs Linux containers — it cannot run a Windows container at all,
+  and Wine is not a workable substitute (Wine 8 lacks the
+  `bcryptprimitives.dll` modern Go requires; Wine 10 needs x86 segmentation
+  that Apple Silicon's emulation doesn't provide, so it isn't even
+  reproducible locally — both verified, don't re-litigate it). The `native`
+  job in `.github/workflows/ci.yml` runs `go test` on `macos-latest`
+  (`./...`) and `windows-latest` (`./internal/...`). Windows is scoped to
+  `internal/` because `cmd/envoke`'s fixtures use Unix-style absolute paths
+  (`"/a"`), which `filepath.IsAbs` rejects there; widening it means porting
+  those fixtures, and should be verified on a real Windows box.
+  Platform-specific test conventions: `tp`/`np` in `internal/matcher` for
+  volume-prefixed paths, `requirePOSIXShell` where a test needs `sh -c`,
+  `requirePOSIXHarness` where a test drives an interpreter through a
+  `#!/bin/sh` stub, and `isolateEnv` setting **both** `HOME` and
+  `USERPROFILE` (`os.UserHomeDir` reads a different one per platform).
+- **The generated bash scripts must work on bash 3.2**, which is still
+  `/bin/bash` on every Mac. `mapfile` is 4.0+ and silently produces nothing
+  there, so the completion uses a `while IFS= read -r` loop instead. The
+  macOS CI runner is what actually exercises this.
 - **Never run `go build`/`go test`/`go vet`/`gofmt`/`golangci-lint` directly
   on the host.** Always verify through `dagger call -m .dagger <check>`
   (`fmt`/`vet`/`build`/`test`/`lint`/`test-shell-*`) — this runs on the

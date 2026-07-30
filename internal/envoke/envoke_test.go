@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,7 +15,19 @@ import (
 	"github.com/Neirda24/envoke/internal/trust"
 )
 
+// requirePOSIXShell skips when there is no `sh` on PATH -- Transition runs
+// every block through executor.Run, which uses `sh -c`. See that function's
+// counterpart in internal/executor for why translating to cmd.exe isn't an
+// option.
+func requirePOSIXShell(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no POSIX sh on PATH; `envoke exec` requires one")
+	}
+}
+
 func TestTransition_VenvActivateDeactivateReadmeExample(t *testing.T) {
+	requirePOSIXShell(t)
 	root := t.TempDir()
 	t.Setenv("ENVOKE_IT_ROOT", root)
 
@@ -43,6 +56,7 @@ leave $ENVOKE_IT_ROOT/Projects/([^/]+)
 }
 
 func TestTransition_TraverseFiresIntermediateDirectories(t *testing.T) {
+	requirePOSIXShell(t)
 	root := t.TempDir()
 	t.Setenv("ENVOKE_IT_ROOT", root)
 
@@ -79,6 +93,7 @@ leave $ENVOKE_IT_ROOT/a
 }
 
 func TestTransition_SegmentMatchingRejectsPrefixSibling(t *testing.T) {
+	requirePOSIXShell(t)
 	root := t.TempDir()
 	t.Setenv("ENVOKE_IT_ROOT", root)
 
@@ -111,6 +126,7 @@ enter $ENVOKE_IT_ROOT/foo
 }
 
 func TestTransition_StopsAtFirstFailure(t *testing.T) {
+	requirePOSIXShell(t)
 	root := t.TempDir()
 	t.Setenv("ENVOKE_IT_ROOT", root)
 
@@ -142,6 +158,7 @@ enter $ENVOKE_IT_ROOT
 // made it a violation of the trust-before-execution principle waiting for
 // its first caller.
 func TestTransition_UntrustedConfigRunsNothing(t *testing.T) {
+	requirePOSIXShell(t)
 	root := t.TempDir()
 	t.Setenv("ENVOKE_IT_ROOT", root)
 
@@ -165,6 +182,7 @@ enter $ENVOKE_IT_ROOT/child
 // TestTransition_EditingAfterApprovalRunsNothing checks the trust gate keeps
 // tracking content, not just "was ever approved".
 func TestTransition_EditingAfterApprovalRunsNothing(t *testing.T) {
+	requirePOSIXShell(t)
 	root := t.TempDir()
 	t.Setenv("ENVOKE_IT_ROOT", root)
 

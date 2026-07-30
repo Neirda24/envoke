@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -149,6 +150,23 @@ func TestGenerate_PowershellScriptIsSyntacticallyValid(t *testing.T) {
 	}
 }
 
+// requirePOSIXHarness skips tests whose *harness* is Unix-specific, as
+// opposed to tests whose subject is. Everything below that drives a real
+// interpreter does so with a stub `envoke` that is a `#!/bin/sh` script on
+// PATH — Windows has no shebang handling, so it would find the file and
+// refuse to run it, failing for a reason that says nothing about envoke.
+//
+// Windows does run the string-level and syntax checks, and the packages
+// where platform behaviour actually differs (internal/matcher's path
+// normalization, internal/config, internal/trust) are fully exercised there
+// — see the `native` job in .github/workflows/ci.yml.
+func requirePOSIXHarness(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("this test drives an interpreter through a #!/bin/sh stub, which Windows cannot execute")
+	}
+}
+
 func requireInterpreter(t *testing.T, name string) {
 	t.Helper()
 	if _, err := exec.LookPath(name); err != nil {
@@ -173,6 +191,7 @@ func assertShellSyntaxOK(t *testing.T, interpreter, script string) {
 // the transition entirely. The baseline must be seeded once at install
 // time, using the shell's directory *before* any cd happens.
 func TestGenerate_BashHookFiresOnFirstCd(t *testing.T) {
+	requirePOSIXHarness(t)
 	requireInterpreter(t, "bash")
 	script, err := Generate("bash")
 	if err != nil {
@@ -195,7 +214,7 @@ func TestGenerate_BashHookFiresOnFirstCd(t *testing.T) {
 		`eval "$PROMPT_COMMAND"` + "\n"
 
 	cmd := exec.Command("bash", "--noprofile", "--norc", "-c", driver)
-	cmd.Env = append(os.Environ(), "PATH="+stubDir+":"+os.Getenv("PATH"))
+	cmd.Env = append(os.Environ(), "PATH="+stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("driver script failed: %v\n%s", err, out)
 	}
@@ -216,6 +235,7 @@ func TestGenerate_BashHookFiresOnFirstCd(t *testing.T) {
 // tcsh needs no baseline seeding (it maintains $owd/$cwd itself), so this
 // is a plain behavioral check rather than a first-cd regression test.
 func TestGenerate_TcshHookFiresOnCd(t *testing.T) {
+	requirePOSIXHarness(t)
 	requireInterpreter(t, "tcsh")
 	script, err := Generate("tcsh")
 	if err != nil {
@@ -239,7 +259,7 @@ func TestGenerate_TcshHookFiresOnCd(t *testing.T) {
 	}
 
 	cmd := exec.Command("tcsh", "-f", rcPath)
-	cmd.Env = append(os.Environ(), "PATH="+stubDir+":"+os.Getenv("PATH"))
+	cmd.Env = append(os.Environ(), "PATH="+stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("driver script failed: %v\n%s", err, out)
 	}
@@ -265,6 +285,7 @@ func TestGenerate_TcshHookFiresOnCd(t *testing.T) {
 // is lost. This drives a real tcsh through the actual generated hook with a
 // stub that emits `setenv`, and asserts the variable is visible afterward.
 func TestGenerate_TcshHookSetenvPersistsInCallingShell(t *testing.T) {
+	requirePOSIXHarness(t)
 	requireInterpreter(t, "tcsh")
 	script, err := Generate("tcsh")
 	if err != nil {
@@ -294,7 +315,7 @@ func TestGenerate_TcshHookSetenvPersistsInCallingShell(t *testing.T) {
 	}
 
 	cmd := exec.Command("tcsh", "-f", rcPath)
-	cmd.Env = append(os.Environ(), "PATH="+stubDir+":"+os.Getenv("PATH"))
+	cmd.Env = append(os.Environ(), "PATH="+stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("driver script failed: %v\n%s", err, out)
@@ -312,6 +333,7 @@ func TestGenerate_TcshHookSetenvPersistsInCallingShell(t *testing.T) {
 // $OLDPWD is already maintained by zsh itself) and unlike tcsh (no cwdcmd
 // pipe/eval restrictions to work around), this is a plain behavioral check.
 func TestGenerate_ZshHookSetenvPersistsInCallingShell(t *testing.T) {
+	requirePOSIXHarness(t)
 	requireInterpreter(t, "zsh")
 	script, err := Generate("zsh")
 	if err != nil {
@@ -330,7 +352,7 @@ func TestGenerate_ZshHookSetenvPersistsInCallingShell(t *testing.T) {
 		`echo "MARKER=$ENVOKE_TEST_MARKER"` + "\n"
 
 	cmd := exec.Command("zsh", "--no-rcs", "-c", driver)
-	cmd.Env = append(os.Environ(), "PATH="+stubDir+":"+os.Getenv("PATH"))
+	cmd.Env = append(os.Environ(), "PATH="+stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("driver script failed: %v\n%s", err, out)
@@ -349,6 +371,7 @@ func TestGenerate_ZshHookSetenvPersistsInCallingShell(t *testing.T) {
 // script file — this also exercises `string collect`'s multi-line-output
 // handling exactly as it runs when sourced from a real fish rc file.
 func TestGenerate_FishHookSetenvPersistsInCallingShell(t *testing.T) {
+	requirePOSIXHarness(t)
 	requireInterpreter(t, "fish")
 	script, err := Generate("fish")
 	if err != nil {
@@ -372,7 +395,7 @@ func TestGenerate_FishHookSetenvPersistsInCallingShell(t *testing.T) {
 	}
 
 	cmd := exec.Command("fish", "--no-config", driverPath)
-	cmd.Env = append(os.Environ(), "PATH="+stubDir+":"+os.Getenv("PATH"))
+	cmd.Env = append(os.Environ(), "PATH="+stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("driver script failed: %v\n%s", err, out)
@@ -394,6 +417,7 @@ func TestGenerate_FishHookSetenvPersistsInCallingShell(t *testing.T) {
 // verification (see security_audit.md, Finding 1), so the final assertion
 // uses a separate, unpiped Write-Output instead.
 func TestGenerate_PowershellHookSetenvPersistsInCallingShell(t *testing.T) {
+	requirePOSIXHarness(t)
 	requireInterpreter(t, "pwsh")
 	script, err := Generate("powershell")
 	if err != nil {
@@ -413,7 +437,7 @@ func TestGenerate_PowershellHookSetenvPersistsInCallingShell(t *testing.T) {
 		`Write-Output "MARKER=$env:ENVOKE_TEST_MARKER"` + "\n"
 
 	cmd := exec.Command("pwsh", "-NoProfile", "-Command", driver)
-	cmd.Env = append(os.Environ(), "PATH="+stubDir+":"+os.Getenv("PATH"))
+	cmd.Env = append(os.Environ(), "PATH="+stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("driver script failed: %v\n%s", err, out)
@@ -598,6 +622,7 @@ func writeFailingEnvokeStub(t *testing.T, dir string) {
 // Each case deliberately uses a stub that exits non-zero, so the assertion
 // fails if the hook's own result leaks through.
 func TestGenerate_HooksAreTransparentToLastCommandStatus(t *testing.T) {
+	requirePOSIXHarness(t)
 	cases := []struct {
 		shell       string
 		interpreter string
@@ -723,6 +748,7 @@ var pwnSentinels = []string{"pwn-sq", "pwn-dollar", "pwn-backtick", "pwn-pipe"}
 // that the hook still reported the transition correctly, so a hook that
 // "passes" by not firing at all is caught too.
 func TestGenerate_HooksNeverExecuteDirectoryNames(t *testing.T) {
+	requirePOSIXHarness(t)
 	for _, hs := range hookShells() {
 		t.Run(hs.shell, func(t *testing.T) {
 			requireInterpreter(t, hs.interpreter)

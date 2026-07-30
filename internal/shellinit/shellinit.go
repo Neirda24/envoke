@@ -245,24 +245,37 @@ var subcommands = []string{
 // bashCompletion completes subcommands first, then argument types per
 // subcommand: shell names for shell-init, files for the path-taking trust
 // commands, directories for the two that take a transition.
-const bashCompletion = `_envoke_complete() {
+// _envoke_compgen exists because `mapfile` is bash 4.0+ and macOS still
+// ships bash 3.2 as /bin/bash -- a completion that silently produced no
+// candidates there would be a miserable thing to debug. The read loop is
+// the portable equivalent, and unlike the other common workaround
+// (COMPREPLY=( $(compgen ...) )) it does not rely on unquoted word
+// splitting, so candidates containing spaces survive.
+const bashCompletion = `_envoke_compgen() {
+  COMPREPLY=()
+  local _envoke_line
+  while IFS= read -r _envoke_line; do
+    COMPREPLY+=("$_envoke_line")
+  done < <(compgen "$@")
+}
+_envoke_complete() {
   local cur="${COMP_WORDS[COMP_CWORD]}"
   if [ "${COMP_CWORD}" -eq 1 ]; then
-    mapfile -t COMPREPLY < <(compgen -W "allow completion debug exec help list prune revoke shell-hook shell-init version" -- "$cur")
+    _envoke_compgen -W "allow completion debug exec help list prune revoke shell-hook shell-init version" -- "$cur"
     return
   fi
   case "${COMP_WORDS[1]}" in
     shell-init)
-      mapfile -t COMPREPLY < <(compgen -W "bash zsh fish tcsh powershell" -- "$cur")
+      _envoke_compgen -W "bash zsh fish tcsh powershell" -- "$cur"
       ;;
     completion)
-      mapfile -t COMPREPLY < <(compgen -W "bash zsh fish" -- "$cur")
+      _envoke_compgen -W "bash zsh fish" -- "$cur"
       ;;
     allow|revoke)
-      mapfile -t COMPREPLY < <(compgen -f -- "$cur")
+      _envoke_compgen -f -- "$cur"
       ;;
     exec|debug)
-      mapfile -t COMPREPLY < <(compgen -d -- "$cur")
+      _envoke_compgen -d -- "$cur"
       ;;
     *)
       COMPREPLY=()

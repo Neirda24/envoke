@@ -6,10 +6,18 @@ import (
 	"testing"
 )
 
+// isolateEnv points the home directory at a fresh temp dir so the store
+// lands under it rather than the developer's real ~/.local/share.
+//
+// Both HOME and USERPROFILE are set: os.UserHomeDir, which storeDir falls
+// back to, reads USERPROFILE on Windows and HOME everywhere else. Setting
+// only HOME would silently let these tests write into a real home
+// directory on Windows.
 func isolateEnv(t *testing.T) (home string) {
 	t.Helper()
 	home = t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_DATA_HOME", "")
 	return home
 }

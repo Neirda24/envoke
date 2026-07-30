@@ -165,8 +165,11 @@ func (m *Envoke) Build(ctx context.Context) error {
 // which loads them) that the Linux test containers never see — notably
 // internal/matcher's Windows path-separator tests.
 //
-// This is a compile-level guarantee only. The behavioural suites all run on
-// Linux; nothing here proves envoke behaves correctly on Windows or macOS.
+// This is a compile-level guarantee only, and stays useful even alongside
+// the `native` job in .github/workflows/ci.yml (which runs the real tests on
+// windows-latest and macos-latest): this catches a broken cross-compile in
+// the local `dagger check` loop, before a push, and covers the arm64 targets
+// no runner exercises.
 //
 // +check
 func (m *Envoke) CrossBuild(ctx context.Context) error {

@@ -82,9 +82,11 @@ worth knowing before you rely on it:
   needs a POSIX shell on `PATH` (Git Bash, WSL, MSYS2). The shell hook
   itself has no such requirement.
 
-Windows is verified to compile and is covered by unit tests for the path
-handling above, but the end-to-end suites that drive real shells run on
-Linux only — so treat Windows as supported-but-less-travelled, and please
+Windows is tested on a real `windows-latest` CI runner, not just
+cross-compiled: the matching engine, config parsing and the trust store all
+run their full suites there. The end-to-end tests that drive bash/zsh/fish/
+tcsh still run on Linux and macOS only, since those shells aren't what a
+Windows user is running anyway. Please
 [open an issue](https://github.com/Neirda24/envoke/issues) if something
 behaves differently than documented here.
 

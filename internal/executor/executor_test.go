@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -12,7 +13,21 @@ import (
 	"github.com/Neirda24/envoke/internal/matcher"
 )
 
+// requirePOSIXShell skips when there is no `sh` on PATH. Run executes block
+// scripts through `sh -c` -- config scripts are POSIX shell, so translating
+// them to cmd.exe is not a thing envoke could meaningfully do. On Windows
+// that means `envoke exec` needs Git Bash, WSL or MSYS2, which is
+// documented rather than worked around (see docs/getting-started.md), and
+// these tests follow the same rule.
+func requirePOSIXShell(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no POSIX sh on PATH; `envoke exec` requires one")
+	}
+}
+
 func TestRun_ScriptRunsWithMatchedDirAsCwd(t *testing.T) {
+	requirePOSIXShell(t)
 	dir := t.TempDir()
 	m := mustMatch(t, dir, config.Block{
 		Type:    config.Enter,
@@ -36,6 +51,7 @@ func TestRun_ScriptRunsWithMatchedDirAsCwd(t *testing.T) {
 }
 
 func TestRun_CaptureGroupsExposedAsEnvVars(t *testing.T) {
+	requirePOSIXShell(t)
 	dir := t.TempDir()
 	projectDir := filepath.Join(dir, "myproject")
 	if err := os.Mkdir(projectDir, 0o755); err != nil {
@@ -60,6 +76,7 @@ func TestRun_CaptureGroupsExposedAsEnvVars(t *testing.T) {
 }
 
 func TestRun_LeaveBlockSetsEnvokeType(t *testing.T) {
+	requirePOSIXShell(t)
 	dir := t.TempDir()
 	m := mustMatch(t, dir, config.Block{
 		Type:    config.Leave,
@@ -78,6 +95,7 @@ func TestRun_LeaveBlockSetsEnvokeType(t *testing.T) {
 }
 
 func TestRun_NonZeroExitReturnsError(t *testing.T) {
+	requirePOSIXShell(t)
 	dir := t.TempDir()
 	m := mustMatch(t, dir, config.Block{
 		Type:       config.Enter,
@@ -97,6 +115,7 @@ func TestRun_NonZeroExitReturnsError(t *testing.T) {
 }
 
 func TestRun_CancelledContextReturnsError(t *testing.T) {
+	requirePOSIXShell(t)
 	dir := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
