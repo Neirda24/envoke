@@ -42,7 +42,7 @@ envoke allow --yes
 envoke allow -y /path/to/config
 ```
 
-The flag can appear anywhere among `allow`'s arguments, before or after the path.
+The flag may come before or after the path — `envoke allow --yes ~/.envokerc` and `envoke allow ~/.envokerc --yes` both work.
 
 ## Re-approving a changed config
 

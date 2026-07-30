@@ -494,7 +494,7 @@ func writeEnvokeStub(t *testing.T, dir, logPath string) {
 	t.Helper()
 	stub := "#!/bin/sh\n" +
 		`if [ "$1" = "shell-hook" ]; then` + "\n" +
-		`  shift; if [ "$1" = "--shell" ]; then shift 2; fi` + "\n" +
+		`  shift; if [ "$1" = "--shell" ]; then shift 2; fi; if [ "$1" = "--" ]; then shift; fi` + "\n" +
 		`  if [ "$#" -eq 0 ]; then set -- "$ENVOKE_FROM" "$ENVOKE_TO"; fi` + "\n" +
 		`  echo "$1 $2" >> ` + shellQuote(logPath) + "\n" +
 		"fi\n"

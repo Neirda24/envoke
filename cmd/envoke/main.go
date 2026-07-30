@@ -12,10 +12,12 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -52,7 +54,7 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 	}
 
 	switch args[0] {
-	case "version":
+	case "version", "--version", "-V":
 		printVersion(stdout)
 		return 0
 	case "shell-init":
@@ -75,6 +77,33 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 	}
 }
 
+// newFlagSet builds a per-subcommand flag set that never exits the process
+// (flag.ContinueOnError) and never prints Go's default usage dump, so run
+// stays a plain function returning an exit code and every subcommand can
+// print its own one-line usage in envoke's own voice.
+func newFlagSet(name string) *flag.FlagSet {
+	fs := flag.NewFlagSet("envoke "+name, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.Usage = func() {}
+	return fs
+}
+
+// parseFlags parses args, printing usage on stderr and reporting ok=false
+// when they're malformed. `-h`/`--help` is treated as a request, not an
+// error, but still returns ok=false so the caller stops -- the exit code
+// differs, which is why help is reported separately.
+func parseFlags(fs *flag.FlagSet, args []string, usage string, stderr io.Writer) (ok bool, code int) {
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			_, _ = fmt.Fprintln(stderr, "usage:", usage)
+			return false, 0
+		}
+		_, _ = fmt.Fprintf(stderr, "envoke: %v\nusage: %s\n", err, usage)
+		return false, 2
+	}
+	return true, 0
+}
+
 // printVersion prints the version, commit, and build date (as injected by
 // goreleaser's ldflags -- see .goreleaser.yaml -- or "dev"/"unknown" for a
 // local `go build`/`go test`, which never sets them) plus the Go toolchain
@@ -84,13 +113,66 @@ func printVersion(stdout io.Writer) {
 	_, _ = fmt.Fprintf(stdout, "%s %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
 }
 
+const allowUsage = "envoke allow [--yes|-y] [path]"
+
+const shellInitUsage = "envoke shell-init [bash|zsh|fish|tcsh|powershell]  (defaults to the shell named by $SHELL)"
+
+// detectShell maps a $SHELL value (a path like /usr/local/bin/fish) to one
+// of the supported shell names. It only ever looks at the basename, so a
+// shell installed anywhere works, and it deliberately does not fall back to
+// a default: silently emitting a bash hook for an unrecognised shell would
+// produce a broken rc file whose breakage surfaces much later, and much
+// less clearly, than a message right here.
+func detectShell(shellPath string) (string, error) {
+	if shellPath == "" {
+		return "", errors.New("$SHELL is not set, so the shell can't be detected -- name it explicitly")
+	}
+
+	name := filepath.Base(shellPath)
+	// Login shells are conventionally listed in /etc/shells with a leading
+	// dash when invoked as one; strip it before matching.
+	name = strings.TrimPrefix(name, "-")
+	switch name {
+	case "bash", "zsh", "fish", "tcsh":
+		return name, nil
+	case "csh":
+		// tcsh is very commonly installed as (or symlinked from) csh.
+		return "tcsh", nil
+	case "pwsh", "powershell", "pwsh.exe", "powershell.exe":
+		return "powershell", nil
+	default:
+		return "", fmt.Errorf("can't tell which shell %q is -- name it explicitly", shellPath)
+	}
+}
+
 func cmdShellInit(args []string, stdout, stderr io.Writer) int {
-	if len(args) != 1 {
-		_, _ = fmt.Fprintln(stderr, "usage: envoke shell-init <bash|zsh>")
+	flags := newFlagSet("shell-init")
+	if ok, code := parseFlags(flags, args, shellInitUsage, stderr); !ok {
+		return code
+	}
+
+	var shell string
+	switch flags.NArg() {
+	case 0:
+		// Guessing from $SHELL removes the single most common install
+		// mistake -- pasting the bash line into a zsh rc -- and costs
+		// nothing, since an unrecognised guess still produces the same
+		// explicit error as typing the name wrong.
+		var err error
+		shell, err = detectShell(os.Getenv("SHELL"))
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "envoke:", err)
+			_, _ = fmt.Fprintln(stderr, "usage:", shellInitUsage)
+			return 2
+		}
+	case 1:
+		shell = flags.Arg(0)
+	default:
+		_, _ = fmt.Fprintln(stderr, "usage:", shellInitUsage)
 		return 2
 	}
 
-	script, err := shellinit.Generate(args[0])
+	script, err := shellinit.Generate(shell)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "envoke:", err)
 		return 1
@@ -120,29 +202,31 @@ func cmdShellInit(args []string, stdout, stderr io.Writer) int {
 // interpolating directory names into a string that gets re-parsed is a
 // command-injection hole (see internal/shellinit's tcshHook comment). Every
 // other shell's hook passes them positionally.
+const shellHookUsage = "envoke shell-hook [--shell <name>] [--] <from> <to>  (or set ENVOKE_FROM/ENVOKE_TO)"
+
 func cmdShellHook(args []string, stdout, stderr io.Writer) int {
-	shell := ""
-	if len(args) >= 2 && args[0] == "--shell" {
-		shell = args[1]
-		args = args[2:]
+	flags := newFlagSet("shell-hook")
+	shell := flags.String("shell", "", "shell dialect to render for (bash, zsh, fish, tcsh, powershell)")
+	if ok, code := parseFlags(flags, args, shellHookUsage, stderr); !ok {
+		return code
 	}
 
 	var from, to string
-	switch {
-	case len(args) == 2:
-		from, to = args[0], args[1]
-	case len(args) == 0:
+	switch flags.NArg() {
+	case 2:
+		from, to = flags.Arg(0), flags.Arg(1)
+	case 0:
 		var ok bool
 		from, ok = os.LookupEnv("ENVOKE_FROM")
 		if ok {
 			to, ok = os.LookupEnv("ENVOKE_TO")
 		}
 		if !ok {
-			_, _ = fmt.Fprintln(stderr, "usage: envoke shell-hook [--shell <name>] <from> <to>  (or set ENVOKE_FROM/ENVOKE_TO)")
+			_, _ = fmt.Fprintln(stderr, "usage:", shellHookUsage)
 			return 2
 		}
 	default:
-		_, _ = fmt.Fprintln(stderr, "usage: envoke shell-hook [--shell <name>] <from> <to>  (or set ENVOKE_FROM/ENVOKE_TO)")
+		_, _ = fmt.Fprintln(stderr, "usage:", shellHookUsage)
 		return 2
 	}
 
@@ -198,7 +282,7 @@ func cmdShellHook(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	_, _ = fmt.Fprint(stdout, executor.Render(shell, leaves, enters))
+	_, _ = fmt.Fprint(stdout, executor.Render(*shell, leaves, enters))
 	return 0
 }
 
@@ -227,15 +311,26 @@ func cmdShellHook(args []string, stdout, stderr io.Writer) int {
 // --yes/-y skips the prompt entirely, for scripts/CI. The flag may appear
 // anywhere in args, before or after the optional path.
 func cmdAllow(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
-	yes := false
+	flags := newFlagSet("allow")
+	yes := flags.Bool("yes", false, "skip the y/N confirmation prompt")
+	flags.BoolVar(yes, "y", false, "shorthand for --yes")
+	if ok, code := parseFlags(flags, args, allowUsage, stderr); !ok {
+		return code
+	}
+
+	// stdlib flag stops at the first non-flag argument, but `envoke allow
+	// <path> --yes` was documented and released as working, so the trailing
+	// form keeps working rather than silently becoming a second path.
+	// Deliberately just this one boolean rather than a general
+	// flags-anywhere reimplementation: a config file genuinely named
+	// `--yes` can still be approved as `./--yes`.
 	var positional []string
-	for _, a := range args {
-		switch a {
-		case "--yes", "-y":
-			yes = true
-		default:
-			positional = append(positional, a)
+	for _, a := range flags.Args() {
+		if a == "--yes" || a == "-y" {
+			*yes = true
+			continue
 		}
+		positional = append(positional, a)
 	}
 
 	var path string
@@ -254,7 +349,7 @@ func cmdAllow(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 	case 1:
 		path = positional[0]
 	default:
-		_, _ = fmt.Fprintln(stderr, "usage: envoke allow [--yes|-y] [path]")
+		_, _ = fmt.Fprintln(stderr, "usage:", allowUsage)
 		return 2
 	}
 
@@ -308,7 +403,7 @@ func cmdAllow(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 		printBlocksForReview(stdout, path, cfg.Blocks)
 	}
 
-	if !yes {
+	if !*yes {
 		_, _ = fmt.Fprint(stdout, "envoke: trust and run these blocks on every matching cd? [y/N] ")
 		line, _ := bufio.NewReader(stdin).ReadString('\n')
 		answer := strings.ToLower(strings.TrimSpace(line))
@@ -436,9 +531,45 @@ func diffLines(oldLines, newLines []string) []string {
 //
 // Trust is enforced inside envoke.Transition rather than here, so no future
 // caller of that package can forget it.
+// transitionArgs resolves the <from> <to> pair shared by `exec` and
+// `debug`. Both are things a human types, unlike shell-hook which is only
+// ever called by generated code, so both accept relative paths and both
+// default to the shell's own last transition ($OLDPWD -> $PWD) — typing out
+// two absolute paths to ask "what would fire where I am right now?" was
+// pure friction, and `envoke debug . /tmp` used to fail outright.
+func transitionArgs(args []string) (from, to string, err error) {
+	switch len(args) {
+	case 0:
+		from, to = os.Getenv("OLDPWD"), os.Getenv("PWD")
+		if from == "" || to == "" {
+			return "", "", errors.New("$OLDPWD/$PWD are not both set, so there's no transition to infer -- pass <from> and <to>")
+		}
+	case 2:
+		from, to = args[0], args[1]
+	default:
+		return "", "", fmt.Errorf("expected either no arguments or exactly two, got %d", len(args))
+	}
+
+	if from, err = filepath.Abs(from); err != nil {
+		return "", "", err
+	}
+	if to, err = filepath.Abs(to); err != nil {
+		return "", "", err
+	}
+	return from, to, nil
+}
+
+const execUsage = "envoke exec [<from> <to>]  (defaults to $OLDPWD -> $PWD)"
+
 func cmdExec(args []string, stderr io.Writer) int {
-	if len(args) != 2 {
-		_, _ = fmt.Fprintln(stderr, "usage: envoke exec <from> <to>")
+	flags := newFlagSet("exec")
+	if ok, code := parseFlags(flags, args, execUsage, stderr); !ok {
+		return code
+	}
+	from, to, err := transitionArgs(flags.Args())
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		_, _ = fmt.Fprintln(stderr, "usage:", execUsage)
 		return 2
 	}
 
@@ -454,7 +585,7 @@ func cmdExec(args []string, stderr io.Writer) int {
 
 	warnUnsafePermissions(stderr, path)
 
-	if err := envoke.Transition(context.Background(), path, args[0], args[1]); err != nil {
+	if err := envoke.Transition(context.Background(), path, from, to); err != nil {
 		if errors.Is(err, envoke.ErrUntrusted) {
 			_, _ = fmt.Fprintf(stderr, "envoke: %v: run `envoke allow %s`\n", err, path)
 			return 1
@@ -471,12 +602,19 @@ func cmdExec(args []string, stderr io.Writer) int {
 // Diagnostics section). It does note whether the config is currently
 // trusted, since that determines whether shell-hook would actually run
 // what's listed here.
+const debugUsage = "envoke debug [<from> <to>]  (defaults to $OLDPWD -> $PWD)"
+
 func cmdDebug(args []string, stdout, stderr io.Writer) int {
-	if len(args) != 2 {
-		_, _ = fmt.Fprintln(stderr, "usage: envoke debug <from> <to>")
+	flags := newFlagSet("debug")
+	if ok, code := parseFlags(flags, args, debugUsage, stderr); !ok {
+		return code
+	}
+	from, to, err := transitionArgs(flags.Args())
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		_, _ = fmt.Fprintln(stderr, "usage:", debugUsage)
 		return 2
 	}
-	from, to := args[0], args[1]
 
 	path, found, err := config.Locate()
 	if err != nil {
@@ -558,10 +696,12 @@ func usage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, `envoke - run shell scripts when you cd into or out of a directory
 
 Usage:
-  envoke version                                    print version, commit, build date, and Go/OS/arch info, then exit
-  envoke shell-init <bash|zsh|fish|tcsh|powershell>  print shell hook code to eval/source
+  envoke version                                     print version, commit, build date, and Go/OS/arch info, then exit
+  envoke shell-init [<shell>]                        print shell hook code to eval/source (bash|zsh|fish|tcsh|powershell; guessed from $SHELL if omitted)
   envoke allow [--yes|-y] [path]                     trust a config file after reviewing and confirming it (default: the located config; --yes/-y skips the y/N prompt)
-  envoke exec <from> <to>                            run the blocks matching a directory change, each in its own subprocess (for scripts/CI, not your interactive shell)
-  envoke debug <from> <to>                           print which blocks would fire for a directory change, without running them
-  envoke shell-hook [--shell <name>] <from> <to>      run blocks matching a directory change (internal, called by the shell hook; <from>/<to> may also come from $ENVOKE_FROM/$ENVOKE_TO)`)
+  envoke exec [<from> <to>]                          run the blocks matching a directory change, each in its own subprocess (for scripts/CI, not your interactive shell)
+  envoke debug [<from> <to>]                         print which blocks would fire for a directory change, without running them
+  envoke shell-hook [--shell <name>] <from> <to>     run blocks matching a directory change (internal, called by the shell hook; <from>/<to> may also come from $ENVOKE_FROM/$ENVOKE_TO)
+
+exec and debug default to $OLDPWD -> $PWD, and accept relative paths.`)
 }

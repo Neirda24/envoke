@@ -208,15 +208,23 @@ public API to commit to yet):
     the calling shell. `t.Skip`s locally if an interpreter isn't installed;
     `.dagger`'s `test-shell-*` checks run all five for real in CI.
 - **`cmd/envoke`** — `run(args, stdout, stderr, stdin) int` is the testable
-  dispatcher `main()` wraps. Subcommands: `version`; `shell-init
-  <bash|zsh|fish|tcsh|powershell>`; `allow [--yes|-y] [path]` (refuses a
+  dispatcher `main()` wraps. Subcommands: `version` (also `--version`/`-V`);
+  `shell-init [<shell>]` (guesses from `$SHELL` via `detectShell` when
+  omitted, and errors rather than defaulting to bash for an unrecognised
+  one — a wrong guess writes a broken rc file whose breakage surfaces far
+  from its cause); `allow [--yes|-y] [path]` (refuses a
   config that doesn't parse; full dump / diff / "unchanged" depending on
   prior trust state; reads a `y`/`yes` confirmation from stdin unless
-  `--yes`); `shell-hook [--shell <name>] <from> <to>` (checks trust before
-  ever calling `executor.Render`; an untrusted match is reported on stderr
-  only, with an `envoke allow` hint); `debug <from> <to>` (same
-  `matcher.Resolve` as shell-hook, but always prints matches + trust status
-  and never executes).
+  `--yes`); `shell-hook [--shell <name>] [--] <from> <to>` (checks trust
+  before ever calling `executor.Render`; an untrusted match is reported on
+  stderr only, with an `envoke allow` hint); `exec [<from> <to>]`
+  (subprocess execution via `internal/envoke`, for scripts/CI); `debug
+  [<from> <to>]` (same `matcher.Resolve` as shell-hook, but always prints
+  matches + trust status and never executes). `exec` and `debug` share
+  `transitionArgs`: both are human-typed, so both accept relative paths and
+  default to `$OLDPWD -> $PWD`. `shell-hook` does not — it only ever
+  receives generated arguments, and every hook passes `--` before them so a
+  directory named like a flag can't be parsed as one.
 - **`.dagger/`** — a separate Go module (own `go.mod`, `dagger/envoke`), not
   a dependency of the main module. `main.go` defines checks (`// +check`
   pragma, run via `dagger check -m .dagger`): `fmt`/`vet`/`build`/`test`
@@ -270,7 +278,15 @@ installed on the dev machine.
 
 - **CLI framework: stdlib `flag`.** No subcommands existed to justify
   `cobra`/`urfave-cli` when this was decided; revisit only if subcommand
-  parsing genuinely outgrows `flag`.
+  parsing genuinely outgrows `flag`. Each subcommand builds its own set via
+  `newFlagSet` (`ContinueOnError`, output discarded, no default usage dump)
+  so `run` stays a plain function returning an exit code and the usage text
+  stays in envoke's own voice. Don't hand-roll argument scanning: the
+  previous version only recognised `--shell` in position 0, couldn't accept
+  a path named `-y`, and had no `--`. The one deliberate exception is
+  `cmdAllow` picking `--yes`/`-y` back out of the positionals, because
+  `envoke allow <path> --yes` shipped as documented behaviour and stdlib
+  `flag` stops at the first positional.
 - **Config parser: hand-rolled, not a grammar library.** The grammar is a
   simple line-oriented format — a hand-rolled scanner keeps positioned error
   messages simple. Revisit only if the grammar grows real nesting/expressions.

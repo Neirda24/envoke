@@ -45,7 +45,7 @@ const bashHook = `_envoke_hook() {
   local __envoke_status=$?
   local envoke_prev="${__envoke_prev_pwd:-$PWD}"
   if [ "$envoke_prev" != "$PWD" ]; then
-    eval "$(command envoke shell-hook "$envoke_prev" "$PWD")"
+    eval "$(command envoke shell-hook -- "$envoke_prev" "$PWD")"
   fi
   __envoke_prev_pwd="$PWD"
   return $__envoke_status
@@ -69,7 +69,7 @@ esac
 // stop short whenever envoke or the block it ran failed.
 const zshHook = `_envoke_hook() {
   local __envoke_status=$?
-  eval "$(command envoke shell-hook "${OLDPWD:-$PWD}" "$PWD")"
+  eval "$(command envoke shell-hook -- "${OLDPWD:-$PWD}" "$PWD")"
   return $__envoke_status
 }
 typeset -ag chpwd_functions
@@ -96,7 +96,7 @@ fi
 // bash/zsh hooks above.
 const fishHook = `function _envoke_hook --on-variable PWD
   set -l __envoke_status $status
-  set -l script (command envoke shell-hook --shell fish "$__envoke_prev_pwd" "$PWD" | string collect)
+  set -l script (command envoke shell-hook --shell fish -- "$__envoke_prev_pwd" "$PWD" | string collect)
   if test -n "$script"
     eval $script
   end
@@ -195,7 +195,7 @@ const powershellHook = `if (-not $global:_envokeHookInstalled) {
     $envokeLastExitCode = $global:LASTEXITCODE
     $envokeCurPwd = (Get-Location).Path
     if ($global:_envokePrevPwd -ne $envokeCurPwd) {
-      $envokeScript = & envoke shell-hook --shell powershell $global:_envokePrevPwd $envokeCurPwd | Out-String
+      $envokeScript = & envoke shell-hook --shell powershell -- $global:_envokePrevPwd $envokeCurPwd | Out-String
       if ($envokeScript) { Invoke-Expression $envokeScript }
       $global:_envokePrevPwd = $envokeCurPwd
     }

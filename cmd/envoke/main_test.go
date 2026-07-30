@@ -1015,6 +1015,156 @@ enter /a
 // A single read now feeds all three, so an edit that lands after the review
 // simply leaves the config untrusted -- which is what this asserts: approve,
 // then modify, and the modified config must not inherit the approval.
+func TestRun_VersionFlagsMatchVersionSubcommand(t *testing.T) {
+	want, _, _ := runFor(t, "version")
+	for _, arg := range []string{"--version", "-V"} {
+		got, _, code := runFor(t, arg)
+		if code != 0 || got != want {
+			t.Errorf("%s: got %q code %d, want same as `envoke version` (%q)", arg, got, code, want)
+		}
+	}
+}
+
+func TestRun_ShellInitDetectsShellFromEnv(t *testing.T) {
+	cases := map[string]string{
+		"/bin/bash":              "PROMPT_COMMAND",
+		"/usr/bin/zsh":           "chpwd_functions",
+		"/usr/local/bin/fish":    "--on-variable PWD",
+		"/bin/tcsh":              "cwdcmd",
+		"/bin/csh":               "cwdcmd",
+		"/usr/bin/pwsh":          "function global:prompt",
+		"/opt/homebrew/bin/-zsh": "chpwd_functions",
+	}
+	for shellPath, want := range cases {
+		t.Run(shellPath, func(t *testing.T) {
+			t.Setenv("SHELL", shellPath)
+			stdout, stderr, code := runFor(t, "shell-init")
+			if code != 0 {
+				t.Fatalf("exit code = %d, stderr = %q", code, stderr)
+			}
+			if !strings.Contains(stdout, want) {
+				t.Errorf("expected the hook for %s (containing %q), got:\n%s", shellPath, want, stdout)
+			}
+		})
+	}
+}
+
+// Guessing wrong would write a broken rc file whose breakage surfaces much
+// later than an error here, so an unrecognised $SHELL is never silently
+// defaulted.
+func TestRun_ShellInitUndetectableShellIsError(t *testing.T) {
+	for _, shellPath := range []string{"", "/usr/bin/ksh"} {
+		t.Setenv("SHELL", shellPath)
+		_, stderr, code := runFor(t, "shell-init")
+		if code != 2 {
+			t.Errorf("SHELL=%q: exit code = %d, want 2", shellPath, code)
+		}
+		if !strings.Contains(stderr, "explicitly") {
+			t.Errorf("SHELL=%q: expected a hint to name the shell explicitly, got %q", shellPath, stderr)
+		}
+	}
+}
+
+// TestRun_ShellHookDoubleDashSeparatesPaths covers the reason the generated
+// hooks pass `--`: without it, a directory whose name starts with `-` would
+// be parsed as a flag by the very command meant to react to entering it.
+func TestRun_ShellHookDoubleDashSeparatesPaths(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /--shell\n    echo hi\n")
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+
+	stdout, stderr, code := runFor(t, "shell-hook", "--", "/", "/--shell")
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "echo hi") {
+		t.Errorf("expected the block for a flag-looking directory to render, got %q", stdout)
+	}
+}
+
+func TestRun_AllowAcceptsYesAfterPath(t *testing.T) {
+	// `envoke allow <path> --yes` shipped as documented behaviour, and
+	// stdlib flag stops at the first positional, so it is handled explicitly.
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /a\n    echo hi\n")
+
+	stdout, stderr, code := runFor(t, "allow", filepath.Join(home, ".envokerc"), "--yes")
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "trusted") {
+		t.Errorf("expected the config to be trusted, got %q", stdout)
+	}
+}
+
+// TestTransitionArgs covers the argument handling `exec` and `debug` share.
+// Both are typed by a human, unlike shell-hook which only ever receives
+// generated arguments — so both take relative paths (`envoke debug . /tmp`
+// used to fail outright with "not absolute") and both default to the
+// shell's own last transition.
+func TestTransitionArgs(t *testing.T) {
+	t.Run("relative paths are made absolute", func(t *testing.T) {
+		from, to, err := transitionArgs([]string{".", "sub"})
+		if err != nil {
+			t.Fatalf("transitionArgs: %v", err)
+		}
+		if !filepath.IsAbs(from) || !filepath.IsAbs(to) {
+			t.Errorf("expected absolute paths, got %q and %q", from, to)
+		}
+		if filepath.Base(to) != "sub" {
+			t.Errorf("to = %q, want it to end in %q", to, "sub")
+		}
+	})
+
+	t.Run("no arguments uses OLDPWD and PWD", func(t *testing.T) {
+		t.Setenv("OLDPWD", "/tmp/from")
+		t.Setenv("PWD", "/tmp/to")
+		from, to, err := transitionArgs(nil)
+		if err != nil {
+			t.Fatalf("transitionArgs: %v", err)
+		}
+		if from != "/tmp/from" || to != "/tmp/to" {
+			t.Errorf("got %q -> %q, want /tmp/from -> /tmp/to", from, to)
+		}
+	})
+
+	t.Run("no arguments and no OLDPWD is an error", func(t *testing.T) {
+		t.Setenv("OLDPWD", "")
+		t.Setenv("PWD", "/tmp/to")
+		if _, _, err := transitionArgs(nil); err == nil {
+			t.Errorf("expected an error when there's no transition to infer")
+		}
+	})
+
+	t.Run("one argument is an error", func(t *testing.T) {
+		if _, _, err := transitionArgs([]string{"/only-one"}); err == nil {
+			t.Errorf("expected an error for a single argument")
+		}
+	})
+}
+
+func TestRun_DebugDefaultsToShellTransition(t *testing.T) {
+	home := isolateHome(t)
+	target := filepath.Join(home, "proj")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	writeConfig(t, home, "enter "+target+"\n    echo hi\n")
+
+	t.Setenv("OLDPWD", home)
+	t.Setenv("PWD", target)
+
+	stdout, stderr, code := runFor(t, "debug")
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "enter "+target) {
+		t.Errorf("expected $OLDPWD -> $PWD to be used, got %q", stdout)
+	}
+}
+
 func TestRun_ExecRunsTrustedBlocksInSubprocesses(t *testing.T) {
 	home := isolateHome(t)
 	target := filepath.Join(home, "proj")

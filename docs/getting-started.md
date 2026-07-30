@@ -27,6 +27,12 @@ Add one of these to your shell's rc file, matching your shell:
 eval "$(envoke shell-init bash)"   # or zsh
 ```
 
+`envoke shell-init` with no argument guesses the shell from `$SHELL`, which
+is usually what you want when adding the line to your own rc file. It never
+falls back to a default it isn't sure about: an unrecognised `$SHELL` is an
+error telling you to name the shell, rather than a bash hook quietly written
+into a fish config.
+
 ```fish
 # fish
 envoke shell-init fish | source
