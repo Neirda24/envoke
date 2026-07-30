@@ -24,10 +24,15 @@ years; envoke picks up the same model on a few specific points (regex
 engine choice, path matching semantics, a trust/approval step) and extends
 shell support beyond bash/zsh.
 
-See [Design Notes](design-notes.md) for the full, point-by-point comparison.
+- [envoke vs. direnv](vs-direnv.md) — one central config of path patterns
+  instead of an `.envrc` per directory, arbitrary shell scripts instead of
+  environment variables only, and when to use which (or both).
+- [Design Notes](design-notes.md) — the full, point-by-point comparison with
+  ondir.
 
 ## Where to go next
 
+- [envoke vs. direnv](vs-direnv.md) — how the two differ, and which one fits your case.
 - [Getting Started](getting-started.md) — install, hook into your shell, write your first config.
 - [Configuration](configuration.md) — the config file syntax, path patterns, and what a matched script sees.
 - [Trust Model](trust.md) — why `envoke allow` exists and how it works.
