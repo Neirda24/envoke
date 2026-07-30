@@ -131,8 +131,16 @@ public API to commit to yet):
   script for `"bash"`, `"zsh"`, `"fish"`, `"tcsh"`, or `"powershell"` (static
   strings, no templating). Every hook calls `envoke shell-hook --shell
   <name>` so `executor.Render` picks the right dialect. None of the five
-  hooks redefine `cd` (`assertNeverRedefinesCd`). Per-shell gotchas worth
-  knowing before touching this package:
+  hooks redefine `cd` (`assertNeverRedefinesCd`). Two invariants hold across
+  all five, each with a cross-shell test that drives real interpreters:
+  a hook must never let a **directory name** reach a shell parser as code
+  (`TestGenerate_HooksNeverExecuteDirectoryNames` — this is what the tcsh
+  `eval` rework below is about), and a hook must be **transparent to the
+  shell's last-command status**
+  (`TestGenerate_HooksAreTransparentToLastCommandStatus`): bash/zsh/fish
+  save `$?`/`$status` on entry and `return` it, PowerShell saves and
+  restores `$LASTEXITCODE`. Skipping that turns every exit-code-aware prompt
+  into a liar. Per-shell gotchas worth knowing before touching this package:
   - **bash** has no native "on cd" hook, so it polls via `PROMPT_COMMAND`
     comparing `$PWD` against a var — that var **must be seeded at
     hook-install time**, or the first `cd` after install compares the new

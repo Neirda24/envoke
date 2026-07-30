@@ -32,12 +32,23 @@ func Generate(shell string) (string, error) {
 // envoke shell-hook prints nothing to stdout unless the matched config is
 // trusted (see cmd/envoke's cmdAllow/cmdShellHook), so the eval below is
 // always a safe no-op against an untrusted or non-matching config.
+//
+// The hook saves and restores $? around its own work. bash sets $? to the
+// last command's status before running PROMPT_COMMAND, and the extremely
+// common `PROMPT_COMMAND='__status=$?; ...'` idiom (git-prompt, liquidprompt
+// and most hand-rolled prompts that colour on failure) reads it there.
+// Since this hook prepends itself to PROMPT_COMMAND, without the
+// save/restore every such prompt would silently start reporting envoke's
+// exit status instead of the user's last command — a very confusing
+// regression to trace back to a directory-hook tool.
 const bashHook = `_envoke_hook() {
+  local __envoke_status=$?
   local envoke_prev="${__envoke_prev_pwd:-$PWD}"
   if [ "$envoke_prev" != "$PWD" ]; then
     eval "$(command envoke shell-hook "$envoke_prev" "$PWD")"
   fi
   __envoke_prev_pwd="$PWD"
+  return $__envoke_status
 }
 # Seed the baseline at install time (not lazily on the first hook call) so
 # the first real cd is compared against the shell's actual starting
@@ -51,8 +62,15 @@ esac
 
 // zshHook hooks directory changes via zsh's native chpwd_functions array,
 // which fires on every directory change without needing to redefine cd.
+//
+// The status save/restore serves the mirror image of bash's concern (see
+// bashHook): chpwd_functions run as part of the `cd` itself, so a hook that
+// returned the status of whatever it last did would make `cd foo && ...`
+// stop short whenever envoke or the block it ran failed.
 const zshHook = `_envoke_hook() {
+  local __envoke_status=$?
   eval "$(command envoke shell-hook "${OLDPWD:-$PWD}" "$PWD")"
+  return $__envoke_status
 }
 typeset -ag chpwd_functions
 if [[ -z "${chpwd_functions[(r)_envoke_hook]}" ]]; then
@@ -73,12 +91,17 @@ fi
 // command substitution in fish splits output into one list element per
 // line — passed straight to eval, that would silently turn a multi-line
 // script into several unrelated single-line evals.
+// The `set -l __envoke_status $status` first line and the matching `return`
+// keep the handler transparent to $status, for the same reason as the
+// bash/zsh hooks above.
 const fishHook = `function _envoke_hook --on-variable PWD
+  set -l __envoke_status $status
   set -l script (command envoke shell-hook --shell fish "$__envoke_prev_pwd" "$PWD" | string collect)
   if test -n "$script"
     eval $script
   end
   set -g __envoke_prev_pwd "$PWD"
+  return $__envoke_status
 end
 if not set -q __envoke_prev_pwd
   set -g __envoke_prev_pwd "$PWD"
@@ -154,17 +177,29 @@ alias cwdcmd _envoke_hook
 // captured stdout into a single string before Invoke-Expression, the same
 // concern as fish's `string collect` above: PowerShell's pipeline otherwise
 // hands Invoke-Expression one line at a time.
+//
+// $LASTEXITCODE is saved on entry and restored before calling through to
+// the previous prompt, the same transparency concern as the other four
+// hooks: invoking `envoke` is a native command, so it overwrites
+// $LASTEXITCODE, and a prompt that colours on the last command's exit code
+// would report envoke's instead. Restoring it is the same thing
+// starship/oh-my-posh do. `$?` cannot be restored — PowerShell makes it
+// read-only — so a prompt reading `$?` rather than $LASTEXITCODE still sees
+// this hook's own result; that is a PowerShell limitation, not something
+// the hook can work around.
 const powershellHook = `if (-not $global:_envokeHookInstalled) {
   $global:_envokeHookInstalled = $true
   $global:_envokePrevPwd = (Get-Location).Path
   $global:_envokeOriginalPrompt = $function:prompt
   function global:prompt {
+    $envokeLastExitCode = $global:LASTEXITCODE
     $envokeCurPwd = (Get-Location).Path
     if ($global:_envokePrevPwd -ne $envokeCurPwd) {
       $envokeScript = & envoke shell-hook --shell powershell $global:_envokePrevPwd $envokeCurPwd | Out-String
       if ($envokeScript) { Invoke-Expression $envokeScript }
       $global:_envokePrevPwd = $envokeCurPwd
     }
+    $global:LASTEXITCODE = $envokeLastExitCode
     & $global:_envokeOriginalPrompt
   }
 }

@@ -569,6 +569,117 @@ func hookShells() []hookShell {
 	}
 }
 
+// writeFailingEnvokeStub writes an `envoke` stub that prints nothing and
+// exits non-zero, so a hook that leaks its own result into the shell's
+// last-status is caught rather than accidentally passing because the stub
+// happened to succeed.
+func writeFailingEnvokeStub(t *testing.T, dir string) {
+	t.Helper()
+	stub := "#!/bin/sh\nexit 3\n"
+	if err := os.WriteFile(filepath.Join(dir, "envoke"), []byte(stub), 0o755); err != nil {
+		t.Fatalf("WriteFile stub: %v", err)
+	}
+}
+
+// TestGenerate_HooksAreTransparentToLastCommandStatus asserts that
+// installing a hook never changes what the shell reports as the previous
+// command's exit status.
+//
+// This is a regression test for a bug that shipped: the bash hook prepends
+// itself to PROMPT_COMMAND, and bash sets $? for PROMPT_COMMAND to the last
+// command's status — so without saving and restoring it, every prompt using
+// the ubiquitous `PROMPT_COMMAND='__status=$?; ...'` idiom silently started
+// reporting envoke's status instead of the user's last command. The same
+// class of leak exists in each of the other hooks, in its own dialect:
+// zsh/fish run their hook as part of the `cd` itself (so a failing hook
+// would break `cd foo && ...`), and PowerShell's hook invokes a native
+// command inside `prompt`, overwriting $LASTEXITCODE.
+//
+// Each case deliberately uses a stub that exits non-zero, so the assertion
+// fails if the hook's own result leaks through.
+func TestGenerate_HooksAreTransparentToLastCommandStatus(t *testing.T) {
+	cases := []struct {
+		shell       string
+		interpreter string
+		want        string
+		// driver builds the shell text: install the hook, produce a known
+		// status, fire the hook, then echo "STATUS=<observed>".
+		run func(t *testing.T, script, start, target, stubDir string) (string, error)
+	}{
+		{
+			shell: "bash", interpreter: "bash", want: "STATUS=42",
+			run: func(t *testing.T, script, start, target, stubDir string) (string, error) {
+				// A pre-existing PROMPT_COMMAND that captures $? the way real
+				// prompt frameworks do; the hook prepends itself to it.
+				driver := "cd " + shellQuote(start) + "\n" +
+					`PROMPT_COMMAND='__envoke_seen=$?; echo "STATUS=$__envoke_seen"'` + "\n" +
+					script + "\n" +
+					"cd " + shellQuote(target) + "\n" +
+					"(exit 42)\n" +
+					`eval "$PROMPT_COMMAND"` + "\n"
+				return runDriver(t, stubDir, exec.Command("bash", "--noprofile", "--norc", "-c", driver))
+			},
+		},
+		{
+			shell: "zsh", interpreter: "zsh", want: "STATUS=0",
+			run: func(t *testing.T, script, start, target, stubDir string) (string, error) {
+				// chpwd_functions run inside `cd`, so a leaking hook makes a
+				// perfectly good `cd` report failure.
+				driver := "cd " + shellQuote(start) + "\n" + script + "\n" +
+					"cd " + shellQuote(target) + "\n" + `echo "STATUS=$?"` + "\n"
+				return runDriver(t, stubDir, exec.Command("zsh", "--no-rcs", "-c", driver))
+			},
+		},
+		{
+			shell: "fish", interpreter: "fish", want: "STATUS=0",
+			run: func(t *testing.T, script, start, target, stubDir string) (string, error) {
+				driver := "cd " + fishQuote(start) + "\n" + script + "\n" +
+					"cd " + fishQuote(target) + "\n" + `echo "STATUS=$status"` + "\n"
+				return runDriver(t, stubDir, exec.Command("fish", "--no-config", writeDriver(t, "driver.fish", driver)))
+			},
+		},
+		{
+			shell: "tcsh", interpreter: "tcsh", want: "STATUS=0",
+			run: func(t *testing.T, script, start, target, stubDir string) (string, error) {
+				driver := "cd " + tcshQuote(start) + "\n" + script + "\n" +
+					"cd " + tcshQuote(target) + "\n" + `echo "STATUS=$status"` + "\n"
+				return runDriver(t, stubDir, exec.Command("tcsh", "-f", writeDriver(t, "driver.csh", driver)))
+			},
+		},
+		{
+			shell: "powershell", interpreter: "pwsh", want: "STATUS=42",
+			run: func(t *testing.T, script, start, target, stubDir string) (string, error) {
+				// $LASTEXITCODE is what a PowerShell prompt reads for a
+				// native command's status; the hook runs one of its own.
+				driver := "Set-Location -LiteralPath " + psQuote(start) + "\n" + script + "\n" +
+					"Set-Location -LiteralPath " + psQuote(target) + "\n" +
+					"$global:LASTEXITCODE = 42\n" +
+					"$null = prompt\n" +
+					`Write-Output "STATUS=$global:LASTEXITCODE"` + "\n"
+				return runDriver(t, stubDir, exec.Command("pwsh", "-NoProfile", "-Command", driver))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.shell, func(t *testing.T) {
+			requireInterpreter(t, tc.interpreter)
+			script, err := Generate(tc.shell)
+			if err != nil {
+				t.Fatalf("Generate: %v", err)
+			}
+
+			stubDir := t.TempDir()
+			writeFailingEnvokeStub(t, stubDir)
+
+			out, _ := tc.run(t, script, t.TempDir(), t.TempDir(), stubDir)
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("hook leaked its own exit status: want %q in output, got:\n%s", tc.want, out)
+			}
+		})
+	}
+}
+
 func writeDriver(t *testing.T, name, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)
