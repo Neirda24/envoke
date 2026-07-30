@@ -45,6 +45,23 @@ It exits 1 in that case, and 1 as soon as any block exits non-zero —
 remaining blocks are not run, and nothing is unwound (see the
 enter/leave independence rule in [Configuration](configuration.md)).
 
+`envoke disable` applies here too, and `envoke exec` says so rather than
+silently doing nothing:
+
+```
+envoke: disabled by the persistent switch -- no blocks were run
+```
+
+It still exits 0 — being switched off is what was asked for, not a failure.
+Set `ENVOKE_DISABLE=0` for a job that must run its blocks regardless.
+
+## Interruption
+
+A SIGINT or SIGTERM interrupts the running block rather than killing
+`envoke` out from under it, so a `trap` in the block gets a chance to clean
+up; it is killed five seconds later if it hasn't exited. `envoke exec` then
+exits 130.
+
 For CI, approve the config as part of provisioning, where `--yes` skips the
 interactive prompt:
 

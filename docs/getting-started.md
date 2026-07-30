@@ -126,6 +126,7 @@ envoke: about to trust /home/you/.envokerc -- review each block below before con
 
 envoke: trust and run these blocks on every matching cd? [y/N] y
 envoke: trusted /home/you/.envokerc
+envoke: to apply it to this shell without leaving the directory: eval "$(envoke reload)"
 ```
 
-`cd` into a matching directory and the `enter` block runs in your current shell; `cd` back out and `leave` runs. For non-interactive setups (dotfiles bootstrap scripts, provisioning), pass `--yes`/`-y` to skip the confirmation prompt: `envoke allow --yes`. See [Trust Model](trust.md) for the full confirm/diff/`--yes` behavior, and [Debugging](debugging.md) for inspecting matches before trusting a config.
+`cd` into a matching directory and the `enter` block runs in your current shell; `cd` back out and `leave` runs. To apply a config you just approved without moving, run the `eval` line above — `envoke allow` cannot export into the shell that ran it. See [Debugging](debugging.md#applying-a-config-without-leaving-the-directory), which also covers `envoke disable`/`enable` for switching envoke off. For non-interactive setups (dotfiles bootstrap scripts, provisioning), pass `--yes`/`-y` to skip the confirmation prompt: `envoke allow --yes`. See [Trust Model](trust.md) for the full confirm/diff/`--yes` behavior, and [Debugging](debugging.md) for inspecting matches before trusting a config.

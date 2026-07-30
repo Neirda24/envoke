@@ -31,9 +31,12 @@ envoke: about to trust /home/you/.envokerc -- review each block below before con
 
 envoke: trust and run these blocks on every matching cd? [y/N] y
 envoke: trusted /home/you/.envokerc
+envoke: to apply it to this shell without leaving the directory: eval "$(envoke reload)"
 ```
 
 Answering anything but `y`/`yes` prints `envoke: aborted, not trusted` to stderr and exits non-zero, leaving the config untrusted.
+
+That last line is there because `envoke allow` is a child process of your shell and cannot export anything into it — what you just approved applies from your next `cd` onwards. See [Applying a config without leaving the directory](debugging.md#applying-a-config-without-leaving-the-directory).
 
 For non-interactive use — dotfiles bootstrap scripts, CI, provisioning — pass `--yes` (or `-y`) to skip the prompt and trust immediately, the same as answering `y`:
 
