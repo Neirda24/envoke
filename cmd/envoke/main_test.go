@@ -560,6 +560,109 @@ func TestRun_SwitchRejectsArguments(t *testing.T) {
 	}
 }
 
+// TestRun_ReloadAppliesEntersForTheCurrentDirectory covers what reload
+// exists for: allow is a child process and cannot export into the shell that
+// ran it, so a freshly approved config would otherwise only take effect on
+// the next cd.
+func TestRun_ReloadAppliesEntersForTheCurrentDirectory(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo outer
+
+enter /a/b
+    echo inner
+
+leave /a
+    echo bye
+`)
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+	t.Setenv("PWD", "/a/b")
+
+	stdout, _, code := runFor(t, "reload")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	outer, inner := strings.Index(stdout, "echo outer"), strings.Index(stdout, "echo inner")
+	if outer == -1 || inner == -1 || outer > inner {
+		t.Errorf("expected both enter blocks, shallowest first, got %q", stdout)
+	}
+	// Nothing has been left, and envoke does not snapshot state to unwind.
+	if strings.Contains(stdout, "echo bye") {
+		t.Errorf("reload must not run leave blocks, got %q", stdout)
+	}
+}
+
+func TestRun_ReloadRefusesUntrustedConfig(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo hi
+`)
+	t.Setenv("PWD", "/a")
+
+	stdout, stderr, code := runFor(t, "reload")
+	// Unlike shell-hook, which only notes it: this was typed, so silence
+	// would look like it worked.
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	if stdout != "" {
+		t.Errorf("nothing may reach the shell for eval, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "envoke allow") {
+		t.Errorf("expected the allow hint, got %q", stderr)
+	}
+}
+
+func TestRun_ReloadShellFlagSelectsExportSyntax(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo hi
+`)
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+	t.Setenv("PWD", "/a")
+
+	stdout, _, code := runFor(t, "reload", "--shell", "fish")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "set -gx ENVOKE_DIR") {
+		t.Errorf("expected fish syntax, got %q", stdout)
+	}
+}
+
+func TestRun_ReloadRejectsArgumentsAndUnknownShell(t *testing.T) {
+	isolateHome(t)
+	if _, _, code := runFor(t, "reload", "/a"); code != 2 {
+		t.Errorf("positional argument: exit code = %d, want 2", code)
+	}
+	if _, _, code := runFor(t, "reload", "--shell", "fsh"); code != 2 {
+		t.Errorf("unknown shell: exit code = %d, want 2", code)
+	}
+}
+
+func TestRun_AllowPointsAtReload(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo hi
+`)
+
+	stdout, _, code := runFor(t, "allow", "--yes")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "envoke reload") {
+		t.Errorf("expected allow to name the way to apply it now, got %q", stdout)
+	}
+}
+
 func TestRun_AllowLocatedConfig(t *testing.T) {
 	home := isolateHome(t)
 	writeConfig(t, home, "enter /a\n    echo hi\n")

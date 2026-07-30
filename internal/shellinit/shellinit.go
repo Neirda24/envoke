@@ -239,7 +239,8 @@ func Completion(shell string) (string, error) {
 // than by a user noticing tab does nothing.
 var subcommands = []string{
 	"allow", "completion", "debug", "disable", "enable", "exec", "help",
-	"list", "prune", "revoke", "shell-hook", "shell-init", "version",
+	"list", "prune", "reload", "revoke", "shell-hook", "shell-init",
+	"version",
 }
 
 // bashCompletion completes subcommands first, then argument types per
@@ -261,7 +262,7 @@ const bashCompletion = `_envoke_compgen() {
 _envoke_complete() {
   local cur="${COMP_WORDS[COMP_CWORD]}"
   if [ "${COMP_CWORD}" -eq 1 ]; then
-    _envoke_compgen -W "allow completion debug disable enable exec help list prune revoke shell-hook shell-init version" -- "$cur"
+    _envoke_compgen -W "allow completion debug disable enable exec help list prune reload revoke shell-hook shell-init version" -- "$cur"
     return
   fi
   case "${COMP_WORDS[1]}" in
@@ -300,6 +301,7 @@ const zshCompletion = `_envoke() {
     'help:show usage'
     'list:list every trusted config'
     'prune:drop trust records whose config no longer exists'
+    'reload:re-apply the enter blocks for the current directory'
     'revoke:withdraw trust for a config'
     'shell-hook:internal, called by the generated hook'
     'shell-init:print shell hook code to eval/source'
@@ -342,6 +344,7 @@ complete -c envoke -n __fish_use_subcommand -a exec -d 'run matching blocks in s
 complete -c envoke -n __fish_use_subcommand -a help -d 'show usage'
 complete -c envoke -n __fish_use_subcommand -a list -d 'list every trusted config'
 complete -c envoke -n __fish_use_subcommand -a prune -d 'drop trust records whose config no longer exists'
+complete -c envoke -n __fish_use_subcommand -a reload -d 're-apply the enter blocks for the current directory'
 complete -c envoke -n __fish_use_subcommand -a revoke -d 'withdraw trust for a config'
 complete -c envoke -n __fish_use_subcommand -a shell-hook -d 'internal, called by the generated hook'
 complete -c envoke -n __fish_use_subcommand -a shell-init -d 'print shell hook code to eval/source'
@@ -351,4 +354,5 @@ complete -c envoke -n '__fish_seen_subcommand_from completion' -a 'bash zsh fish
 complete -c envoke -n '__fish_seen_subcommand_from allow revoke' -F
 complete -c envoke -n '__fish_seen_subcommand_from exec debug' -F
 complete -c envoke -n '__fish_seen_subcommand_from allow' -l yes -s y -d 'skip the y/N confirmation prompt'
+complete -c envoke -n '__fish_seen_subcommand_from reload' -l shell -x -a 'bash zsh fish tcsh powershell' -d 'shell dialect to render for'
 `

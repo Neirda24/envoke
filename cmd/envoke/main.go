@@ -77,6 +77,8 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 		return cmdSwitch(args[1:], stdout, stderr, false)
 	case "enable":
 		return cmdSwitch(args[1:], stdout, stderr, true)
+	case "reload":
+		return cmdReload(args[1:], stdout, stderr)
 	case "exec":
 		return cmdExec(args[1:], stderr)
 	case "debug":
@@ -483,6 +485,10 @@ func cmdAllow(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 		return 1
 	}
 	_, _ = fmt.Fprintf(stdout, "envoke: trusted %s\n", path)
+	// allow is a child process and cannot export into the shell that ran it,
+	// so what was just approved applies from the next cd on. Naming the way
+	// out here is the only place a user is guaranteed to be looking.
+	_, _ = fmt.Fprintln(stdout, `envoke: to apply it to this shell without leaving the directory: eval "$(envoke reload)"`)
 	return 0
 }
 
@@ -752,6 +758,96 @@ func cmdPrune(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "envoke: %d record(s) approved by an older envoke have no recorded path and were left alone; remove them by hand or re-run `envoke allow` on those configs\n", len(skipped))
 	}
 	return 0
+}
+
+const reloadUsage = `envoke reload [--shell <name>]  (used as: eval "$(envoke reload)")`
+
+// cmdReload re-applies the enter blocks for the current directory, for the
+// case `envoke allow` cannot cover: allow runs as a child of your shell and
+// cannot export anything into it, so a freshly approved config only takes
+// effect on the next cd. Rather than cd .. && cd -, this prints the same
+// shell text the hook does, for the caller to eval.
+//
+// Only enter blocks, and no unwinding of what a previous version of the
+// config set: nothing has been left, and envoke does not snapshot state to
+// restore later.
+func cmdReload(args []string, stdout, stderr io.Writer) int {
+	flags := newFlagSet("reload")
+	shell := flags.String("shell", "", "shell dialect to render for (bash, zsh, fish, tcsh, powershell)")
+	if ok, code := parseFlags(flags, args, reloadUsage, stderr); !ok {
+		return code
+	}
+	if flags.NArg() != 0 {
+		_, _ = fmt.Fprintln(stderr, "usage:", reloadUsage)
+		return 2
+	}
+	if !executor.IsKnownShell(*shell) {
+		_, _ = fmt.Fprintf(stderr, "envoke: unknown shell %q (supported: bash, zsh, fish, tcsh, powershell)\n", *shell)
+		return 2
+	}
+
+	if disabled, source, err := state.Disabled(); err != nil {
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		return 1
+	} else if disabled {
+		_, _ = fmt.Fprintf(stderr, "envoke: disabled by %s -- nothing was applied\n", source)
+		return 0
+	}
+
+	dir, err := currentDir()
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		return 1
+	}
+
+	path, found, err := config.Locate()
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		return 1
+	}
+	if !found {
+		_, _ = fmt.Fprintf(stderr, "envoke: no config found (looked for %s)\n", path)
+		return 1
+	}
+
+	warnUnsafePermissions(stderr, path)
+
+	cfg, content, err := config.LoadFile(path)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		return 1
+	}
+
+	trusted, err := trust.IsTrusted(path, content)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		return 1
+	}
+	if !trusted {
+		// Louder than shell-hook's equivalent, which merely notes it: this
+		// was typed, so doing nothing has to be an error rather than a
+		// no-op the user might not notice.
+		_, _ = fmt.Fprintf(stderr, "envoke: %s is not trusted: run `envoke allow %s`\n", path, path)
+		return 1
+	}
+
+	enters, err := matcher.Enters(cfg, dir)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		return 1
+	}
+	_, _ = fmt.Fprint(stdout, executor.Render(*shell, nil, enters))
+	return 0
+}
+
+// currentDir prefers $PWD over os.Getwd for the same reason the hooks pass
+// the shell's own $PWD: through a symlinked directory the two disagree, and
+// the patterns a user writes describe the path they cd'd through.
+func currentDir() (string, error) {
+	if pwd := os.Getenv("PWD"); filepath.IsAbs(pwd) {
+		return pwd, nil
+	}
+	return os.Getwd()
 }
 
 const (
@@ -1054,6 +1150,7 @@ Usage:
   envoke prune                                       drop trust records whose config no longer exists
   envoke disable                                     stop running blocks, in every shell, until enable
   envoke enable                                      undo disable (set ENVOKE_DISABLE=1 or =0 to override either one for a single shell)
+  envoke reload [--shell <name>]                     re-apply the enter blocks for the current directory: eval "$(envoke reload)"
   envoke exec [<from> <to>]                          run the blocks matching a directory change, each in its own subprocess (for scripts/CI, not your interactive shell)
   envoke debug [<from> <to>]                         print which blocks would fire for a directory change, without running them
   envoke shell-hook [--shell <name>] <from> <to>     run blocks matching a directory change (internal, called by the shell hook; <from>/<to> may also come from $ENVOKE_FROM/$ENVOKE_TO)

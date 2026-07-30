@@ -75,6 +75,25 @@ func Resolve(cfg *config.Config, from, to string) (leaves, enters []Match, err e
 	return leaves, enters, nil
 }
 
+// Enters returns every enter block matching dir or any of its ancestors,
+// shallowest first: the set that would have fired arriving from outside the
+// filesystem entirely.
+//
+// This is what `envoke reload` needs and Resolve cannot express. Resolve
+// answers "what changed between two directories", so from == to yields
+// nothing at all, and passing the root as from would still skip the root
+// itself — the one directory that is in every chain.
+//
+// Leave blocks have no equivalent here on purpose: nothing has been left.
+// Re-applying the enters without unwinding anything matches envoke's rule
+// that enter and leave are independent and explicit.
+func Enters(cfg *config.Config, dir string) ([]Match, error) {
+	if !filepath.IsAbs(dir) {
+		return nil, fmt.Errorf("path %q is not absolute", dir)
+	}
+	return collect(cfg, ancestors(dir), config.Enter), nil
+}
+
 // collect returns every block of the given type matching any of dirs, in
 // (directory, declaration) order.
 func collect(cfg *config.Config, dirs []string, want config.BlockType) []Match {

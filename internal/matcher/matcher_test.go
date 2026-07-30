@@ -147,6 +147,56 @@ func TestResolve_EnterFiresShallowFirstOnTraverse(t *testing.T) {
 	}
 }
 
+func TestEnters_MatchesTheWholeAncestorChainShallowFirst(t *testing.T) {
+	cfg := &config.Config{Blocks: []config.Block{
+		block(config.Enter, pattern("/a/x"), "echo enter x"),
+		block(config.Enter, pattern("/a/x/y"), "echo enter y"),
+		block(config.Leave, pattern("/a/x"), "echo leave x"),
+	}}
+
+	enters, err := Enters(cfg, tp("/a/x/y"))
+	if err != nil {
+		t.Fatalf("Enters: %v", err)
+	}
+	if len(enters) != 2 {
+		t.Fatalf("expected 2 enter matches, got %d: %v", len(enters), enters)
+	}
+	if enters[0].Dir != np("/a/x") || enters[1].Dir != np("/a/x/y") {
+		t.Errorf("expected shallow-first order [%s, %s], got [%s, %s]", np("/a/x"), np("/a/x/y"), enters[0].Dir, enters[1].Dir)
+	}
+}
+
+// TestEnters_IncludesTheDirectoryItself is what separates Enters from
+// Resolve: Resolve reports what *changed*, so it can never report a block
+// for a directory that is on both sides of the transition.
+func TestEnters_IncludesTheDirectoryItself(t *testing.T) {
+	cfg := &config.Config{Blocks: []config.Block{
+		block(config.Enter, pattern("/a"), "echo a"),
+	}}
+
+	enters, err := Enters(cfg, tp("/a"))
+	if err != nil {
+		t.Fatalf("Enters: %v", err)
+	}
+	if len(enters) != 1 {
+		t.Fatalf("expected the directory's own block, got %d matches", len(enters))
+	}
+
+	_, resolved, err := Resolve(cfg, tp("/a"), tp("/a"))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(resolved) != 0 {
+		t.Errorf("Resolve on a no-op transition should report nothing, got %d", len(resolved))
+	}
+}
+
+func TestEnters_RejectsRelativePath(t *testing.T) {
+	if _, err := Enters(&config.Config{}, "a/b"); err == nil {
+		t.Error("expected a relative path to be rejected")
+	}
+}
+
 func TestResolve_LeaveFiresDeepFirstOnTraverse(t *testing.T) {
 	cfg := &config.Config{Blocks: []config.Block{
 		block(config.Leave, pattern("/a/x"), "echo leave x"),
