@@ -33,8 +33,16 @@ envoke shell-init tcsh | source /dev/stdin   # delete this line
 
 ## 2. (Optional) Remove trust records and config
 
-These are small and harmless to leave behind, but if you want a clean
-removal:
+Worth doing rather than skipping: the trust store keeps a **plaintext copy
+of every config you approved**, and configs commonly export project-scoped
+secrets. While the binary is still around, the tidy way is:
+
+```sh
+envoke list     # see what's there
+envoke revoke   # withdraw trust, removing the record and its content copy
+```
+
+Otherwise, remove the directory outright:
 
 ```sh
 # Trust records (SHA-256 hashes + approved content per config path)

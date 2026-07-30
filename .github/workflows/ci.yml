@@ -37,3 +37,49 @@ jobs:
           call: --gh-auth-token=env://GITHUB_TOKEN actions-up
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Everything above runs in Dagger, which means Linux containers -- Dagger's
+  # engine cannot run Windows containers at all, and Wine is not a usable
+  # substitute (Wine 8 lacks the bcryptprimitives.dll modern Go requires, and
+  # newer Wine needs x86 segmentation that Apple Silicon's emulation doesn't
+  # provide, so it isn't even reproducible on a maintainer's machine).
+  #
+  # So the platforms envoke publishes binaries for get tested on real runners
+  # instead. This is the only thing in CI that proves the Windows path
+  # handling actually works rather than merely compiles, and the only place
+  # macOS's bash 3.2 -- still /bin/bash on every Mac -- ever runs the
+  # generated scripts.
+  native:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS runs the whole suite: it is POSIX, ships bash/zsh/tcsh, and
+          # its bash 3.2 is the oldest interpreter any user realistically has.
+          - os: macos-latest
+            packages: ./...
+          # Windows runs ./internal/... . cmd/envoke's fixtures are built on
+          # Unix-style absolute paths ("/a"), which filepath.IsAbs rejects on
+          # Windows, so including it would fail for reasons that have nothing
+          # to do with envoke's behaviour. Every package that contains
+          # platform-dependent logic -- matcher's path normalization, config's
+          # ~/$VAR expansion and Locate, trust's store paths -- is covered
+          # here; widening this to ./... means porting those fixtures, which
+          # is worth doing separately and verifying on a real Windows box.
+          - os: windows-latest
+            packages: ./internal/...
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      # -race needs cgo, which both runners have. Tests that need an
+      # interpreter skip themselves when it is absent (requireInterpreter,
+      # requirePOSIXShell) rather than failing, so a missing shell shows up
+      # as a SKIP in the log instead of a red build.
+      - run: go test ${{ matrix.packages }} -race
+        shell: bash

@@ -6,6 +6,15 @@
 envoke debug ~/Projects ~/Projects/envoke
 ```
 
+Both arguments are optional and may be relative. With none, envoke uses your
+shell's own last transition (`$OLDPWD` to `$PWD`), which answers "why didn't
+anything fire when I just cd'd here?" without retyping two absolute paths:
+
+```sh
+cd ~/Projects/envoke
+envoke debug
+```
+
 This runs the same resolution logic (`matcher.Resolve`) as the live `shell-hook`, and additionally reports whether the config is currently trusted — but it never calls the code path that executes or renders a script, regardless of trust status. That's the point: `envoke debug` is safe to run against a config you haven't approved yet, or one you're actively editing and don't want to accidentally trigger.
 
 Use it to:

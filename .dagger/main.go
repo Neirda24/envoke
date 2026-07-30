@@ -2,10 +2,10 @@
 //
 // Mirrors the four commands from CONTRIBUTING.md's "Verifying your change"
 // (gofmt, go vet, go build, go test -race), adds golangci-lint, and runs the
-// shellinit end-to-end tests against a real interpreter for each of the five
-// supported shells (bash, zsh, fish, tcsh, powershell) so none of them are
-// silently skipped for lack of the binary, as they are in a plain local
-// `go test` run.
+// shellinit and executor end-to-end tests against a real interpreter for
+// each of the five supported shells (bash, zsh, fish, tcsh, powershell) so
+// none of them are silently skipped for lack of the binary, as they are in
+// a plain local `go test` run.
 package main
 
 import (
@@ -102,12 +102,23 @@ func (m *Envoke) yamllintBase() *dagger.Container {
 		WithExec([]string{"pip", "install", "--no-cache-dir", "yamllint==" + yamllintVersion})
 }
 
-// shellinitTest runs the shellinit package's tests (which drive a real
-// interpreter end to end rather than string-match generated scripts) inside
-// the given container.
-func (m *Envoke) shellinitTest(ctx context.Context, c *dagger.Container) error {
+// shellTest runs the two packages whose tests drive a real interpreter end
+// to end rather than string-matching generated text, inside the given
+// container:
+//
+//   - internal/shellinit generates the hook scripts, and asserts per-shell
+//     behaviour (a cd is reported, a setenv persists, a directory name is
+//     never executed, $? is preserved).
+//   - internal/executor generates the ENVOKE_* assignments those hooks
+//     eval, and asserts every dialect's quoting round-trips a directory
+//     name byte-for-byte.
+//
+// Both are useless without the interpreter installed — they t.Skip locally
+// — which is exactly why each TestShell* check below builds a container
+// with one shell in it and runs them for real.
+func (m *Envoke) shellTest(ctx context.Context, c *dagger.Container) error {
 	_, err := m.withSource(c).
-		WithExec([]string{"go", "test", "./internal/shellinit/...", "-race", "-v"}).
+		WithExec([]string{"go", "test", "./internal/shellinit/...", "./internal/executor/...", "-race", "-v"}).
 		Sync(ctx)
 	return err
 }
@@ -148,6 +159,44 @@ func (m *Envoke) Build(ctx context.Context) error {
 	return err
 }
 
+// CrossBuild compiles and vets every OS/arch .goreleaser.yaml publishes,
+// so a platform that ships as a release artifact can't silently stop
+// building. It also type-checks the GOOS-specific test files (via `go vet`,
+// which loads them) that the Linux test containers never see — notably
+// internal/matcher's Windows path-separator tests.
+//
+// This is a compile-level guarantee only, and stays useful even alongside
+// the `native` job in .github/workflows/ci.yml (which runs the real tests on
+// windows-latest and macos-latest): this catches a broken cross-compile in
+// the local `dagger check` loop, before a push, and covers the arm64 targets
+// no runner exercises.
+//
+// +check
+func (m *Envoke) CrossBuild(ctx context.Context) error {
+	targets := []struct{ goos, goarch string }{
+		{"linux", "amd64"}, {"linux", "arm64"},
+		{"darwin", "amd64"}, {"darwin", "arm64"},
+		{"windows", "amd64"}, {"windows", "arm64"},
+	}
+
+	c := m.withSource(m.goBase())
+	for _, t := range targets {
+		// CGO off: cross-compiling with cgo would need a cross toolchain,
+		// and envoke is a pure-Go, dependency-free binary anyway (the race
+		// detector in Test is the only thing that needs cgo).
+		staged := c.
+			WithEnvVariable("CGO_ENABLED", "0").
+			WithEnvVariable("GOOS", t.goos).
+			WithEnvVariable("GOARCH", t.goarch).
+			WithExec([]string{"go", "build", "./..."}).
+			WithExec([]string{"go", "vet", "./..."})
+		if _, err := staged.Sync(ctx); err != nil {
+			return fmt.Errorf("%s/%s: %w", t.goos, t.goarch, err)
+		}
+	}
+	return nil
+}
+
 // Test runs the full test suite with the race detector.
 //
 // +check
@@ -156,6 +205,50 @@ func (m *Envoke) Test(ctx context.Context) error {
 		WithExec([]string{"go", "test", "./...", "-race"}).
 		Sync(ctx)
 	return err
+}
+
+// fuzzTargets are the fuzz functions Fuzz drives, as package/name pairs.
+// Listed explicitly rather than discovered, so adding a target without
+// wiring it in here is a visible omission rather than a silent one.
+var fuzzTargets = []struct{ pkg, name string }{
+	{"./internal/config", "FuzzParse"},
+	{"./internal/config", "FuzzParseBytesMatchesParse"},
+	{"./internal/config", "FuzzCompilePattern"},
+}
+
+// Fuzz runs each fuzz target for a short burst. It is deliberately a
+// time-boxed smoke run, not a soak: the point in CI is to catch a target
+// that has started failing outright (or stopped compiling), while the seed
+// corpus already runs as ordinary tests under Test on every commit. Real
+// fuzzing is something to do locally with a longer -fuzztime when touching
+// the parser.
+//
+// Not a +check — a fixed-duration run per target would add minutes to every
+// CI run for a low hit rate on a parser this small. Run it deliberately:
+//
+//	dagger call -m .dagger fuzz
+//
+// +optional fuzzTime, default 20s per target.
+func (m *Envoke) Fuzz(
+	ctx context.Context,
+	// +optional
+	// +default="20s"
+	fuzzTime string,
+) error {
+	for _, t := range fuzzTargets {
+		_, err := m.withSource(m.goBase()).
+			WithExec([]string{
+				"go", "test", t.pkg,
+				"-run=^$", // no ordinary tests, just the fuzzing
+				"-fuzz=^" + t.name + "$",
+				"-fuzztime=" + fuzzTime,
+			}).
+			Sync(ctx)
+		if err != nil {
+			return fmt.Errorf("%s %s: %w", t.pkg, t.name, err)
+		}
+	}
+	return nil
 }
 
 // Lint runs golangci-lint.
@@ -291,41 +384,41 @@ func (m *Envoke) Autofix(ctx context.Context) (*dagger.Changeset, error) {
 	return changes, nil
 }
 
-// TestShellBash runs the shellinit end-to-end tests against a real bash
+// TestShellBash runs the shell end-to-end tests against a real bash
 // (already present in the base Go image).
 //
 // +check
 func (m *Envoke) TestShellBash(ctx context.Context) error {
-	return m.shellinitTest(ctx, m.goBase())
+	return m.shellTest(ctx, m.goBase())
 }
 
-// TestShellZsh runs the shellinit end-to-end tests against a real zsh.
+// TestShellZsh runs the shell end-to-end tests against a real zsh.
 //
 // +check
 func (m *Envoke) TestShellZsh(ctx context.Context) error {
-	return m.shellinitTest(ctx, m.aptInstall("zsh"))
+	return m.shellTest(ctx, m.aptInstall("zsh"))
 }
 
-// TestShellFish runs the shellinit end-to-end tests against a real fish.
+// TestShellFish runs the shell end-to-end tests against a real fish.
 //
 // +check
 func (m *Envoke) TestShellFish(ctx context.Context) error {
-	return m.shellinitTest(ctx, m.aptInstall("fish"))
+	return m.shellTest(ctx, m.aptInstall("fish"))
 }
 
-// TestShellTcsh runs the shellinit end-to-end tests against a real tcsh.
+// TestShellTcsh runs the shell end-to-end tests against a real tcsh.
 //
 // +check
 func (m *Envoke) TestShellTcsh(ctx context.Context) error {
-	return m.shellinitTest(ctx, m.aptInstall("tcsh"))
+	return m.shellTest(ctx, m.aptInstall("tcsh"))
 }
 
-// TestShellPowershell runs the shellinit end-to-end tests against a real
+// TestShellPowershell runs the shell end-to-end tests against a real
 // pwsh.
 //
 // +check
 func (m *Envoke) TestShellPowershell(ctx context.Context) error {
-	return m.shellinitTest(ctx, m.powershellBase())
+	return m.shellTest(ctx, m.powershellBase())
 }
 
 // Snapshot runs the full goreleaser pipeline (cross-compile, archive,

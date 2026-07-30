@@ -89,7 +89,8 @@ for macOS/Linux/Windows (amd64/arm64) — each release's `checksums.txt` is
 Early development. The matching engine, all five shell integrations, the
 trust mechanism, and `envoke debug` are implemented and tested end-to-end
 against real interpreters. Packaging is live: Homebrew, Scoop, GitHub
-Releases, and `.deb`/`.rpm` packages. See [CLAUDE.md](CLAUDE.md) for exact
+Releases, and `.deb`/`.rpm` packages, each release carrying a per-archive
+SBOM and cosign-signed checksums. See [CLAUDE.md](CLAUDE.md) for exact
 scope and architecture.
 
 ## Contributing

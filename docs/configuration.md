@@ -4,7 +4,7 @@
 
 envoke resolves the config path in this order:
 
-1. `$ENVOKERC` — used verbatim, even if the file doesn't exist yet.
+1. `$ENVOKERC` — used verbatim, even if the file doesn't exist yet. A path that doesn't exist is treated as "no config", silently: the shell hook stays quiet on every `cd` rather than reporting it, so you can point `$ENVOKERC` at a file before writing it. A config that *does* exist but fails to parse, or can't be read, is still reported — that's a config you believe is in effect and isn't.
 2. `~/.envokerc` — if present.
 3. `$XDG_CONFIG_HOME/envoke/config` (or `~/.config/envoke/config`) — if present.
 4. Not found — this is a normal state, not an error; envoke simply has nothing to match.
@@ -35,6 +35,8 @@ Patterns are matched with Go's `regexp` package (RE2) — linear-time matching, 
 
 - A leading `~` expands to your home directory.
 - `$VAR` / `${VAR}` expand as literal substitutions (not re-interpreted as regex) before the pattern is compiled.
+- **An undefined variable is an error, not an empty string.** `$HOEM/Projects` fails with a positioned parse error naming `HOEM`, instead of quietly compiling to a pattern that can never match. A variable that is set but empty is a value, and expands to nothing as you'd expect.
+- A `$` that isn't followed by a variable name stays a literal `$` — so it still works as the regex end anchor (`~/Projects/(a|b)$`).
 - The final pattern is anchored as `^(?:...)$` against each path segment being tested — this is what makes matching **segment-based** rather than a raw string prefix, so `~/Projects/foo` never falsely matches `~/Projects/foobar` (unlike ondir's raw prefix matching).
 
 ## What a matched script sees
