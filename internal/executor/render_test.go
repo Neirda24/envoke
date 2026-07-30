@@ -269,6 +269,33 @@ func TestRender_LeavesNoVariablesBehind(t *testing.T) {
 	}
 }
 
+// TestRender_LeavesTheBlocksOwnVariablesAlone draws the line the teardown
+// stops at. The unset list is built from matchVars, so it names the ENVOKE_*
+// variables Render itself exported and nothing else: what a block exports is
+// the whole point of envoke and persists until the user's own leave block
+// clears it.
+func TestRender_LeavesTheBlocksOwnVariablesAlone(t *testing.T) {
+	requirePOSIXShell(t)
+
+	m := mustMatch(t, "/Projects/foo", config.Block{
+		Type:    config.Enter,
+		Pattern: regexp.MustCompile(`^/Projects/([^/]+)$`),
+		Script:  `export MY_VAR="$ENVOKE_MATCH_1"`,
+	})
+
+	script := Render("bash", nil, []matcher.Match{m}) +
+		`echo "[${MY_VAR-gone}][${ENVOKE_MATCH_1-gone}]"` + "\n"
+	out, err := exec.Command("sh", "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("running rendered script: %v\nscript:\n%s\noutput:\n%s", err, script, out)
+	}
+	// The block's own variable survives, including the ENVOKE_* value it
+	// captured while it ran; only the ENVOKE_* variables themselves go.
+	if got := strings.TrimSpace(string(out)); got != "[foo][gone]" {
+		t.Errorf("teardown scope = %s, want [foo][gone]\nscript:\n%s", got, script)
+	}
+}
+
 // TestRender_StaleCaptureGroupIsNotVisibleToTheNextBlock is the behavioral
 // half of TestRender_TearsDownBetweenBlocks. POSIX only: the mechanism is
 // dialect-independent, only the teardown syntax differs, and that is what
