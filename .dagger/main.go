@@ -204,6 +204,50 @@ func (m *Envoke) Test(ctx context.Context) error {
 	return err
 }
 
+// fuzzTargets are the fuzz functions Fuzz drives, as package/name pairs.
+// Listed explicitly rather than discovered, so adding a target without
+// wiring it in here is a visible omission rather than a silent one.
+var fuzzTargets = []struct{ pkg, name string }{
+	{"./internal/config", "FuzzParse"},
+	{"./internal/config", "FuzzParseBytesMatchesParse"},
+	{"./internal/config", "FuzzCompilePattern"},
+}
+
+// Fuzz runs each fuzz target for a short burst. It is deliberately a
+// time-boxed smoke run, not a soak: the point in CI is to catch a target
+// that has started failing outright (or stopped compiling), while the seed
+// corpus already runs as ordinary tests under Test on every commit. Real
+// fuzzing is something to do locally with a longer -fuzztime when touching
+// the parser.
+//
+// Not a +check — a fixed-duration run per target would add minutes to every
+// CI run for a low hit rate on a parser this small. Run it deliberately:
+//
+//	dagger call -m .dagger fuzz
+//
+// +optional fuzzTime, default 20s per target.
+func (m *Envoke) Fuzz(
+	ctx context.Context,
+	// +optional
+	// +default="20s"
+	fuzzTime string,
+) error {
+	for _, t := range fuzzTargets {
+		_, err := m.withSource(m.goBase()).
+			WithExec([]string{
+				"go", "test", t.pkg,
+				"-run=^$", // no ordinary tests, just the fuzzing
+				"-fuzz=^" + t.name + "$",
+				"-fuzztime=" + fuzzTime,
+			}).
+			Sync(ctx)
+		if err != nil {
+			return fmt.Errorf("%s %s: %w", t.pkg, t.name, err)
+		}
+	}
+	return nil
+}
+
 // Lint runs golangci-lint.
 //
 // +check

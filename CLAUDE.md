@@ -263,8 +263,10 @@ public API to commit to yet):
 
 `Snapshot` runs `goreleaser release --snapshot --clean` (cross-compiles for
 linux/darwin/windows × amd64/arm64, never touches GitHub — safe to run
-anytime; this is what exercises the `nfpms:` deb/rpm build locally, since
-those don't need any external repo). `Publish` runs `goreleaser release
+anytime; this is what exercises the `nfpms:` deb/rpm build and the `sboms:`
+syft step locally, since neither needs an external repo). `syft`, `nfpm` and
+`cosign` all ship inside the pinned goreleaser image already — verify before
+adding anything that assumes another tool is there. `Publish` runs `goreleaser release
 --clean` against a pushed `v*` tag to cut a real GitHub Release (attaching
 the `.deb`/`.rpm` packages as release assets alongside the archives) and
 push the Homebrew cask (`homebrew_casks:`, not the deprecated `brews:` key)
@@ -301,6 +303,15 @@ installed on the dev machine.
 - Table-driven tests via subtests (`Test<Func>_<Scenario>` naming), including
   a regression test for each ondir bug fixed (see docs/design-notes.md).
   `go test ./... -race` must pass.
+- **`internal/config` has fuzz targets** (`fuzz_test.go`): `FuzzParse`,
+  `FuzzParseBytesMatchesParse` and `FuzzCompilePattern`. The parser is
+  hand-rolled by choice and consumes a whole file of unstructured text that
+  decides what shell code runs, which is what native fuzzing is for. Their
+  seed corpora run as ordinary tests under `dagger call -m .dagger test`;
+  `dagger call -m .dagger fuzz [--fuzz-time=5m]` actually fuzzes (not a
+  `+check` — a fixed-duration run per target would tax every CI run for a
+  low hit rate). Adding a target means adding it to `fuzzTargets` in
+  `.dagger/main.go` too; it is listed explicitly so the omission is visible.
 - **Never run `go build`/`go test`/`go vet`/`gofmt`/`golangci-lint` directly
   on the host.** Always verify through `dagger call -m .dagger <check>`
   (`fmt`/`vet`/`build`/`test`/`lint`/`test-shell-*`) — this runs on the

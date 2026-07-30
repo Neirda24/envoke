@@ -57,7 +57,10 @@ Pick the command that matches what you changed:
 |---|---|
 | Go code anywhere in `internal/`/`cmd/` | `dagger check -m .dagger` (runs everything below) |
 | Just want a quick loop while iterating | `dagger call -m .dagger fmt`, `vet`, `build`, or `test` individually |
-| `internal/shellinit` (shell hook generation) | `dagger call -m .dagger test-shell-bash` (swap in `zsh`/`fish`/`tcsh`/`powershell`) — each spins up a container with only that one interpreter installed, so nothing silently skips for lack of a binary |
+| `internal/shellinit` (hook generation) or `internal/executor` (ENVOKE_* rendering) | `dagger call -m .dagger test-shell-bash` (swap in `zsh`/`fish`/`tcsh`/`powershell`) — each spins up a container with only that one interpreter installed and runs both packages, so nothing silently skips for lack of a binary |
+| `internal/config` (the parser or pattern compilation) | `dagger call -m .dagger fuzz` — a short burst per fuzz target. Give it longer when the change is substantial: `dagger call -m .dagger fuzz --fuzz-time=5m`. The seed corpus runs as ordinary tests under `test` regardless |
+| Anything that has to keep building for Windows/macOS | `dagger call -m .dagger cross-build` — compiles and vets all six published OS/arch pairs, and is the only thing that type-checks GOOS-gated files like `internal/matcher/matchpath_windows_test.go` |
+| `.goreleaser.yaml` | `dagger call -m .dagger snapshot` — runs the whole release pipeline (cross-compile, archives, `.deb`/`.rpm`, SBOMs, checksums) without touching GitHub |
 | `.github/workflows/*.yml` | `dagger -m .dagger call zizmor` and `dagger -m .dagger call actions-up` (see below) |
 | `.github/ISSUE_TEMPLATE/`, `.github/DISCUSSION_TEMPLATE/`, or any other YAML under `.github/` | `dagger call -m .dagger yaml-lint` (also runs as part of the full `dagger check -m .dagger`) |
 | `docs/` or `mkdocs.yml` | `mkdocs serve` or `dagger -m ./.dagger call docs up --ports 8000:8000` (see [Previewing documentation](#previewing-documentation-changes)) |
