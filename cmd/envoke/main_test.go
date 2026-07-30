@@ -241,6 +241,67 @@ func TestRun_ShellHookWrongArgCount(t *testing.T) {
 	}
 }
 
+// TestRun_ShellHookReadsDirectoriesFromEnv covers the tcsh hook's calling
+// convention: because tcsh's only way to pipe into `source` is through an
+// `eval`, and interpolating directory names into a re-parsed string is a
+// command-injection hole, the tcsh hook passes them in the environment
+// instead of as arguments (see internal/shellinit's tcshHook comment).
+func TestRun_ShellHookReadsDirectoriesFromEnv(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo hi
+`)
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+	t.Setenv("ENVOKE_FROM", "/")
+	t.Setenv("ENVOKE_TO", "/a")
+
+	stdout, stderr, code := runFor(t, "shell-hook", "--shell", "tcsh")
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "setenv ENVOKE_DIR") || !strings.Contains(stdout, "echo hi") {
+		t.Errorf("expected the rendered tcsh script for the env-supplied transition, got %q", stdout)
+	}
+}
+
+// TestRun_ShellHookPositionalArgsWinOverEnv keeps the environment fallback
+// strictly a fallback: a stale ENVOKE_FROM/ENVOKE_TO left in the environment
+// (they are exported, briefly, by the tcsh hook) must never override what a
+// caller passed explicitly.
+func TestRun_ShellHookPositionalArgsWinOverEnv(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo hi
+`)
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+	t.Setenv("ENVOKE_FROM", "/")
+	t.Setenv("ENVOKE_TO", "/a")
+
+	stdout, _, code := runFor(t, "shell-hook", "/", "/never/matches")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if stdout != "" {
+		t.Errorf("positional arguments should have taken precedence over the environment, got %q", stdout)
+	}
+}
+
+func TestRun_ShellHookNoArgsAndNoEnvIsUsageError(t *testing.T) {
+	_, stderr, code := runFor(t, "shell-hook")
+	if code != 2 {
+		t.Errorf("exit code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr, "ENVOKE_FROM") {
+		t.Errorf("usage should mention the environment fallback, got %q", stderr)
+	}
+}
+
 func TestRun_ShellHookShellFlagSelectsExportSyntax(t *testing.T) {
 	home := isolateHome(t)
 	writeConfig(t, home, `

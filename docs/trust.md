@@ -95,6 +95,30 @@ envoke: warning: /home/you/.envokerc is writable by group/other (mode 664) -- co
 This is a warning, not a block — fix it with `chmod go-w ~/.envokerc` if you
 see it unexpectedly.
 
+## Directory names are never executed
+
+The trust model only means something if the *only* code envoke can run is
+code you approved. A directory name is attacker-controllable in ordinary
+situations — an extracted archive, a cloned repository, a shared or NFS home
+— so no shell hook may ever let one reach a shell parser as code.
+
+Every generated hook passes the two directories to `envoke shell-hook`
+without any string interpolation into something that gets re-parsed. tcsh is
+the awkward one: its `cwdcmd` alias can only pipe into `source` from inside
+an `eval`, and `eval` re-parses its argument. The hook therefore keeps that
+`eval` string a fixed constant and passes the directories through the
+environment instead:
+
+```tcsh
+setenv ENVOKE_FROM "$owd" ; setenv ENVOKE_TO "$cwd" ; eval "\envoke shell-hook --shell tcsh | source /dev/stdin" ; unsetenv ENVOKE_FROM ; unsetenv ENVOKE_TO
+```
+
+`envoke shell-hook` reads `$ENVOKE_FROM`/`$ENVOKE_TO` when it is given no
+positional arguments; explicit arguments always take precedence. This is
+covered by a cross-shell regression test that `cd`s a real bash, zsh, fish,
+tcsh and PowerShell into a directory whose name is packed with shell
+metacharacters and asserts nothing was executed.
+
 ## Why this is non-negotiable
 
 Trust-before-execution is one of envoke's core design principles: no code path is allowed to auto-execute an unapproved config, including "convenience" paths. If you're ever unsure what a config would do before trusting it, use [`envoke debug`](debugging.md) — it reports matches without executing anything, trusted or not.

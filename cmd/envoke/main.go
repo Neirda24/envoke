@@ -106,17 +106,39 @@ func cmdShellInit(args []string, stdout, stderr io.Writer) int {
 // tcsh/powershell); omitting it (as bash's and zsh's generated hooks do)
 // defaults to the POSIX profile, so existing installs keep working
 // unchanged.
+//
+// The two directories may be supplied either as positional arguments or,
+// when no positional arguments are given at all, via the ENVOKE_FROM and
+// ENVOKE_TO environment variables. The environment form exists for the tcsh
+// hook, whose only way to pipe into `source` is through an `eval` — and
+// interpolating directory names into a string that gets re-parsed is a
+// command-injection hole (see internal/shellinit's tcshHook comment). Every
+// other shell's hook passes them positionally.
 func cmdShellHook(args []string, stdout, stderr io.Writer) int {
 	shell := ""
 	if len(args) >= 2 && args[0] == "--shell" {
 		shell = args[1]
 		args = args[2:]
 	}
-	if len(args) != 2 {
-		_, _ = fmt.Fprintln(stderr, "usage: envoke shell-hook [--shell <name>] <from> <to>")
+
+	var from, to string
+	switch {
+	case len(args) == 2:
+		from, to = args[0], args[1]
+	case len(args) == 0:
+		var ok bool
+		from, ok = os.LookupEnv("ENVOKE_FROM")
+		if ok {
+			to, ok = os.LookupEnv("ENVOKE_TO")
+		}
+		if !ok {
+			_, _ = fmt.Fprintln(stderr, "usage: envoke shell-hook [--shell <name>] <from> <to>  (or set ENVOKE_FROM/ENVOKE_TO)")
+			return 2
+		}
+	default:
+		_, _ = fmt.Fprintln(stderr, "usage: envoke shell-hook [--shell <name>] <from> <to>  (or set ENVOKE_FROM/ENVOKE_TO)")
 		return 2
 	}
-	from, to := args[0], args[1]
 
 	path, found, err := config.Locate()
 	if err != nil {
@@ -467,5 +489,5 @@ Usage:
   envoke shell-init <bash|zsh|fish|tcsh|powershell>  print shell hook code to eval/source
   envoke allow [--yes|-y] [path]                     trust a config file after reviewing and confirming it (default: the located config; --yes/-y skips the y/N prompt)
   envoke debug <from> <to>                           print which blocks would fire for a directory change, without running them
-  envoke shell-hook [--shell <name>] <from> <to>      run blocks matching a directory change (internal, called by the shell hook)`)
+  envoke shell-hook [--shell <name>] <from> <to>      run blocks matching a directory change (internal, called by the shell hook; <from>/<to> may also come from $ENVOKE_FROM/$ENVOKE_TO)`)
 }

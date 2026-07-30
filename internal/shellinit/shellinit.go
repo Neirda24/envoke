@@ -90,8 +90,8 @@ end
 // equivalent of zsh's chpwd_functions, and, like it, needs no cd override
 // or manual baseline seeding: tcsh already maintains $owd/$cwd itself.
 //
-// Two tcsh quirks, both confirmed against a real tcsh (they cost real
-// debugging time — don't undo either without re-testing end to end):
+// Four tcsh quirks, all confirmed against a real tcsh (they cost real
+// debugging time — don't undo any of them without re-testing end to end):
 //
 //  1. tcsh has no export/`VAR=value` syntax and no `$(...)`/quoted-backquote
 //     construct that preserves a multi-line command substitution as one
@@ -106,11 +106,23 @@ end
 //     context that never reaches the interactive shell (both verified with
 //     `setenv FOO bar` visibly failing to persist afterward). Wrapping the
 //     whole pipeline in `eval "..."` forces a fresh, full parse that does
-//     honor `|`, fixing both. $owd/$cwd are single-quoted *within* that
-//     eval string (not just around the whole alias body) so a directory
-//     name containing a space still reaches shell-hook as one argument once
-//     eval re-tokenizes the string.
-//  3. tcsh has no `command` builtin (unlike bash/zsh/fish, which use it to
+//     honor `|`, fixing both.
+//  3. That mandatory `eval` is also why the directories are passed through
+//     the *environment* (ENVOKE_FROM/ENVOKE_TO, read by `envoke shell-hook`
+//     when it gets no positional arguments) instead of being interpolated
+//     into the eval string as arguments. An earlier version embedded
+//     '$owd'/'$cwd' inside the eval string; because eval re-parses its
+//     argument, a directory whose name contained a single quote closed
+//     those quotes and the rest of the name was executed as shell code —
+//     `cd "a';touch /tmp/pwned;echo 'b"` was enough, with no config and no
+//     `envoke allow`, so it bypassed the trust model entirely. Keeping the
+//     eval string a compile-time constant makes that class of bug
+//     structurally impossible: no user-controlled text ever reaches the
+//     re-parse. `setenv X "$owd"` is safe by contrast — csh does not
+//     re-tokenize the result of a variable substitution inside double
+//     quotes. The two variables are unsetenv'd right after so they don't
+//     leak into unrelated child processes.
+//  4. tcsh has no `command` builtin (unlike bash/zsh/fish, which use it to
 //     bypass a same-named user alias/function) — running one literally
 //     fails with "command: Command not found." tcsh's own way to bypass
 //     alias expansion for a word is a leading backslash, so this invokes
@@ -125,7 +137,7 @@ end
 // aliases cwdcmd for something else (a documented tcsh idiom, e.g. setting
 // the xterm title), this claims that slot rather than chaining with it —
 // fold any existing cwdcmd body into _envoke_hook by hand in that case.
-const tcshHook = `alias _envoke_hook 'eval "\envoke shell-hook --shell tcsh '"'"'$owd'"'"' '"'"'$cwd'"'"' | source /dev/stdin"'
+const tcshHook = `alias _envoke_hook 'setenv ENVOKE_FROM "$owd" ; setenv ENVOKE_TO "$cwd" ; eval "\envoke shell-hook --shell tcsh | source /dev/stdin" ; unsetenv ENVOKE_FROM ; unsetenv ENVOKE_TO'
 alias cwdcmd _envoke_hook
 `
 

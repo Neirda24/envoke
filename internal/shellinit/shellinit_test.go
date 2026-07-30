@@ -483,10 +483,21 @@ func psQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
+// writeEnvokeStub writes an `envoke` stub whose `shell-hook` subcommand
+// appends the from/to directories it was given to logPath. It mirrors the
+// real cmdShellHook's argument handling, including the ENVOKE_FROM/
+// ENVOKE_TO environment fallback the tcsh hook relies on (see
+// internal/shellinit's tcshHook comment) — so a hook that stops passing the
+// directories at all fails the assertion rather than silently logging an
+// empty line.
 func writeEnvokeStub(t *testing.T, dir, logPath string) {
 	t.Helper()
 	stub := "#!/bin/sh\n" +
-		`if [ "$1" = "shell-hook" ]; then shift; if [ "$1" = "--shell" ]; then shift 2; fi; echo "$1 $2" >> ` + shellQuote(logPath) + "; fi\n"
+		`if [ "$1" = "shell-hook" ]; then` + "\n" +
+		`  shift; if [ "$1" = "--shell" ]; then shift 2; fi` + "\n" +
+		`  if [ "$#" -eq 0 ]; then set -- "$ENVOKE_FROM" "$ENVOKE_TO"; fi` + "\n" +
+		`  echo "$1 $2" >> ` + shellQuote(logPath) + "\n" +
+		"fi\n"
 	path := filepath.Join(dir, "envoke")
 	if err := os.WriteFile(path, []byte(stub), 0o755); err != nil {
 		t.Fatalf("WriteFile stub: %v", err)
@@ -495,4 +506,148 @@ func writeEnvokeStub(t *testing.T, dir, logPath string) {
 
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// fishQuote quotes s as a fish single-quoted literal (only `\` and `'` are
+// special inside fish single quotes), matching internal/executor's
+// fishQuote.
+func fishQuote(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `'`, `\'`)
+	return "'" + s + "'"
+}
+
+// tcshQuote quotes s as a csh single-quoted literal. csh performs history
+// expansion even inside single quotes, so `!` needs a leading backslash on
+// top of POSIX's close/escape/reopen trick for `'` — matching
+// internal/executor's tcshQuote.
+func tcshQuote(s string) string {
+	return strings.ReplaceAll(shellQuote(s), "!", `\!`)
+}
+
+// hookShell describes how to drive one shell's generated hook end to end:
+// install the hook while sitting in start, change to target, and force the
+// hook to fire, returning the interpreter's combined output. It exists so a
+// cross-shell property (see TestGenerate_HooksNeverExecuteDirectoryNames)
+// can be asserted once for all five shells instead of five times by hand.
+type hookShell struct {
+	// shell is the name passed to Generate.
+	shell string
+	// interpreter is the binary the test needs on PATH.
+	interpreter string
+	run         func(t *testing.T, script, start, target, stubDir string) (string, error)
+}
+
+func hookShells() []hookShell {
+	return []hookShell{
+		{shell: "bash", interpreter: "bash", run: func(t *testing.T, script, start, target, stubDir string) (string, error) {
+			// bash has no cd event: PROMPT_COMMAND is what the interactive
+			// shell would run before redrawing, so the driver runs it
+			// explicitly.
+			driver := "cd " + shellQuote(start) + "\n" + script + "\n" +
+				"cd " + shellQuote(target) + "\n" + `eval "$PROMPT_COMMAND"` + "\n"
+			return runDriver(t, stubDir, exec.Command("bash", "--noprofile", "--norc", "-c", driver))
+		}},
+		{shell: "zsh", interpreter: "zsh", run: func(t *testing.T, script, start, target, stubDir string) (string, error) {
+			driver := "cd " + shellQuote(start) + "\n" + script + "\n" + "cd " + shellQuote(target) + "\n"
+			return runDriver(t, stubDir, exec.Command("zsh", "--no-rcs", "-c", driver))
+		}},
+		{shell: "fish", interpreter: "fish", run: func(t *testing.T, script, start, target, stubDir string) (string, error) {
+			driver := "cd " + fishQuote(start) + "\n" + script + "\n" + "cd " + fishQuote(target) + "\n"
+			return runDriver(t, stubDir, exec.Command("fish", "--no-config", writeDriver(t, "driver.fish", driver)))
+		}},
+		{shell: "tcsh", interpreter: "tcsh", run: func(t *testing.T, script, start, target, stubDir string) (string, error) {
+			driver := "cd " + tcshQuote(start) + "\n" + script + "\n" + "cd " + tcshQuote(target) + "\n"
+			return runDriver(t, stubDir, exec.Command("tcsh", "-f", writeDriver(t, "driver.csh", driver)))
+		}},
+		{shell: "powershell", interpreter: "pwsh", run: func(t *testing.T, script, start, target, stubDir string) (string, error) {
+			// Same as bash: no cd event, so call the wrapped prompt directly.
+			driver := "Set-Location -LiteralPath " + psQuote(start) + "\n" + script + "\n" +
+				"Set-Location -LiteralPath " + psQuote(target) + "\n" + "$null = prompt\n"
+			return runDriver(t, stubDir, exec.Command("pwsh", "-NoProfile", "-Command", driver))
+		}},
+	}
+}
+
+func writeDriver(t *testing.T, name, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile driver: %v", err)
+	}
+	return path
+}
+
+func runDriver(t *testing.T, stubDir string, cmd *exec.Cmd) (string, error) {
+	t.Helper()
+	cmd.Env = append(os.Environ(), "PATH="+stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// nastyDirName is a single path component packed with every metacharacter
+// that matters to at least one of the five supported shells: a single quote
+// (closes a quoted string), `;`/`|`/`&` (command separators), `$( )` and a
+// backtick (command substitution), a double quote and a space. Each
+// injection attempt inside it would create a sentinel file in the shell's
+// current directory — which, by the time the hook fires, is this very
+// directory.
+const nastyDirName = "nasty';touch pwn-sq;echo '" + "\"$(touch pwn-dollar)`touch pwn-backtick`" + " |touch pwn-pipe| &"
+
+// pwnSentinels are the files nastyDirName's payloads would create if any
+// hook let a directory name reach a shell parser as code.
+var pwnSentinels = []string{"pwn-sq", "pwn-dollar", "pwn-backtick", "pwn-pipe"}
+
+// TestGenerate_HooksNeverExecuteDirectoryNames is the regression test for a
+// real, exploited command-injection bug: the tcsh hook used to interpolate
+// $owd/$cwd into the string it passed to `eval`, so `cd` into a directory
+// whose name contained a single quote closed the quoting and ran the rest of
+// the name as shell code — with no config file and no `envoke allow`, which
+// bypassed the trust model completely.
+//
+// The property asserted here is cross-shell on purpose: no hook, for any
+// shell, may ever let a directory name be parsed as code. It's asserted by
+// driving the real interpreter into a directory whose name would create
+// sentinel files if it were executed, then checking none appeared — and
+// that the hook still reported the transition correctly, so a hook that
+// "passes" by not firing at all is caught too.
+func TestGenerate_HooksNeverExecuteDirectoryNames(t *testing.T) {
+	for _, hs := range hookShells() {
+		t.Run(hs.shell, func(t *testing.T) {
+			requireInterpreter(t, hs.interpreter)
+			script, err := Generate(hs.shell)
+			if err != nil {
+				t.Fatalf("Generate: %v", err)
+			}
+
+			stubDir := t.TempDir()
+			logPath := filepath.Join(stubDir, "calls.log")
+			writeEnvokeStub(t, stubDir, logPath)
+
+			start := t.TempDir()
+			target := filepath.Join(t.TempDir(), nastyDirName)
+			if err := os.Mkdir(target, 0o755); err != nil {
+				t.Fatalf("Mkdir target: %v", err)
+			}
+
+			out, err := hs.run(t, script, start, target, stubDir)
+			if err != nil {
+				t.Fatalf("driver script failed: %v\n%s", err, out)
+			}
+
+			for _, sentinel := range pwnSentinels {
+				if _, statErr := os.Stat(filepath.Join(target, sentinel)); statErr == nil {
+					t.Fatalf("directory name was executed as code: %s created\noutput:\n%s", sentinel, out)
+				}
+			}
+
+			got, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatalf("envoke stub was never called (log file missing): %v\noutput:\n%s", err, out)
+			}
+			if want := start + " " + target + "\n"; string(got) != want {
+				t.Errorf("transition reported as %q, want %q\noutput:\n%s", got, want, out)
+			}
+		})
+	}
 }
