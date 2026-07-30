@@ -97,9 +97,19 @@ public API to commit to yet):
     actually affects the user's interactive shell. `shell` selects a
     `shellProfile` (posix, fish, tcsh, powershell — each with its own
     quoting function to prevent injection via directory names or capture
-    groups); an unrecognized name falls back to POSIX. Render can only
-    translate the ENVOKE_* plumbing — a script body still has to be written
-    in the calling shell's own syntax.
+    groups); an unrecognized name falls back to POSIX. **`tcshQuote` is not
+    `posixQuote`**: csh does history expansion at the lexer, before quote
+    processing, so `!` is expanded even inside single quotes and must be
+    backslash-escaped — a directory named `foo!bar` otherwise aborted the
+    whole sourced block with "bar: Event not found.", setting no variables
+    and running no script. A literal newline can't be represented in a csh
+    single-quoted string at all, and is a documented unsupported case for
+    tcsh. All four profiles are covered by
+    `TestRender_QuotingRoundTripsThroughRealShells`, which round-trips a
+    table of hostile basenames through each real interpreter — extend that
+    table rather than writing a one-off test for the next quirk. Render can
+    only translate the ENVOKE_* plumbing — a script body still has to be
+    written in the calling shell's own syntax.
 - **`internal/envoke`** — `Transition(ctx, configPath, from, to)` is the
   subprocess-based core loop behind `envoke exec`: load + trust-check,
   resolve, run all leaves, then all enters via `executor.Run`, stopping at
@@ -195,8 +205,10 @@ public API to commit to yet):
   pragma, run via `dagger check -m .dagger`): `fmt`/`vet`/`build`/`test`
   mirror the manual commands in CONTRIBUTING.md; `lint` runs golangci-lint;
   `test-shell-{bash,zsh,fish,tcsh,powershell}` each build a container with
-  exactly one shell installed and run `internal/shellinit`'s suite in it, so
-  a check can't silently skip a shell for lack of the interpreter. `zizmor`
+  exactly one shell installed and run `internal/shellinit`'s **and
+  `internal/executor`'s** suites in it (both emit shell code, both `t.Skip`
+  without the interpreter), so a check can't silently skip a shell for lack
+  of the interpreter. `zizmor`
   and `actions-up` (also `+check`) audit `.github/workflows/*.yml`; both
   take an optional `GhAuthToken *dagger.Secret` to raise their unauthenticated
   GitHub API rate limit — omit it for a quick local run. `autofix` (deliberately

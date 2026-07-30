@@ -97,59 +97,106 @@ func TestRender_PowershellUsesEnvDrive(t *testing.T) {
 	}
 }
 
-func TestRender_EndToEndThroughRealShell(t *testing.T) {
-	// Exercises the actual payoff of the trust/eval architecture: a value
-	// exported by a rendered block must be visible to shell code appended
-	// after it, exactly as it would be in the caller's interactive shell.
-	// The directory deliberately contains a space and a single quote to
-	// regression-test posixQuote against real shell metacharacters.
-	dir := `/has space/and'quote`
-	m := matcher.Match{
-		Dir: dir,
-		Block: config.Block{
-			Type:    config.Enter,
-			Pattern: regexp.MustCompile(`^/has space/(.+)$`),
-			Script:  `echo "$ENVOKE_DIR|$ENVOKE_TYPE|$ENVOKE_MATCH_1"`,
-		},
-	}
+// nastyBasenames are directory basenames covering every metacharacter that
+// is special to at least one supported shell. Render quotes a matched
+// directory (and its capture groups) into shell source that the caller's
+// own shell evaluates, so each of these has to survive that round trip
+// byte-for-byte in every dialect.
+//
+// A literal newline is deliberately absent: csh cannot represent one inside
+// a single-quoted string at all (not even escaped), so it is a documented
+// unsupported case for tcsh rather than something these tests should claim
+// works. See tcshQuote.
+var nastyBasenames = []string{
+	"plain",
+	"has space",
+	"and'quote",
+	`double"quote`,
+	"bang!bang",
+	"dollar$var",
+	"back`tick`",
+	"semi;colon",
+	"pipe|pipe",
+	`back\slash`,
+	"star*glob",
+	"brace{a,b}",
+	"paren(x)",
+	"amp&amp",
+	"hash#hash",
+	"tilde~tilde",
+	"percent%percent",
+	"newline-free\ttab",
+}
 
-	script := Render("bash", nil, []matcher.Match{m})
+// renderShell is one shell profile plus how to actually execute Render's
+// output in it, and how that dialect spells "echo three variables".
+type renderShell struct {
+	profile     string
+	interpreter string
+	echo        string
+	command     func(script string) *exec.Cmd
+}
 
-	out, err := exec.Command("sh", "-c", script).CombinedOutput()
-	if err != nil {
-		t.Fatalf("sh -c rendered script: %v\n%s", err, out)
-	}
-	want := dir + "|enter|and'quote\n"
-	if string(out) != want {
-		t.Errorf("output = %q, want %q", out, want)
+func renderShells() []renderShell {
+	const posixEcho = `echo "$ENVOKE_DIR|$ENVOKE_TYPE|$ENVOKE_MATCH_1"`
+	return []renderShell{
+		{profile: "bash", interpreter: "sh", echo: posixEcho, command: func(s string) *exec.Cmd {
+			return exec.Command("sh", "-c", s)
+		}},
+		{profile: "fish", interpreter: "fish", echo: posixEcho, command: func(s string) *exec.Cmd {
+			return exec.Command("fish", "--no-config", "-c", s)
+		}},
+		{profile: "tcsh", interpreter: "tcsh", echo: posixEcho, command: func(s string) *exec.Cmd {
+			return exec.Command("tcsh", "-f", "-c", s)
+		}},
+		{profile: "powershell", interpreter: "pwsh",
+			echo: `Write-Output "$env:ENVOKE_DIR|$env:ENVOKE_TYPE|$env:ENVOKE_MATCH_1"`,
+			command: func(s string) *exec.Cmd {
+				return exec.Command("pwsh", "-NoProfile", "-Command", s)
+			}},
 	}
 }
 
-func TestRender_TcshEndToEndThroughRealShell(t *testing.T) {
-	if _, err := exec.LookPath("tcsh"); err != nil {
-		t.Skip("tcsh not available on this system, skipping")
-	}
-	// Same regression as TestRender_EndToEndThroughRealShell, but for the
-	// tcsh profile's setenv + posixQuote's close/escape/reopen quoting,
-	// which tcsh happens to accept too.
-	dir := `/has space/and'quote`
-	m := matcher.Match{
-		Dir: dir,
-		Block: config.Block{
-			Type:    config.Enter,
-			Pattern: regexp.MustCompile(`^/has space/(.+)$`),
-			Script:  `echo "$ENVOKE_DIR|$ENVOKE_TYPE|$ENVOKE_MATCH_1"`,
-		},
-	}
+// TestRender_QuotingRoundTripsThroughRealShells is the cross-dialect
+// quoting contract: whatever a directory is called, the ENVOKE_* variables
+// a block sees must hold exactly that name, in every shell.
+//
+// It regression-tests a real bug found by review: the tcsh profile reused
+// posixQuote, but csh expands `!` at the lexer even inside single quotes,
+// so a directory named `bang!bang` aborted the whole sourced block with
+// "bang: Event not found." — no variables set, matched script never run.
+// Asserting the property per dialect rather than per known-bad character is
+// what makes this catch the next such quirk instead of only this one.
+func TestRender_QuotingRoundTripsThroughRealShells(t *testing.T) {
+	for _, rs := range renderShells() {
+		t.Run(rs.profile, func(t *testing.T) {
+			if _, err := exec.LookPath(rs.interpreter); err != nil {
+				t.Skipf("%s not available on this system, skipping", rs.interpreter)
+			}
+			for _, base := range nastyBasenames {
+				t.Run(base, func(t *testing.T) {
+					const parent = "/has space"
+					dir := parent + "/" + base
+					m := matcher.Match{
+						Dir: dir,
+						Block: config.Block{
+							Type:    config.Enter,
+							Pattern: regexp.MustCompile("^" + regexp.QuoteMeta(parent) + "/(.+)$"),
+							Script:  rs.echo,
+						},
+					}
 
-	script := Render("tcsh", nil, []matcher.Match{m})
-
-	out, err := exec.Command("tcsh", "-f", "-c", script).CombinedOutput()
-	if err != nil {
-		t.Fatalf("tcsh -c rendered script: %v\n%s", err, out)
-	}
-	want := dir + "|enter|and'quote\n"
-	if string(out) != want {
-		t.Errorf("output = %q, want %q", out, want)
+					script := Render(rs.profile, nil, []matcher.Match{m})
+					out, err := rs.command(script).CombinedOutput()
+					if err != nil {
+						t.Fatalf("running rendered script: %v\nscript:\n%s\noutput:\n%s", err, script, out)
+					}
+					want := dir + "|enter|" + base + "\n"
+					if strings.ReplaceAll(string(out), "\r\n", "\n") != want {
+						t.Errorf("round trip = %q, want %q\nscript:\n%s", out, want, script)
+					}
+				})
+			}
+		})
 	}
 }
