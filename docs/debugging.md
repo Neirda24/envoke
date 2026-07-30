@@ -44,7 +44,12 @@ export ENVOKE_DISABLE=0   # on in this shell, even if `envoke disable` is set
 unset ENVOKE_DISABLE      # back to whatever the persistent flag says
 ```
 
-While envoke is off, `cd` does nothing at all and says nothing — it runs on every directory change, so a warning there would be a permanent nuisance. `envoke exec` says why it did nothing and still exits 0. `envoke debug` keeps working and reports the switch alongside the trust status, since it never executes anything anyway.
+While envoke is off:
+
+- `cd` does nothing at all and says nothing — the hook runs on every directory change, so a warning there would be a permanent nuisance.
+- `envoke exec` and `envoke reload` say why they did nothing, on stderr, and still exit 0. Being switched off is what was asked for, not a failure.
+- `envoke debug` keeps working and reports the switch alongside the trust status, since it never executes anything anyway.
+- `envoke allow`, `revoke`, `list` and `prune` are unaffected. Managing trust is a separate question from whether blocks run.
 
 ## Applying a config without leaving the directory
 

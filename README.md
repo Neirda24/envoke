@@ -91,12 +91,17 @@ for macOS/Linux/Windows (amd64/arm64) — each release's `checksums.txt` is
 
 ## Status
 
-Early development. The matching engine, all five shell integrations, the
-trust mechanism, and `envoke debug` are implemented and tested end-to-end
-against real interpreters. Packaging is live: Homebrew, Scoop, GitHub
-Releases, and `.deb`/`.rpm` packages, each release carrying a per-archive
-SBOM and cosign-signed checksums. See [CLAUDE.md](CLAUDE.md) for exact
-scope and architecture.
+Early development. Implemented and tested end-to-end against real
+interpreters: the matching engine, all five shell integrations, the trust
+mechanism (`allow`, `revoke`, `list`, `prune`), the `disable`/`enable` off
+switch, `reload`, non-interactive `exec`, and `debug` dry-run diagnostics.
+Packaging is live: Homebrew, Scoop, GitHub Releases, and `.deb`/`.rpm`
+packages, each release carrying a per-archive SBOM and cosign-signed
+checksums.
+
+Every command, flag, environment variable and exit code is listed in the
+[Reference](https://neirda24.github.io/envoke/reference/);
+[CLAUDE.md](CLAUDE.md) covers the architecture.
 
 ## Contributing
 

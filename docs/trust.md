@@ -72,6 +72,9 @@ $ envoke list
   `envoke allow` it again.
 - **missing** — the config file is gone, but its record (and the copy of its
   content, see below) is still in the store. `envoke prune` clears those.
+- **unreadable** — the file is there but couldn't be read, so envoke can't
+  say whether it still matches what you approved. A permissions problem,
+  usually.
 
 `envoke revoke` puts a config back to needing an explicit approval, without
 having to edit it or delete files out of the store by hand. Revoking

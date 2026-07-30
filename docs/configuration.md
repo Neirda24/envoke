@@ -27,7 +27,22 @@ leave <path-pattern>
 - Moving straight from `/a` to `/a/x/y/z` still fires `/a/x`'s and `/a/x/y`'s rules — envoke walks every intermediate directory, not just the endpoints.
 - **Enter and leave are independent, explicit blocks.** envoke does not snapshot state on enter and auto-restore it on leave. If entering exports a variable or activates a venv, the matching `leave` block is responsible for explicitly unwinding it.
 
+The details of the format:
+
+- A body ends at the next unindented, non-blank line, or at end of file. **Blank lines inside a body do not end it**, so a multi-line script can breathe.
+- The common leading whitespace is stripped from a body, so the script's own indentation — a `for` loop, an `if` — is preserved relative to the block rather than to column 0.
+- **`#` starts a comment only outside a block.** Inside a body it is part of the script, which is what you want, since it is a shell comment there. So indent the `#` with the rest of the body to comment inside a block. An unindented `#` *ends* the block above it — and picking the body back up afterwards is a positioned parse error, not a silently truncated block.
+- A block header with no script body is an error, not an empty block.
+
 A malformed config fails with a positioned error (line number + message) rather than silently misbehaving.
+
+### The order blocks fire in
+
+For a single directory change:
+
+1. **`leave` blocks first, deepest directory first** — unwinding the nested-most rule before the ones above it, mirroring a stack.
+2. **Then `enter` blocks, shallowest directory first** — the outer rule before the nested one, so a project-wide block runs before a subdirectory's.
+3. When several blocks match the *same* directory, they fire in the order they are declared in the file.
 
 ## Path patterns
 
@@ -68,6 +83,19 @@ cd ~/Projects/my-app/cmd/srv    # ENVOKE_DIR is ~/Projects/my-app, you are three
 The pattern `~/Projects/([^/]+)` matches whole path segments, so it still fires exactly once in both cases, for `~/Projects/my-app` — but in the second, `source venv/bin/activate` would look under `cmd/srv`. Write `source "$ENVOKE_DIR/venv/bin/activate"` and it works from anywhere in the tree. `leave` blocks always run from outside the directory they matched, so they never have a usable relative path.
 
 `envoke exec` differs here: it runs each block as a subprocess with the matched directory as its working directory. `envoke debug` points out the discrepancy whenever it applies.
+
+### When a block fails
+
+**Through the shell hook, a failing block does not stop the ones after it.** envoke hands your shell one script containing every matched block in order, and your shell runs it the way it runs any script: a command that exits non-zero is not fatal. If an `enter` block's `source` fails, the next block still runs.
+
+**And the failure does not reach `$?`.** Every hook saves the exit status it was entered with and restores it before returning — otherwise a prompt that colours on the last command's status would report envoke's instead of yours, on every single `cd`. The cost of that is real: a failing block shows up on stderr and nowhere else. If a block must not fail silently, say so in the block itself:
+
+```
+enter ~/Projects/api-server
+    source "$ENVOKE_DIR/venv/bin/activate" || echo "envokerc: venv activation failed" >&2
+```
+
+`envoke exec` is the opposite on both counts: it stops at the first block that exits non-zero and exits 1 itself. Nothing already applied is unwound — see the enter/leave independence rule above.
 
 ## Example envokerc
 
