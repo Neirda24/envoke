@@ -25,22 +25,16 @@ func Generate(shell string) (string, error) {
 }
 
 // bashHook polls PWD from PROMPT_COMMAND, since bash has no native "on cd"
-// hook. This only appends to PROMPT_COMMAND — it never redefines cd (see
-// CLAUDE.md's design principles: ondir's zsh integration overriding cd
-// directly was a bug, not a pattern to repeat).
+// hook. It appends rather than redefining cd.
 //
-// envoke shell-hook prints nothing to stdout unless the matched config is
-// trusted (see cmd/envoke's cmdAllow/cmdShellHook), so the eval below is
-// always a safe no-op against an untrusted or non-matching config.
+// The baseline is seeded at install time, not lazily on the first call: a
+// hook that seeds itself compares the first cd's destination against itself
+// and misses it.
 //
-// The hook saves and restores $? around its own work. bash sets $? to the
-// last command's status before running PROMPT_COMMAND, and the extremely
-// common `PROMPT_COMMAND='__status=$?; ...'` idiom (git-prompt, liquidprompt
-// and most hand-rolled prompts that colour on failure) reads it there.
-// Since this hook prepends itself to PROMPT_COMMAND, without the
-// save/restore every such prompt would silently start reporting envoke's
-// exit status instead of the user's last command — a very confusing
-// regression to trace back to a directory-hook tool.
+// $? is saved and restored because this hook prepends itself to
+// PROMPT_COMMAND, where the common `PROMPT_COMMAND='__status=$?; ...'`
+// idiom reads it. Without that, every exit-code-colouring prompt would
+// start reporting envoke's status instead of the user's last command.
 const bashHook = `_envoke_hook() {
   local __envoke_status=$?
   local envoke_prev="${__envoke_prev_pwd:-$PWD}"
@@ -60,13 +54,12 @@ case ";${PROMPT_COMMAND-};" in
 esac
 `
 
-// zshHook hooks directory changes via zsh's native chpwd_functions array,
-// which fires on every directory change without needing to redefine cd.
+// zshHook uses zsh's native chpwd_functions array. No baseline to seed —
+// zsh maintains $OLDPWD itself.
 //
-// The status save/restore serves the mirror image of bash's concern (see
-// bashHook): chpwd_functions run as part of the `cd` itself, so a hook that
-// returned the status of whatever it last did would make `cd foo && ...`
-// stop short whenever envoke or the block it ran failed.
+// The status save/restore is the mirror of bash's concern (see bashHook):
+// chpwd_functions run as part of the cd, so a hook returning its own status
+// would make `cd foo && ...` stop short whenever a block failed.
 const zshHook = `_envoke_hook() {
   local __envoke_status=$?
   eval "$(command envoke shell-hook -- "${OLDPWD:-$PWD}" "$PWD")"
@@ -78,22 +71,15 @@ if [[ -z "${chpwd_functions[(r)_envoke_hook]}" ]]; then
 fi
 `
 
-// fishHook hooks directory changes via fish's --on-variable PWD event,
-// which fires on every directory change without needing to redefine cd.
-// Fish's own $OLDPWD support is inconsistent across versions, so — like the
-// bash hook above — this tracks the previous directory itself and seeds it
-// once at install time rather than lazily inside the handler, for the same
-// reason: the first real cd must be compared against the shell's actual
-// starting directory, not against itself.
+// fishHook uses fish's --on-variable PWD event. Fish's $OLDPWD is
+// inconsistent across versions, so this tracks the previous directory
+// itself and seeds it at install time, like bash.
 //
-// `string collect` is required (fish 3.4+) to gather envoke shell-hook's
-// possibly-multi-line stdout into a single string before eval, since a bare
-// command substitution in fish splits output into one list element per
-// line — passed straight to eval, that would silently turn a multi-line
-// script into several unrelated single-line evals.
-// The `set -l __envoke_status $status` first line and the matching `return`
-// keep the handler transparent to $status, for the same reason as the
-// bash/zsh hooks above.
+// `string collect` (fish 3.4+) is required: a bare command substitution
+// splits output into one list element per line, which would turn a
+// multi-line script into several unrelated single-line evals.
+//
+// $status is saved and returned, as in bash and zsh.
 const fishHook = `function _envoke_hook --on-variable PWD
   set -l __envoke_status $status
   set -l script (command envoke shell-hook --shell fish -- "$__envoke_prev_pwd" "$PWD" | string collect)
@@ -108,85 +94,55 @@ if not set -q __envoke_prev_pwd
 end
 `
 
-// tcshHook hooks directory changes via tcsh's special cwdcmd alias, which
-// tcsh runs automatically after every cd/pushd/popd — csh's native
-// equivalent of zsh's chpwd_functions, and, like it, needs no cd override
-// or manual baseline seeding: tcsh already maintains $owd/$cwd itself.
+// tcshHook uses tcsh's cwdcmd alias, csh's equivalent of chpwd_functions.
+// tcsh maintains $owd/$cwd itself, so there is no baseline to seed.
 //
-// Four tcsh quirks, all confirmed against a real tcsh (they cost real
-// debugging time — don't undo any of them without re-testing end to end):
+// Four tcsh quirks, each verified against a real tcsh — don't undo one
+// without re-testing end to end:
 //
-//  1. tcsh has no export/`VAR=value` syntax and no `$(...)`/quoted-backquote
-//     construct that preserves a multi-line command substitution as one
-//     string (plain and quoted backquote substitution both split on
-//     newlines), so the matched blocks' text is piped into
-//     `source /dev/stdin` rather than captured and eval'd — source reads
-//     and runs it a line at a time, exactly as if it were a sourced file.
-//  2. cwdcmd's body runs through a restricted internal execution path that
-//     does *not* honor pipe/redirect syntax directly: a bare
-//     `cmd | source /dev/stdin` inside the alias silently prints to the
-//     terminal instead of piping, and any setenv it does run happens in a
-//     context that never reaches the interactive shell (both verified with
-//     `setenv FOO bar` visibly failing to persist afterward). Wrapping the
-//     whole pipeline in `eval "..."` forces a fresh, full parse that does
-//     honor `|`, fixing both.
-//  3. That mandatory `eval` is also why the directories are passed through
-//     the *environment* (ENVOKE_FROM/ENVOKE_TO, read by `envoke shell-hook`
-//     when it gets no positional arguments) instead of being interpolated
-//     into the eval string as arguments. An earlier version embedded
-//     '$owd'/'$cwd' inside the eval string; because eval re-parses its
-//     argument, a directory whose name contained a single quote closed
-//     those quotes and the rest of the name was executed as shell code —
-//     `cd "a';touch /tmp/pwned;echo 'b"` was enough, with no config and no
-//     `envoke allow`, so it bypassed the trust model entirely. Keeping the
-//     eval string a compile-time constant makes that class of bug
-//     structurally impossible: no user-controlled text ever reaches the
-//     re-parse. `setenv X "$owd"` is safe by contrast — csh does not
-//     re-tokenize the result of a variable substitution inside double
-//     quotes. The two variables are unsetenv'd right after so they don't
-//     leak into unrelated child processes.
-//  4. tcsh has no `command` builtin (unlike bash/zsh/fish, which use it to
-//     bypass a same-named user alias/function) — running one literally
-//     fails with "command: Command not found." tcsh's own way to bypass
-//     alias expansion for a word is a leading backslash, so this invokes
-//     `\envoke` rather than `command envoke`. Caught only by driving a real
-//     tcsh with a same-named alias defined ahead of the hook, not by
-//     string-matching the generated script.
+//  1. tcsh has no export syntax, and neither plain nor quoted backquote
+//     substitution preserves a multi-line result as one string, so the
+//     block text is piped into `source /dev/stdin` rather than captured
+//     and eval'd.
+//  2. cwdcmd's body runs through a restricted path that does not honor `|`
+//     directly: the pipeline silently prints to the terminal instead, and
+//     any setenv it runs never reaches the interactive shell. Wrapping it
+//     in `eval "..."` forces a full re-parse that does honor it.
+//  3. That mandatory eval is why the directories travel through the
+//     environment instead of being interpolated into the eval string.
+//     Because eval re-parses its argument, a directory name containing a
+//     single quote closed the quotes and ran the rest as shell code —
+//     `cd "a';touch /tmp/pwned;echo 'b"` sufficed, with no config and no
+//     `envoke allow`, bypassing the trust model entirely. Keeping the eval
+//     string a compile-time constant makes that class of bug
+//     unexpressible: no user-controlled text reaches the re-parse.
+//     `setenv X "$owd"` is safe by contrast — csh does not re-tokenize a
+//     variable substitution inside double quotes.
+//  4. tcsh has no `command` builtin; a leading backslash is its way to
+//     bypass alias expansion, hence `\envoke`.
 //
-// A plain (non-merged) pipe keeps stderr going straight to the terminal, so
-// an untrusted-config warning is never fed into source.
+// The pipe is deliberately not merged, so an untrusted-config warning on
+// stderr never gets fed into source.
 //
-// cwdcmd is tcsh's only directory-change hook slot: if a .tcshrc already
-// aliases cwdcmd for something else (a documented tcsh idiom, e.g. setting
-// the xterm title), this claims that slot rather than chaining with it —
-// fold any existing cwdcmd body into _envoke_hook by hand in that case.
+// cwdcmd is tcsh's only directory-change slot. A .tcshrc that already
+// aliases it (setting the xterm title, say) loses that alias — fold the
+// existing body into _envoke_hook by hand.
 const tcshHook = `alias _envoke_hook 'setenv ENVOKE_FROM "$owd" ; setenv ENVOKE_TO "$cwd" ; eval "\envoke shell-hook --shell tcsh | source /dev/stdin" ; unsetenv ENVOKE_FROM ; unsetenv ENVOKE_TO'
 alias cwdcmd _envoke_hook
 `
 
-// powershellHook hooks directory changes by wrapping the prompt function —
-// PowerShell's idiomatic customization point (the same one posh-git/
-// oh-my-posh use), redrawn before every prompt, not a cd override. The
-// previous prompt is saved and always called through to, so this composes
-// with prompt customization installed before it rather than replacing it.
-// $_envokeHookInstalled guards against wrapping the prompt more than once
-// if this script is sourced again (matching the bash/zsh hooks' own
-// re-source guards).
+// powershellHook wraps the prompt function, PowerShell's idiomatic
+// customization point. The previous prompt is saved and always called
+// through to, so this composes with anything installed before it;
+// $_envokeHookInstalled prevents double-wrapping on a re-source.
 //
-// `& envoke shell-hook ... | Out-String` joins the (possibly multi-line)
-// captured stdout into a single string before Invoke-Expression, the same
-// concern as fish's `string collect` above: PowerShell's pipeline otherwise
-// hands Invoke-Expression one line at a time.
+// Out-String joins the possibly-multi-line stdout before
+// Invoke-Expression — the same concern as fish's `string collect`.
 //
-// $LASTEXITCODE is saved on entry and restored before calling through to
-// the previous prompt, the same transparency concern as the other four
-// hooks: invoking `envoke` is a native command, so it overwrites
-// $LASTEXITCODE, and a prompt that colours on the last command's exit code
-// would report envoke's instead. Restoring it is the same thing
-// starship/oh-my-posh do. `$?` cannot be restored — PowerShell makes it
-// read-only — so a prompt reading `$?` rather than $LASTEXITCODE still sees
-// this hook's own result; that is a PowerShell limitation, not something
-// the hook can work around.
+// $LASTEXITCODE is saved and restored because invoking envoke is a native
+// command and overwrites it. `$?` cannot be: PowerShell makes it read-only,
+// so a prompt reading `$?` rather than $LASTEXITCODE still sees this hook's
+// own result.
 const powershellHook = `if (-not $global:_envokeHookInstalled) {
   $global:_envokeHookInstalled = $true
   $global:_envokePrevPwd = (Get-Location).Path
@@ -208,16 +164,11 @@ const powershellHook = `if (-not $global:_envokeHookInstalled) {
 // Completion returns the tab-completion script for shell, or an error if
 // completion isn't available for it.
 //
-// This is generated by the binary for the same reason the hooks are (see
-// CLAUDE.md's one-binary-generates-all-shell-integration principle): a
-// completion script hand-maintained per shell drifts from the actual
-// subcommand list the moment anyone adds one, and it drifts silently.
-//
-// Only bash, zsh and fish are covered. tcsh's completion syntax can't
-// express per-subcommand argument types without a great deal of care, and
+// bash, zsh and fish only. tcsh's completion syntax can't express
+// per-subcommand argument types without a great deal of care and
 // PowerShell's Register-ArgumentCompleter is a different model again;
-// shipping a half-working completion for either is worse than shipping none
-// and saying so.
+// shipping half a completion for either is worse than shipping none and
+// saying so.
 func Completion(shell string) (string, error) {
 	switch shell {
 	case "bash":
@@ -233,10 +184,9 @@ func Completion(shell string) (string, error) {
 	}
 }
 
-// subcommands is the completion candidate list, kept next to the completion
-// scripts that embed it so adding a subcommand to cmd/envoke without
-// updating this is caught by TestCompletion_CoversEverySubcommand rather
-// than by a user noticing tab does nothing.
+// subcommands is the completion candidate list, cross-checked against
+// `envoke help` by TestRun_CompletionCoversEverySubcommand so a new
+// subcommand can't ship with tab completion silently missing it.
 var subcommands = []string{
 	"allow", "completion", "debug", "disable", "enable", "exec", "help",
 	"list", "prune", "reload", "revoke", "shell-hook", "shell-init",
@@ -244,14 +194,13 @@ var subcommands = []string{
 }
 
 // bashCompletion completes subcommands first, then argument types per
-// subcommand: shell names for shell-init, files for the path-taking trust
-// commands, directories for the two that take a transition.
+// subcommand.
+//
 // _envoke_compgen exists because `mapfile` is bash 4.0+ and macOS still
-// ships bash 3.2 as /bin/bash -- a completion that silently produced no
-// candidates there would be a miserable thing to debug. The read loop is
-// the portable equivalent, and unlike the other common workaround
-// (COMPREPLY=( $(compgen ...) )) it does not rely on unquoted word
-// splitting, so candidates containing spaces survive.
+// ships bash 3.2 as /bin/bash, where it silently produces no candidates.
+// Unlike the other common workaround, COMPREPLY=( $(compgen ...) ), the
+// read loop doesn't rely on unquoted word splitting, so candidates
+// containing spaces survive.
 const bashCompletion = `_envoke_compgen() {
   COMPREPLY=()
   local _envoke_line

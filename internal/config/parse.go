@@ -24,15 +24,12 @@ func (e *ParseError) Error() string {
 // content, returning the parsed config alongside the bytes it was parsed
 // from.
 //
-// Handing the content back to the caller is the whole point of this
-// function existing next to ParseFile. Any caller that also makes a trust
-// decision about the same file must hash *these* bytes (see
-// trust.IsTrusted, which takes them) instead of reading the file a second
-// time: two reads open a window in which the file can change in between, so
-// the content that gets executed is not the content that was validated. On
-// a group- or other-writable config — exactly the situation
-// UnsafePermissions warns about — that window is a real privilege boundary,
-// not a theoretical one.
+// Handing the content back is the whole point of this existing next to
+// ParseFile. A caller that also makes a trust decision must hash *these*
+// bytes rather than read the file again: two reads open a window in which
+// the file can change, so the content executed is not the content
+// validated. On a group-writable config — what UnsafePermissions warns
+// about — that window is a real privilege boundary.
 func LoadFile(path string) (*Config, []byte, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {

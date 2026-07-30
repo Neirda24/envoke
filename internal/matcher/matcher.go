@@ -22,16 +22,15 @@ type Match struct {
 	Dir string
 	// Groups holds the pattern's submatches, Groups[0] being the whole
 	// match, captured against the slash-normalized form of Dir (see
-	// MatchPath). Storing them means the pattern runs once per candidate
-	// directory instead of once to test and again to extract — matching is
-	// on the hot path of every single `cd`.
+	// MatchPath). Storing them keeps the pattern running once per candidate
+	// directory rather than once to test and again to extract — this is the
+	// hot path of every cd.
 	Groups []string
 }
 
-// NewMatch runs b's pattern against dir once, returning the resulting Match
-// and whether it matched at all. Everything that builds a Match goes through
-// here so the "captured against the normalized path" rule can't be
-// implemented differently in two places.
+// NewMatch runs b's pattern against dir once. Everything that builds a
+// Match goes through here, so "captured against the normalized path" can't
+// end up implemented two different ways.
 func NewMatch(b config.Block, dir string) (Match, bool) {
 	groups := b.Pattern.FindStringSubmatch(MatchPath(dir))
 	if groups == nil {
@@ -43,14 +42,11 @@ func NewMatch(b config.Block, dir string) (Match, bool) {
 // MatchPath is the form of a path that patterns are matched against:
 // forward-slash separated, whatever the platform uses natively.
 //
-// Config patterns are written with `/` — they're regexes over paths, and
-// `\` is the regex escape character, so nobody writes a Windows-style
-// pattern. Without this, filepath.Dir's backslash output on Windows could
-// never match any pattern a user would plausibly write, which made the
-// whole matching engine a no-op there. filepath.ToSlash is deliberately the
-// mechanism rather than a blind ReplaceAll: `\` is a perfectly legal
-// character in a Unix filename, and rewriting it there would corrupt real
-// directory names.
+// Patterns are regexes over paths and `\` is the regex escape character, so
+// they are written with `/`; without this, filepath.Dir's backslashes on
+// Windows could never match one. It must stay filepath.ToSlash and never a
+// blind ReplaceAll: `\` is a legal character in a Unix filename, where
+// rewriting it would corrupt real directory names.
 func MatchPath(dir string) string {
 	return filepath.ToSlash(dir)
 }

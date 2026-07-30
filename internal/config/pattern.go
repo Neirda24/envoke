@@ -38,13 +38,9 @@ func compilePattern(raw string, homeDir func() (string, error)) (*regexp.Regexp,
 
 	expanded, missing := expandEnv(expanded)
 	if len(missing) > 0 {
-		// Silently substituting "" here is what this used to do, and it is
-		// the worst option available: a typo like $HOEM/Projects quietly
-		// compiles to a perfectly valid pattern (^(?:/Projects)$) that can
-		// simply never match, so the block never fires and nothing ever says
-		// why. Failing with a positioned error matches how the rest of the
-		// parser treats a malformed config, and points straight at the
-		// variable to fix.
+		// Substituting "" instead would turn a typo like $HOEM/Projects into
+		// a perfectly valid pattern that can simply never match, so the
+		// block never fires and nothing says why.
 		return nil, fmt.Errorf("pattern %q references undefined environment variable(s): %s",
 			raw, strings.Join(missing, ", "))
 	}
@@ -77,12 +73,10 @@ func expandHome(pattern string, homeDir func() (string, error)) (string, error) 
 // order, deduplicated) so the caller can refuse the pattern instead of
 // silently compiling one that can't match.
 //
-// This is hand-rolled rather than using os.Expand for one reason: patterns
-// are regexes, and `$` is a regex metacharacter. os.Expand treats `$?`,
-// `$*`, `$#` and `$0`-`$9` as shell special variables, so it would consume
-// them. Only a `$` followed by an actual identifier is treated as a
-// reference here; every other `$` is left alone as the regex anchor it
-// almost certainly is.
+// Hand-rolled rather than os.Expand because patterns are regexes and `$` is
+// a metacharacter: os.Expand would eat `$?`, `$*`, `$#` and `$0`-`$9` as
+// shell special variables. Only a `$` followed by a real identifier counts
+// as a reference; every other `$` stays the anchor it almost certainly is.
 func expandEnv(pattern string) (expanded string, missing []string) {
 	var b strings.Builder
 	seen := make(map[string]bool)
