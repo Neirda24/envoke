@@ -119,10 +119,27 @@ func TestRun_ShellInitUnsupportedShell(t *testing.T) {
 	}
 }
 
+// TestRun_ShellInitWrongArgCount is deliberately about *too many*
+// arguments. Zero arguments used to be the error case, and this test still
+// asserted that after shell-init learned to guess from $SHELL -- it kept
+// passing only because the Linux CI container happens to have no $SHELL set,
+// so detection failed and returned 2 for the wrong reason. The macOS runner,
+// which does set $SHELL, is what exposed it.
+//
+// The zero-argument paths are covered explicitly, with $SHELL controlled, by
+// TestRun_ShellInitDetectsShellFromEnv and
+// TestRun_ShellInitUndetectableShellIsError.
 func TestRun_ShellInitWrongArgCount(t *testing.T) {
-	_, _, code := runFor(t, "shell-init")
+	// Pinned so the assertion never depends on the ambient environment
+	// again, in either direction.
+	t.Setenv("SHELL", "/bin/bash")
+
+	_, stderr, code := runFor(t, "shell-init", "bash", "zsh")
 	if code != 2 {
 		t.Errorf("exit code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr, "usage:") {
+		t.Errorf("expected usage on stderr, got %q", stderr)
 	}
 }
 
@@ -328,6 +345,9 @@ enter /a
 }
 
 func TestRun_ShellHookNoArgsAndNoEnvIsUsageError(t *testing.T) {
+	unsetEnv(t, "ENVOKE_FROM")
+	unsetEnv(t, "ENVOKE_TO")
+
 	_, stderr, code := runFor(t, "shell-hook")
 	if code != 2 {
 		t.Errorf("exit code = %d, want 2", code)
@@ -1478,10 +1498,31 @@ func isolateHome(t *testing.T) (home string) {
 	t.Helper()
 	home = t.TempDir()
 	t.Setenv("HOME", home)
+	// os.UserHomeDir reads USERPROFILE on Windows and HOME elsewhere.
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("ENVOKERC", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("XDG_DATA_HOME", "")
+	// Every variable the CLI reads gets pinned, not just the ones a given
+	// test cares about. A test that passes because of what happens to be in
+	// the developer's or the runner's environment is worse than no test:
+	// TestRun_ShellInitWrongArgCount asserted the wrong thing for a while
+	// and passed anyway, purely because the Linux CI container has no
+	// $SHELL, and only the macOS runner ever showed it.
+	unsetEnv(t, "ENVOKE_FROM")
+	unsetEnv(t, "ENVOKE_TO")
 	return home
+}
+
+// unsetEnv removes a variable for the duration of the test. t.Setenv is
+// called first purely for its cleanup, which restores the original value (or
+// its absence) afterwards -- os.Unsetenv alone would leak across tests.
+func unsetEnv(t *testing.T, name string) {
+	t.Helper()
+	t.Setenv(name, "")
+	if err := os.Unsetenv(name); err != nil {
+		t.Fatalf("Unsetenv(%s): %v", name, err)
+	}
 }
 
 func writeConfig(t *testing.T, home, body string) {
@@ -1542,6 +1583,14 @@ func TestRun_CompletionDetectsShellAndRejectsUnsupported(t *testing.T) {
 		}
 		if !strings.Contains(stdout, "compdef _envoke envoke") {
 			t.Errorf("expected the zsh completion, got:\n%s", stdout)
+		}
+	})
+
+	t.Run("too many arguments is a usage error", func(t *testing.T) {
+		t.Setenv("SHELL", "/bin/bash")
+		_, _, code := runFor(t, "completion", "bash", "zsh")
+		if code != 2 {
+			t.Errorf("exit code = %d, want 2", code)
 		}
 	})
 

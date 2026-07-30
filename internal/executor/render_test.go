@@ -3,6 +3,7 @@ package executor
 import (
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -114,7 +115,6 @@ var nastyBasenames = []string{
 	"back`tick`",
 	"semi;colon",
 	"pipe|pipe",
-	`back\slash`,
 	"star*glob",
 	"brace{a,b}",
 	"paren(x)",
@@ -123,6 +123,23 @@ var nastyBasenames = []string{
 	"tilde~tilde",
 	"percent%percent",
 	"newline-free\ttab",
+}
+
+// basenames returns nastyBasenames plus the ones that are only legal on
+// some platforms.
+//
+// A backslash is a perfectly ordinary character in a Unix filename and must
+// round-trip untouched there, which is the reason MatchPath uses
+// filepath.ToSlash rather than a blind ReplaceAll. On Windows it is the path
+// separator and cannot appear in a basename at all, so `back\slash` is not
+// one component there but three -- ToSlash normalizes it and the capture
+// group legitimately comes back as `back/slash`. Asserting otherwise would
+// be asserting that Windows paths behave like Unix ones.
+func basenames() []string {
+	if runtime.GOOS == "windows" {
+		return nastyBasenames
+	}
+	return append(nastyBasenames, `back\slash`)
 }
 
 // renderShell is one shell profile plus how to actually execute Render's
@@ -170,7 +187,7 @@ func TestRender_QuotingRoundTripsThroughRealShells(t *testing.T) {
 			if _, err := exec.LookPath(rs.interpreter); err != nil {
 				t.Skipf("%s not available on this system, skipping", rs.interpreter)
 			}
-			for _, base := range nastyBasenames {
+			for _, base := range basenames() {
 				t.Run(base, func(t *testing.T) {
 					const parent = "/has space"
 					dir := parent + "/" + base

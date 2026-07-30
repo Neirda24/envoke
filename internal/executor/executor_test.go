@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -28,10 +29,17 @@ func requirePOSIXShell(t *testing.T) {
 
 func TestRun_ScriptRunsWithMatchedDirAsCwd(t *testing.T) {
 	requirePOSIXShell(t)
+	if runtime.GOOS == "windows" {
+		// The `sh` that satisfies requirePOSIXShell on Windows is Git
+		// Bash/MSYS, whose `pwd` reports an MSYS path (/d/a/...) rather than
+		// the Windows one (D:\a\...). Comparing the two would be testing
+		// MSYS's path translation, not envoke's choice of working directory.
+		t.Skip("MSYS `pwd` reports a translated path; this assertion is meaningless there")
+	}
 	dir := t.TempDir()
 	m := mustMatch(t, dir, config.Block{
 		Type:    config.Enter,
-		Pattern: regexp.MustCompile(`^` + regexp.QuoteMeta(dir) + `$`),
+		Pattern: regexp.MustCompile(`^` + regexp.QuoteMeta(filepath.ToSlash(dir)) + `$`),
 		Script:  `pwd > out.txt`,
 	})
 
@@ -60,7 +68,7 @@ func TestRun_CaptureGroupsExposedAsEnvVars(t *testing.T) {
 
 	m := mustMatch(t, projectDir, config.Block{
 		Type:    config.Enter,
-		Pattern: regexp.MustCompile(`^` + regexp.QuoteMeta(dir) + `/([^/]+)$`),
+		Pattern: regexp.MustCompile(`^` + regexp.QuoteMeta(filepath.ToSlash(dir)) + `/([^/]+)$`),
 		Script:  `echo "$ENVOKE_MATCH,$ENVOKE_MATCH_1,$ENVOKE_TYPE" > out.txt`,
 	})
 
@@ -69,7 +77,10 @@ func TestRun_CaptureGroupsExposedAsEnvVars(t *testing.T) {
 	}
 
 	got := strings.TrimSpace(readFile(t, filepath.Join(projectDir, "out.txt")))
-	want := projectDir + ",myproject,enter"
+	// ENVOKE_MATCH is capture group 0, taken against the slash-normalized
+	// path (see matcher.MatchPath), unlike ENVOKE_DIR which stays native.
+	// The two differ on Windows and are identical everywhere else.
+	want := filepath.ToSlash(projectDir) + ",myproject,enter"
 	if got != want {
 		t.Errorf("env vars = %q, want %q", got, want)
 	}
@@ -80,7 +91,7 @@ func TestRun_LeaveBlockSetsEnvokeType(t *testing.T) {
 	dir := t.TempDir()
 	m := mustMatch(t, dir, config.Block{
 		Type:    config.Leave,
-		Pattern: regexp.MustCompile(`^` + regexp.QuoteMeta(dir) + `$`),
+		Pattern: regexp.MustCompile(`^` + regexp.QuoteMeta(filepath.ToSlash(dir)) + `$`),
 		Script:  `echo "$ENVOKE_TYPE" > out.txt`,
 	})
 
@@ -99,7 +110,7 @@ func TestRun_NonZeroExitReturnsError(t *testing.T) {
 	dir := t.TempDir()
 	m := mustMatch(t, dir, config.Block{
 		Type:       config.Enter,
-		Pattern:    regexp.MustCompile(`^` + regexp.QuoteMeta(dir) + `$`),
+		Pattern:    regexp.MustCompile(`^` + regexp.QuoteMeta(filepath.ToSlash(dir)) + `$`),
 		RawPattern: dir,
 		Script:     `exit 3`,
 		Line:       7,
@@ -122,7 +133,7 @@ func TestRun_CancelledContextReturnsError(t *testing.T) {
 
 	m := mustMatch(t, dir, config.Block{
 		Type:    config.Enter,
-		Pattern: regexp.MustCompile(`^` + regexp.QuoteMeta(dir) + `$`),
+		Pattern: regexp.MustCompile(`^` + regexp.QuoteMeta(filepath.ToSlash(dir)) + `$`),
 		Script:  `echo hi`,
 	})
 
