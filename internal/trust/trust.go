@@ -24,12 +24,21 @@ import (
 	"path/filepath"
 )
 
-// IsTrusted reports whether configPath's current content matches the hash
-// recorded by the most recent Allow call for that path. A missing config
-// file or a config that was never allowed both report false, not an error
-// — "not trusted" is the normal, expected state for anything that hasn't
-// been through Allow yet.
-func IsTrusted(configPath string) (bool, error) {
+// IsTrusted reports whether content — the config bytes the caller has
+// already read and is about to act on — matches the hash recorded by the
+// most recent Allow call for configPath. A config that was never allowed
+// reports false, not an error: "not trusted" is the normal, expected state
+// for anything that hasn't been through Allow yet.
+//
+// Taking the content rather than re-reading configPath is deliberate and
+// load-bearing. The security property envoke actually needs is that the
+// bytes that get executed are the bytes that were approved; a function that
+// reads the file itself can only promise that *some* version of the file
+// once matched, leaving the caller free to parse and execute a different
+// one. Callers should get their bytes from config.LoadFile, which reads the
+// file exactly once and hands back both the parsed config and its source
+// bytes for exactly this purpose.
+func IsTrusted(configPath string, content []byte) (bool, error) {
 	recorded, err := readRecord(configPath)
 	if err != nil {
 		return false, err
@@ -37,27 +46,19 @@ func IsTrusted(configPath string) (bool, error) {
 	if recorded == "" {
 		return false, nil
 	}
-
-	current, err := contentHash(configPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("trust: %w", err)
-	}
-
-	return recorded == current, nil
+	return recorded == hashContent(content), nil
 }
 
-// Allow records configPath's current content as trusted, superseding any
-// previous approval for that path. It also persists a copy of that content
-// (see PreviousContent) so a later Allow call can show what changed since
-// the prior approval.
-func Allow(configPath string) error {
-	content, err := os.ReadFile(configPath)
-	if err != nil {
-		return fmt.Errorf("allow %s: %w", configPath, err)
-	}
+// Allow records content as the trusted content for configPath, superseding
+// any previous approval for that path. It also persists a copy of that
+// content (see PreviousContent) so a later Allow call can show what changed
+// since the prior approval.
+//
+// Like IsTrusted, this takes the bytes the caller reviewed rather than
+// re-reading the file: re-reading would record a hash for content the user
+// was never shown, so an edit landing between the review and the
+// confirmation would be approved sight-unseen.
+func Allow(configPath string, content []byte) error {
 	hash := hashContent(content)
 
 	recPath, err := recordPath(configPath)
@@ -67,10 +68,17 @@ func Allow(configPath string) error {
 	if err := os.MkdirAll(filepath.Dir(recPath), 0o700); err != nil {
 		return fmt.Errorf("allow %s: %w", configPath, err)
 	}
-	if err := os.WriteFile(recPath, []byte(hash), 0o600); err != nil {
+	// The content copy is written before the hash record, so the two files
+	// can only ever be torn in the harmless direction. If this process dies
+	// in between, the record still holds the *previous* hash: the config
+	// reads as untrusted (fails closed) and the stale-but-newer .content
+	// only affects which diff the next `envoke allow` shows. Writing the
+	// hash first would instead leave a record claiming the new content is
+	// trusted while .content still described the old one.
+	if err := os.WriteFile(contentPath(recPath), content, 0o600); err != nil {
 		return fmt.Errorf("allow %s: %w", configPath, err)
 	}
-	if err := os.WriteFile(contentPath(recPath), content, 0o600); err != nil {
+	if err := os.WriteFile(recPath, []byte(hash), 0o600); err != nil {
 		return fmt.Errorf("allow %s: %w", configPath, err)
 	}
 	return nil
@@ -144,14 +152,6 @@ func contentPath(recPath string) string {
 func hashContent(content []byte) string {
 	sum := sha256.Sum256(content)
 	return hex.EncodeToString(sum[:])
-}
-
-func contentHash(configPath string) (string, error) {
-	content, err := os.ReadFile(configPath)
-	if err != nil {
-		return "", err
-	}
-	return hashContent(content), nil
 }
 
 // storeDir is $XDG_DATA_HOME/envoke/allow, or ~/.local/share/envoke/allow

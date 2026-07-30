@@ -2,6 +2,7 @@ package config
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -19,19 +20,37 @@ func (e *ParseError) Error() string {
 	return fmt.Sprintf("line %d: %s", e.Line, e.Msg)
 }
 
-// ParseFile reads and parses the config file at path.
-func ParseFile(path string) (*Config, error) {
-	f, err := os.Open(path)
+// LoadFile reads the config file at path exactly once and parses that
+// content, returning the parsed config alongside the bytes it was parsed
+// from.
+//
+// Handing the content back to the caller is the whole point of this
+// function existing next to ParseFile. Any caller that also makes a trust
+// decision about the same file must hash *these* bytes (see
+// trust.IsTrusted, which takes them) instead of reading the file a second
+// time: two reads open a window in which the file can change in between, so
+// the content that gets executed is not the content that was validated. On
+// a group- or other-writable config — exactly the situation
+// UnsafePermissions warns about — that window is a real privilege boundary,
+// not a theoretical one.
+func LoadFile(path string) (*Config, []byte, error) {
+	content, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("open config: %w", err)
+		return nil, nil, fmt.Errorf("open config: %w", err)
 	}
-	defer func() { _ = f.Close() }()
 
-	cfg, err := Parse(f)
+	cfg, err := Parse(bytes.NewReader(content))
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, nil, fmt.Errorf("%s: %w", path, err)
 	}
-	return cfg, nil
+	return cfg, content, nil
+}
+
+// ParseFile reads and parses the config file at path. Use LoadFile instead
+// when the same file's content also feeds a trust decision.
+func ParseFile(path string) (*Config, error) {
+	cfg, _, err := LoadFile(path)
+	return cfg, err
 }
 
 // Parse reads an envoke config from r.

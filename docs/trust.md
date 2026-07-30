@@ -78,6 +78,19 @@ When `envoke shell-hook` runs, it recomputes the current file's content hash and
 
 Any edit to the config — even whitespace — changes the content hash and revokes trust until you run `envoke allow` again. This means there's no way to silently smuggle a change into an already-trusted config; every modification requires a fresh, explicit approval.
 
+### The config is read exactly once per command
+
+Both `envoke allow` and `envoke shell-hook` read the config file a single
+time and use those same bytes for everything they do with it — parsing it,
+showing it to you, hashing it, and rendering it into your shell. That is a
+security property, not an implementation detail: reading the file more than
+once would open a window between the read that gets *validated* and the read
+that gets *executed*, so a config could be run in one version while being
+approved in another. On a config another local user can write to — exactly
+what the permission warning below is about — that window is reachable, so
+the trust check operates on bytes already in hand rather than on a path it
+re-opens.
+
 ## File permission warnings
 
 Content-hash revocation protects you from *silently* running a config that

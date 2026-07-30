@@ -57,9 +57,16 @@ to a later capability before an earlier one is solid and tested.
 Package layout (`internal/`, not importable outside this module — no stable
 public API to commit to yet):
 
-- **`internal/config`** — `Parse`/`ParseFile` turn a config file into
-  `[]Block{Type, Pattern, RawPattern, Script, Line}` via a hand-rolled
-  line-oriented parser. Pattern compilation (`pattern.go`) expands a leading
+- **`internal/config`** — `Parse`/`ParseFile`/`LoadFile` turn a config file
+  into `[]Block{Type, Pattern, RawPattern, Script, Line}` via a hand-rolled
+  line-oriented parser. **`LoadFile(path) (*Config, []byte, error)` is the
+  one to use whenever the same file also feeds a trust decision** — it reads
+  the file exactly once and returns the source bytes alongside the parsed
+  config, so `trust.IsTrusted`/`trust.Allow` hash the same bytes that get
+  parsed and executed. Two separate reads would let the file change in
+  between, validating one version while executing another; `cmd/envoke` has
+  no code path that reads a config twice, and adding one is a security
+  regression, not a refactor. Pattern compilation (`pattern.go`) expands a leading
   `~` and `$VAR`/`${VAR}` as literal (`regexp.QuoteMeta`'d) substitutions,
   then anchors the result as `^(?:...)$` — that anchoring is what makes
   matching segment-based rather than prefix-based. Malformed config fails
@@ -102,18 +109,24 @@ public API to commit to yet):
   (used verbatim, even if missing) → `~/.envokerc` if present →
   `$XDG_CONFIG_HOME/envoke/config` (or `~/.config/envoke/config`) if present
   → not found (normal state, not an error).
-- **`internal/trust`** — `Allow(path)` / `IsTrusted(path)` /
-  `PreviousContent(path) (content string, ok bool, err error)`. Trust is a
+- **`internal/trust`** — `Allow(path, content)` / `IsTrusted(path, content)`
+  / `PreviousContent(path) (content string, ok bool, err error)`. Trust is a
   SHA-256 hash of the config file's *content*, recorded under
   `$XDG_DATA_HOME/envoke/allow/<sha256(abs path)>` (or
   `~/.local/share/...`) — one record per config path. Any edit changes the
-  hash and revokes trust until `Allow` runs again. `Allow` also persists the
-  approved content to a sibling `<record>.content` file, read back by
-  `PreviousContent` so `cmdAllow` can show a diff instead of a full re-dump
-  on re-approval — a pre-existing hash-only record (no content file) is a
-  normal state (`ok=false`), not corruption. `shell-hook` calls `IsTrusted`
-  before ever calling `executor.Render`; `cmdAllow` calls `PreviousContent`
-  to decide full-dump vs. diff vs. "nothing changed."
+  hash and revokes trust until `Allow` runs again. **Both take the content
+  bytes, never a path to re-read** — that's what makes the TOCTOU
+  unexpressible (see `internal/config.LoadFile`); don't add a
+  path-only convenience wrapper, it would reopen the hole it was removed to
+  close. `Allow` also persists the approved content to a sibling
+  `<record>.content` file, written *before* the hash record so a torn write
+  fails closed, and read back by `PreviousContent` so `cmdAllow` can show a
+  diff instead of a full re-dump on re-approval — a pre-existing hash-only
+  record (no content file) is a normal state (`ok=false`), not corruption.
+  `shell-hook` calls `IsTrusted` before ever calling `executor.Render`;
+  `cmdAllow` combines `PreviousContent` *and* `IsTrusted` to decide
+  full-dump vs. diff vs. "nothing changed" (content equality alone would
+  wedge on a torn record).
 - **`internal/shellinit`** — `Generate(shell)` returns the literal hook
   script for `"bash"`, `"zsh"`, `"fish"`, `"tcsh"`, or `"powershell"` (static
   strings, no templating). Every hook calls `envoke shell-hook --shell

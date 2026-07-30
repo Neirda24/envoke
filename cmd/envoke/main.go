@@ -151,7 +151,10 @@ func cmdShellHook(args []string, stdout, stderr io.Writer) int {
 
 	warnUnsafePermissions(stderr, path)
 
-	cfg, err := config.ParseFile(path)
+	// One read, reused for both the parse and the trust check: the bytes
+	// that get rendered into the caller's shell must be the same bytes the
+	// hash was computed over (see config.LoadFile).
+	cfg, content, err := config.LoadFile(path)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "envoke:", err)
 		return 1
@@ -168,7 +171,7 @@ func cmdShellHook(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	trusted, err := trust.IsTrusted(path)
+	trusted, err := trust.IsTrusted(path, content)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "envoke:", err)
 		return 1
@@ -240,33 +243,44 @@ func cmdAllow(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 
 	warnUnsafePermissions(stderr, path)
 
-	cfg, err := config.ParseFile(path)
+	// The file is read exactly once here, and the same bytes are what gets
+	// parsed, shown for review, and finally recorded as trusted. Reading it
+	// again at any of those steps would mean approving content the user was
+	// never shown -- an edit landing between the diff and the y/N answer
+	// would be trusted sight-unseen (see config.LoadFile).
+	cfg, current, err := config.LoadFile(path)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "envoke:", err)
 		return 1
 	}
 
-	current, err := os.ReadFile(path)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "envoke:", err)
-		return 1
-	}
 	previous, hadPrevious, err := trust.PreviousContent(path)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "envoke:", err)
 		return 1
 	}
+	alreadyTrusted, err := trust.IsTrusted(path, current)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		return 1
+	}
 
-	if hadPrevious && previous == string(current) {
-		// The file wasn't actually edited since it was last approved --
-		// trust.IsTrusted already reports this config as trusted, so there's
-		// nothing to review and nothing new to approve. Re-printing the full
-		// block dump (or even just re-running the y/N prompt) would be pure
-		// busywork: the user would be asked to confirm that nothing changed,
-		// for a config they already reviewed and approved verbatim. Report
-		// the state honestly and return without prompting or re-recording
-		// trust -- --yes is a no-op here for the same reason: there was
-		// never a prompt in this branch for it to skip.
+	if hadPrevious && alreadyTrusted && previous == string(current) {
+		// The file wasn't actually edited since it was last approved, and
+		// the trust record agrees, so there's nothing to review and nothing
+		// new to approve. Re-printing the full block dump (or even just
+		// re-running the y/N prompt) would be pure busywork: the user would
+		// be asked to confirm that nothing changed, for a config they
+		// already reviewed and approved verbatim. Report the state honestly
+		// and return without prompting or re-recording trust -- --yes is a
+		// no-op here for the same reason: there was never a prompt in this
+		// branch for it to skip.
+		//
+		// alreadyTrusted is checked on top of the content comparison so a
+		// half-written trust record (content copy landed, hash record
+		// didn't -- see trust.Allow's write ordering) can't wedge this into
+		// reporting an untrusted config as trusted forever. In that state
+		// the config falls through and gets re-approved normally.
 		_, _ = fmt.Fprintf(stdout, "envoke: %s is unchanged since it was last trusted -- nothing to review\n", path)
 		return 0
 	}
@@ -287,7 +301,7 @@ func cmdAllow(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 		}
 	}
 
-	if err := trust.Allow(path); err != nil {
+	if err := trust.Allow(path, current); err != nil {
 		_, _ = fmt.Fprintln(stderr, "envoke:", err)
 		return 1
 	}
@@ -417,7 +431,7 @@ func cmdDebug(args []string, stdout, stderr io.Writer) int {
 
 	warnUnsafePermissions(stderr, path)
 
-	cfg, err := config.ParseFile(path)
+	cfg, content, err := config.LoadFile(path)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "envoke:", err)
 		return 1
@@ -429,7 +443,7 @@ func cmdDebug(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	trusted, err := trust.IsTrusted(path)
+	trusted, err := trust.IsTrusted(path, content)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "envoke:", err)
 		return 1

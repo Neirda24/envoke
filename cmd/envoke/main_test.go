@@ -970,6 +970,82 @@ enter /a
 	}
 }
 
+// TestRun_AllowRecordsTheContentItReviewed is the CLI-level half of the
+// TOCTOU fix (internal/trust's TestIsTrusted_JudgesGivenContentNotFileOnDisk
+// is the other): `envoke allow` used to read the config once to parse it,
+// once to display it, and a third time inside trust.Allow to hash it. What
+// got recorded as trusted was therefore whatever the file held at that last
+// read, not what the user actually reviewed and confirmed.
+//
+// A single read now feeds all three, so an edit that lands after the review
+// simply leaves the config untrusted -- which is what this asserts: approve,
+// then modify, and the modified config must not inherit the approval.
+func TestRun_AllowRecordsTheContentItReviewed(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /a\n    echo reviewed\n")
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+
+	writeConfig(t, home, "enter /a\n    echo swapped-in-after-review\n")
+
+	stdout, stderr, code := runFor(t, "shell-hook", "/", "/a")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if stdout != "" {
+		t.Errorf("content that was never reviewed must not run, got stdout %q", stdout)
+	}
+	if !strings.Contains(stderr, "not trusted") {
+		t.Errorf("expected the swapped-in config to report as untrusted, got %q", stderr)
+	}
+}
+
+// TestRun_AllowReapprovesWhenTrustRecordIsHalfWritten covers the "unchanged
+// since it was last trusted" shortcut refusing to fire on a torn trust
+// record. trust.Allow writes the content copy before the hash record, so a
+// crash in between leaves a .content that matches the config while the hash
+// record still holds the previous value. Comparing content alone would then
+// report "nothing to review" forever on a config that shell-hook considers
+// untrusted -- an unfixable state reachable only through `envoke allow`.
+func TestRun_AllowReapprovesWhenTrustRecordIsHalfWritten(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /a\n    echo hi\n")
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+
+	// Simulate the torn write: keep the content copy, corrupt the hash.
+	allowDir := filepath.Join(home, ".local", "share", "envoke", "allow")
+	entries, err := os.ReadDir(allowDir)
+	if err != nil {
+		t.Fatalf("ReadDir trust store: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".content") {
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(allowDir, e.Name()), []byte("stale-hash"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	stdout, stderr, code := runFor(t, "allow", "--yes")
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
+	}
+	if strings.Contains(stdout, "nothing to review") {
+		t.Errorf("a config the trust record does not actually cover must be re-approved, got %q", stdout)
+	}
+	if !strings.Contains(stdout, "trusted") {
+		t.Errorf("expected the config to be re-trusted, got %q", stdout)
+	}
+
+	if stdout, _, code := runFor(t, "shell-hook", "/", "/a"); code != 0 || !strings.Contains(stdout, "echo hi") {
+		t.Errorf("expected the re-approved config to run, got stdout %q code %d", stdout, code)
+	}
+}
+
 func isolateHome(t *testing.T) (home string) {
 	t.Helper()
 	home = t.TempDir()
