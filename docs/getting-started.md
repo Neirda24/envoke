@@ -52,6 +52,20 @@ envoke shell-init tcsh | source /dev/stdin
 
 Restart your shell (or re-source your rc file) after adding the hook.
 
+### Tab completion
+
+Optional, and separate from the hook above:
+
+```sh
+envoke completion bash >> ~/.bashrc          # or: source <(envoke completion bash)
+envoke completion zsh  > "${fpath[1]}/_envoke"   # zsh, with compinit already set up
+envoke completion fish > ~/.config/fish/completions/envoke.fish
+```
+
+With no argument it guesses from `$SHELL`, like `shell-init`. Only bash, zsh
+and fish are covered — tcsh and PowerShell would need a half-working script
+to be worth shipping, so they get an explicit error instead.
+
 ### A note on Windows
 
 Windows binaries are published (and a Scoop manifest with them), and the

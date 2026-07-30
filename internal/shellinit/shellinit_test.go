@@ -762,3 +762,91 @@ func TestGenerate_HooksNeverExecuteDirectoryNames(t *testing.T) {
 		})
 	}
 }
+
+func TestCompletion_UnsupportedShellsAreExplicitErrors(t *testing.T) {
+	for _, shell := range []string{"tcsh", "powershell", "cmd", ""} {
+		if _, err := Completion(shell); err == nil {
+			t.Errorf("Completion(%q) should be an error, not a silently wrong script", shell)
+		}
+	}
+}
+
+// TestCompletion_ListsEverySubcommand checks the candidate list actually
+// reaches every generated script. The list itself is cross-checked against
+// the CLI's own usage output in cmd/envoke's tests, where the subcommands
+// are actually defined.
+func TestCompletion_ListsEverySubcommand(t *testing.T) {
+	for _, shell := range []string{"bash", "zsh", "fish"} {
+		t.Run(shell, func(t *testing.T) {
+			script, err := Completion(shell)
+			if err != nil {
+				t.Fatalf("Completion: %v", err)
+			}
+			for _, cmd := range subcommands {
+				if !strings.Contains(script, cmd) {
+					t.Errorf("%s completion never mentions subcommand %q", shell, cmd)
+				}
+			}
+		})
+	}
+}
+
+func TestCompletion_ScriptsAreSyntacticallyValid(t *testing.T) {
+	for _, shell := range []string{"bash", "zsh", "fish"} {
+		t.Run(shell, func(t *testing.T) {
+			requireInterpreter(t, shell)
+			script, err := Completion(shell)
+			if err != nil {
+				t.Fatalf("Completion: %v", err)
+			}
+			assertShellSyntaxOK(t, shell, script)
+		})
+	}
+}
+
+// TestCompletion_BashActuallyCompletes drives a real bash: source the
+// script, invoke the completion function the way bash would, and check the
+// candidates. A syntax check alone would pass on a script that registers
+// nothing useful.
+func TestCompletion_BashActuallyCompletes(t *testing.T) {
+	requireInterpreter(t, "bash")
+	script, err := Completion("bash")
+	if err != nil {
+		t.Fatalf("Completion: %v", err)
+	}
+
+	cases := []struct {
+		words   string
+		cword   string
+		want    string
+		notWant string
+	}{
+		// First word: subcommands, filtered by the prefix typed so far.
+		{words: `(envoke re)`, cword: "1", want: "revoke", notWant: "allow"},
+		{words: `(envoke "")`, cword: "1", want: "shell-init"},
+		// Second word of shell-init: shell names, not files.
+		{words: `(envoke shell-init f)`, cword: "2", want: "fish", notWant: "bash"},
+		{words: `(envoke completion "")`, cword: "2", want: "zsh"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.words, func(t *testing.T) {
+			driver := script + "\n" +
+				"COMP_WORDS=" + tc.words + "\n" +
+				"COMP_CWORD=" + tc.cword + "\n" +
+				"_envoke_complete\n" +
+				`printf '%s\n' "${COMPREPLY[@]}"` + "\n"
+
+			out, err := exec.Command("bash", "--noprofile", "--norc", "-c", driver).CombinedOutput()
+			if err != nil {
+				t.Fatalf("driver failed: %v\n%s", err, out)
+			}
+			if !strings.Contains(string(out), tc.want) {
+				t.Errorf("expected %q among the candidates, got:\n%s", tc.want, out)
+			}
+			if tc.notWant != "" && strings.Contains(string(out), tc.notWant) {
+				t.Errorf("did not expect %q among the candidates, got:\n%s", tc.notWant, out)
+			}
+		})
+	}
+}

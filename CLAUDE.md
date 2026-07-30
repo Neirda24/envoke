@@ -171,7 +171,13 @@ public API to commit to yet):
   guessing whether their config still exists.
 - **`internal/shellinit`** — `Generate(shell)` returns the literal hook
   script for `"bash"`, `"zsh"`, `"fish"`, `"tcsh"`, or `"powershell"` (static
-  strings, no templating). Every hook calls `envoke shell-hook --shell
+  strings, no templating). `Completion(shell)` does the same for tab
+  completion, for bash/zsh/fish only — tcsh and PowerShell return an
+  explicit error rather than a half-working script. Its candidate list lives
+  in `subcommands`; `cmd/envoke`'s
+  `TestRun_CompletionCoversEverySubcommand` cross-checks it against
+  `envoke help`, so adding a subcommand without completing it fails the
+  build (it already caught `completion` forgetting itself). Every hook calls `envoke shell-hook --shell
   <name>` so `executor.Render` picks the right dialect. None of the five
   hooks redefine `cd` (`assertNeverRedefinesCd`). Two invariants hold across
   all five, each with a cross-shell test that drives real interpreters:

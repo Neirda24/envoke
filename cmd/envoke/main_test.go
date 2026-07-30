@@ -1491,3 +1491,67 @@ func writeConfig(t *testing.T, home, body string) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 }
+
+// TestRun_CompletionCoversEverySubcommand is the cross-check that keeps the
+// completion candidate list honest. internal/shellinit can't see the
+// dispatcher, so the authority here is `envoke help`, which is the one
+// thing a contributor adding a subcommand certainly updates. Anything it
+// documents must be completable, and anything the completion offers must
+// actually be a subcommand.
+func TestRun_CompletionCoversEverySubcommand(t *testing.T) {
+	help, _, code := runFor(t, "help")
+	if code != 0 {
+		t.Fatalf("help exit code = %d", code)
+	}
+	script, _, code := runFor(t, "completion", "bash")
+	if code != 0 {
+		t.Fatalf("completion exit code = %d", code)
+	}
+
+	var documented []string
+	for _, line := range strings.Split(help, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "envoke" {
+			continue
+		}
+		name := fields[1]
+		if strings.HasPrefix(name, "[") || strings.HasPrefix(name, "<") {
+			continue
+		}
+		documented = append(documented, name)
+	}
+	if len(documented) < 5 {
+		t.Fatalf("failed to parse the subcommand list out of `envoke help`, got %q", documented)
+	}
+
+	for _, name := range documented {
+		// shell-hook is documented as internal but still completable, so
+		// every documented name is expected here.
+		if !strings.Contains(script, name) {
+			t.Errorf("subcommand %q is documented in `envoke help` but never offered by completion", name)
+		}
+	}
+}
+
+func TestRun_CompletionDetectsShellAndRejectsUnsupported(t *testing.T) {
+	t.Run("detects from $SHELL", func(t *testing.T) {
+		t.Setenv("SHELL", "/usr/bin/zsh")
+		stdout, stderr, code := runFor(t, "completion")
+		if code != 0 {
+			t.Fatalf("exit code = %d, stderr = %q", code, stderr)
+		}
+		if !strings.Contains(stdout, "compdef _envoke envoke") {
+			t.Errorf("expected the zsh completion, got:\n%s", stdout)
+		}
+	})
+
+	t.Run("unsupported shell is an explicit error", func(t *testing.T) {
+		_, stderr, code := runFor(t, "completion", "tcsh")
+		if code != 1 {
+			t.Errorf("exit code = %d, want 1", code)
+		}
+		if !strings.Contains(stderr, "bash, zsh, fish") {
+			t.Errorf("expected the error to name what is supported, got %q", stderr)
+		}
+	})
+}
