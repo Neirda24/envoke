@@ -25,21 +25,15 @@ var ErrUntrusted = errors.New("config is not trusted")
 // matcher.Resolve for the ordering rules, including traverse behavior for
 // intermediate directories.
 //
-// It deliberately takes a config *path* and does the loading and the trust
-// check itself, rather than accepting an already-parsed *config.Config.
-// Accepting a parsed config would make the trust check the caller's
-// responsibility, and CLAUDE.md's trust-before-execution principle is not
-// something to leave to a caller's diligence: this function is the only
-// thing in the codebase that spawns a shell from config, so the gate lives
-// here where it cannot be skipped. An untrusted config returns ErrUntrusted
-// having run nothing at all. The single read that feeds both the parse and
-// the hash is the same read-once discipline cmd/envoke uses (see
-// config.LoadFile).
+// It takes a config *path* and does the loading and the trust check itself
+// rather than accepting a parsed *config.Config. This is the only thing in
+// the codebase that spawns a shell from config, so the trust gate lives
+// here where no caller can skip it; an untrusted config returns
+// ErrUntrusted having run nothing. One read feeds both the parse and the
+// hash (see config.LoadFile).
 //
-// Execution stops at the first failing block; scripts after it (whether
-// remaining leave blocks or any enter blocks) do not run. envoke does not
-// snapshot or auto-unwind a partially-applied transition — enter and leave
-// are independent, explicit blocks (see CLAUDE.md).
+// Execution stops at the first failing block, and a partially-applied
+// transition is not unwound — enter and leave are independent.
 func Transition(ctx context.Context, configPath, from, to string) error {
 	cfg, content, err := config.LoadFile(configPath)
 	if err != nil {

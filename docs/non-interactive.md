@@ -18,6 +18,16 @@ variables set.
 envoke exec "$PWD" ~/Projects/my-app
 ```
 
+Both arguments are optional and may be relative. With none, `envoke exec`
+uses the shell's own last transition (`$OLDPWD` to `$PWD`), the same default
+as `envoke debug`.
+
+!!! warning "Unix only"
+
+    Blocks run through `sh -c`, so `envoke exec` needs a POSIX shell on
+    `PATH`. On Windows it will not find one. The shell hook is unaffected —
+    the PowerShell hook renders into PowerShell itself.
+
 ## What it does *not* do
 
 **Side effects stay in the subprocess.** `export`, `source` and `cd` inside
@@ -44,6 +54,28 @@ envoke: /home/you/.envokerc: config is not trusted: run `envoke allow /home/you/
 It exits 1 in that case, and 1 as soon as any block exits non-zero —
 remaining blocks are not run, and nothing is unwound (see the
 enter/leave independence rule in [Configuration](configuration.md)).
+
+That stop-on-failure behaviour is specific to `envoke exec`. The shell hook
+does the opposite: it hands your shell every matched block at once, so a
+failing one doesn't stop the rest. See [When a block
+fails](configuration.md#when-a-block-fails).
+
+`envoke disable` applies here too, and `envoke exec` says so rather than
+silently doing nothing:
+
+```
+envoke: disabled by the persistent switch -- no blocks were run
+```
+
+It still exits 0 — being switched off is what was asked for, not a failure.
+Set `ENVOKE_DISABLE=0` for a job that must run its blocks regardless.
+
+## Interruption
+
+A SIGINT or SIGTERM interrupts the running block rather than killing
+`envoke` out from under it, so a `trap` in the block gets a chance to clean
+up; it is killed five seconds later if it hasn't exited. `envoke exec` then
+exits 130.
 
 For CI, approve the config as part of provisioning, where `--yes` skips the
 interactive prompt:

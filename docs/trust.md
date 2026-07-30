@@ -24,16 +24,19 @@ $ envoke allow
 envoke: about to trust /home/you/.envokerc -- review each block below before confirming:
 
   enter ~/Projects/([^/]+) (line 1)
-    source venv/bin/activate
+    source "$ENVOKE_DIR/venv/bin/activate"
 
   leave ~/Projects/([^/]+) (line 4)
     deactivate
 
 envoke: trust and run these blocks on every matching cd? [y/N] y
 envoke: trusted /home/you/.envokerc
+envoke: to apply it to this shell without leaving the directory: eval "$(envoke reload)"
 ```
 
 Answering anything but `y`/`yes` prints `envoke: aborted, not trusted` to stderr and exits non-zero, leaving the config untrusted.
+
+That last line is there because `envoke allow` is a child process of your shell and cannot export anything into it — what you just approved applies from your next `cd` onwards. See [Applying a config without leaving the directory](debugging.md#applying-a-config-without-leaving-the-directory).
 
 For non-interactive use — dotfiles bootstrap scripts, CI, provisioning — pass `--yes` (or `-y`) to skip the prompt and trust immediately, the same as answering `y`:
 
@@ -69,6 +72,9 @@ $ envoke list
   `envoke allow` it again.
 - **missing** — the config file is gone, but its record (and the copy of its
   content, see below) is still in the store. `envoke prune` clears those.
+- **unreadable** — the file is there but couldn't be read, so envoke can't
+  say whether it still matches what you approved. A permissions problem,
+  usually.
 
 `envoke revoke` puts a config back to needing an explicit approval, without
 having to edit it or delete files out of the store by hand. Revoking

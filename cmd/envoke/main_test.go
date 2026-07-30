@@ -395,6 +395,274 @@ enter /a
 	}
 }
 
+// TestRun_ShellHookUnknownShellIsRejected guards the CLI boundary rather
+// than Render's own behavior: Render deliberately falls back to POSIX for an
+// unknown dialect, which would mean a typo silently feeds `export` to a fish
+// or tcsh session on every directory change.
+func TestRun_ShellHookUnknownShellIsRejected(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo hi
+`)
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+
+	stdout, stderr, code := runFor(t, "shell-hook", "--shell", "fsh", "/", "/a")
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if stdout != "" {
+		t.Errorf("nothing may reach the shell for eval, got %q", stdout)
+	}
+	if !strings.Contains(stderr, `unknown shell "fsh"`) {
+		t.Errorf("expected the rejected name in the error, got %q", stderr)
+	}
+}
+
+// allowedConfig writes a one-block config matching /a and trusts it, which
+// is the starting point for every switch test: the only thing left that can
+// stop a block from running is the switch itself.
+func allowedConfig(t *testing.T) {
+	t.Helper()
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo hi
+`)
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+}
+
+func TestRun_DisableStopsShellHookSilently(t *testing.T) {
+	allowedConfig(t)
+
+	if _, _, code := runFor(t, "disable"); code != 0 {
+		t.Fatalf("disable exit code = %d, want 0", code)
+	}
+
+	stdout, stderr, code := runFor(t, "shell-hook", "/", "/a")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if stdout != "" {
+		t.Errorf("a disabled envoke must render nothing, got %q", stdout)
+	}
+	// This runs on every single directory change, so any output at all
+	// would be a per-cd nuisance for as long as the switch is off.
+	if stderr != "" {
+		t.Errorf("a disabled envoke must stay silent, got %q", stderr)
+	}
+}
+
+func TestRun_EnableRestoresShellHook(t *testing.T) {
+	allowedConfig(t)
+
+	if _, _, code := runFor(t, "disable"); code != 0 {
+		t.Fatalf("disable failed")
+	}
+	if _, _, code := runFor(t, "enable"); code != 0 {
+		t.Fatalf("enable failed")
+	}
+
+	stdout, _, code := runFor(t, "shell-hook", "/", "/a")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "echo hi") {
+		t.Errorf("expected the block back after enable, got %q", stdout)
+	}
+}
+
+// TestRun_EnvDisableOverridesTheFlag covers both directions of the
+// per-session override, which is the whole point of having two switches.
+func TestRun_EnvDisableOverridesTheFlag(t *testing.T) {
+	allowedConfig(t)
+
+	t.Setenv("ENVOKE_DISABLE", "1")
+	stdout, _, _ := runFor(t, "shell-hook", "/", "/a")
+	if stdout != "" {
+		t.Errorf("ENVOKE_DISABLE=1 must stop the hook, got %q", stdout)
+	}
+
+	if _, _, code := runFor(t, "disable"); code != 0 {
+		t.Fatalf("disable failed")
+	}
+	t.Setenv("ENVOKE_DISABLE", "0")
+	stdout, _, _ = runFor(t, "shell-hook", "/", "/a")
+	if !strings.Contains(stdout, "echo hi") {
+		t.Errorf("ENVOKE_DISABLE=0 must re-enable this shell, got %q", stdout)
+	}
+}
+
+// TestRun_DisableWarnsWhenTheEnvOverrideWins keeps `envoke disable` from
+// looking like it did nothing in a shell that has already overridden it.
+func TestRun_DisableWarnsWhenTheEnvOverrideWins(t *testing.T) {
+	allowedConfig(t)
+	t.Setenv("ENVOKE_DISABLE", "0")
+
+	stdout, stderr, code := runFor(t, "disable")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "disabled for every shell") {
+		t.Errorf("expected the switch to be reported as set, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "ENVOKE_DISABLE") {
+		t.Errorf("expected a warning that the override wins here, got %q", stderr)
+	}
+}
+
+func TestRun_ExecReportsBeingDisabled(t *testing.T) {
+	allowedConfig(t)
+	if _, _, code := runFor(t, "disable"); code != 0 {
+		t.Fatalf("disable failed")
+	}
+
+	// Exit 0: the user asked for envoke to be off, which is not a failure.
+	// But exec is invoked deliberately, so silence would leave a script
+	// mysteriously missing its environment.
+	_, stderr, code := runFor(t, "exec", "/", "/a")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stderr, "disabled") {
+		t.Errorf("expected exec to say why it did nothing, got %q", stderr)
+	}
+}
+
+func TestRun_DebugStillWorksWhenDisabled(t *testing.T) {
+	allowedConfig(t)
+	if _, _, code := runFor(t, "disable"); code != 0 {
+		t.Fatalf("disable failed")
+	}
+
+	stdout, _, code := runFor(t, "debug", "/", "/a")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "echo hi") {
+		t.Errorf("debug must keep listing blocks while disabled, got %q", stdout)
+	}
+	if !strings.Contains(stdout, "disabled") {
+		t.Errorf("debug must report the switch, got %q", stdout)
+	}
+}
+
+func TestRun_SwitchRejectsArguments(t *testing.T) {
+	isolateHome(t)
+	for _, cmd := range []string{"disable", "enable"} {
+		if _, _, code := runFor(t, cmd, "extra"); code != 2 {
+			t.Errorf("%s with an argument: exit code = %d, want 2", cmd, code)
+		}
+	}
+}
+
+// TestRun_ReloadAppliesEntersForTheCurrentDirectory covers what reload
+// exists for: allow is a child process and cannot export into the shell that
+// ran it, so a freshly approved config would otherwise only take effect on
+// the next cd.
+func TestRun_ReloadAppliesEntersForTheCurrentDirectory(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo outer
+
+enter /a/b
+    echo inner
+
+leave /a
+    echo bye
+`)
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+	t.Setenv("PWD", "/a/b")
+
+	stdout, _, code := runFor(t, "reload")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	outer, inner := strings.Index(stdout, "echo outer"), strings.Index(stdout, "echo inner")
+	if outer == -1 || inner == -1 || outer > inner {
+		t.Errorf("expected both enter blocks, shallowest first, got %q", stdout)
+	}
+	// Nothing has been left, and envoke does not snapshot state to unwind.
+	if strings.Contains(stdout, "echo bye") {
+		t.Errorf("reload must not run leave blocks, got %q", stdout)
+	}
+}
+
+func TestRun_ReloadRefusesUntrustedConfig(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo hi
+`)
+	t.Setenv("PWD", "/a")
+
+	stdout, stderr, code := runFor(t, "reload")
+	// Unlike shell-hook, which only notes it: this was typed, so silence
+	// would look like it worked.
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	if stdout != "" {
+		t.Errorf("nothing may reach the shell for eval, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "envoke allow") {
+		t.Errorf("expected the allow hint, got %q", stderr)
+	}
+}
+
+func TestRun_ReloadShellFlagSelectsExportSyntax(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo hi
+`)
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+	t.Setenv("PWD", "/a")
+
+	stdout, _, code := runFor(t, "reload", "--shell", "fish")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "set -gx ENVOKE_DIR") {
+		t.Errorf("expected fish syntax, got %q", stdout)
+	}
+}
+
+func TestRun_ReloadRejectsArgumentsAndUnknownShell(t *testing.T) {
+	isolateHome(t)
+	if _, _, code := runFor(t, "reload", "/a"); code != 2 {
+		t.Errorf("positional argument: exit code = %d, want 2", code)
+	}
+	if _, _, code := runFor(t, "reload", "--shell", "fsh"); code != 2 {
+		t.Errorf("unknown shell: exit code = %d, want 2", code)
+	}
+}
+
+func TestRun_AllowPointsAtReload(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo hi
+`)
+
+	stdout, _, code := runFor(t, "allow", "--yes")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "envoke reload") {
+		t.Errorf("expected allow to name the way to apply it now, got %q", stdout)
+	}
+}
+
 func TestRun_AllowLocatedConfig(t *testing.T) {
 	home := isolateHome(t)
 	writeConfig(t, home, "enter /a\n    echo hi\n")
@@ -945,6 +1213,34 @@ enter /b
 	enterIdx := strings.Index(stdout, "enter /b")
 	if leaveIdx == -1 || enterIdx == -1 || leaveIdx > enterIdx {
 		t.Errorf("expected leave block reported before enter block, got %q", stdout)
+	}
+}
+
+// TestRun_DebugNotesWorkingDirOnlyWhenItDiffers covers the note that makes
+// the exec/shell-hook working-directory split visible. Listing the matched
+// directory next to a block reads as "relative paths resolve from here",
+// which holds for exec and not for the hook.
+func TestRun_DebugNotesWorkingDirOnlyWhenItDiffers(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo hi
+`)
+
+	deep, _, code := runFor(t, "debug", "/", "/a/b/c")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(deep, "$ENVOKE_DIR") {
+		t.Errorf("expected a working-directory note when landing below the match, got %q", deep)
+	}
+
+	exact, _, code := runFor(t, "debug", "/", "/a")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if strings.Contains(exact, "$ENVOKE_DIR") {
+		t.Errorf("no note is warranted when the match is the destination, got %q", exact)
 	}
 }
 
@@ -1511,6 +1807,7 @@ func isolateHome(t *testing.T) (home string) {
 	// $SHELL, and only the macOS runner ever showed it.
 	unsetEnv(t, "ENVOKE_FROM")
 	unsetEnv(t, "ENVOKE_TO")
+	unsetEnv(t, "ENVOKE_DISABLE")
 	return home
 }
 

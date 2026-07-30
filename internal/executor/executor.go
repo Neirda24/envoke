@@ -11,22 +11,21 @@ import (
 	"github.com/Neirda24/envoke/internal/matcher"
 )
 
-// killGrace is how long a cancelled script gets between the context's kill
-// signal and Run giving up on Wait. exec.CommandContext only signals the
-// `sh` it started, not the process group, so a script that backgrounded
-// something would otherwise be able to keep Wait blocked indefinitely.
-// Killing the whole process group would need OS-specific SysProcAttr and a
-// build-tag split for Windows; bounding the wait is the portable 90% of the
-// benefit.
+// killGrace is how long a script gets to exit on its own after the context
+// is cancelled, before it is killed outright.
 const killGrace = 5 * time.Second
 
 // Run executes m's script through the shell, with the matched directory as
 // the script's working directory and ENVOKE_* env vars set. Stdio is
 // inherited from the caller so interactive scripts behave normally.
 //
+// Cancelling ctx interrupts the script rather than killing it, so a `trap`
+// in the block gets to run; killGrace later escalates to a kill. Overriding
+// Cancel is what makes that possible — CommandContext's default is an
+// immediate kill, which no script can clean up after.
+//
 // Callers are responsible for having verified trust before getting here —
-// internal/envoke.Transition is the only caller and does exactly that, by
-// design (see its doc comment).
+// internal/envoke.Transition is the only caller and does exactly that.
 func Run(ctx context.Context, m matcher.Match) error {
 	cmd := exec.CommandContext(ctx, "sh", "-c", m.Block.Script)
 	cmd.Dir = m.Dir
@@ -34,6 +33,7 @@ func Run(ctx context.Context, m matcher.Match) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = killGrace
 
 	if err := cmd.Run(); err != nil {

@@ -18,7 +18,8 @@ this rewrite departs from it on. Static, dependency-free binary; no cgo.
 Implemented and tested (`dagger check -m .dagger`): config parsing, path
 matching, `enter`/`leave` execution, shell hooks for
 bash/zsh/fish/tcsh/PowerShell, the `envoke allow` trust mechanism, `envoke
-debug` dry-run diagnostics, and a Dagger-based CI pipeline (`.dagger/`) that
+debug` dry-run diagnostics, the `envoke disable`/`enable` off switch,
+`envoke reload`, and a Dagger-based CI pipeline (`.dagger/`) that
 also audits the GitHub Actions workflows themselves (zizmor, actions-up).
 
 Packaging is fully live and exercised against real tagged releases: GitHub
@@ -88,7 +89,11 @@ public API to commit to yet):
   directories left (deepest-first) and entered (shallowest-first) — jumping
   straight from `/a` to `/a/x/y/z` still fires `/a/x` and `/a/x/y`'s rules.
   `Resolve(cfg, from, to)` runs every block's pattern against the relevant
-  directories and returns ordered `[]Match`. Every `Match` is built by
+  directories and returns ordered `[]Match`. `Enters(cfg, dir)` answers a
+  different question for `envoke reload` — every enter block matching `dir`
+  or any ancestor, as if arriving from outside the filesystem. `Resolve`
+  cannot express it: it reports what *changed*, so `from == to` yields
+  nothing and passing the root as `from` still skips the root itself. Every `Match` is built by
   `NewMatch`, which runs the pattern **once** and stores the submatches in
   `Match.Groups` — `executor.matchVars` reads them from there rather than
   re-running the regex, since this is the hot path of every `cd`. Patterns
@@ -110,12 +115,22 @@ public API to commit to yet):
     subprocess, so this is not what the shell hook uses.
   - `Render(shell, leaves, enters)` builds ENVOKE_*-var-assignment-prefixed
     shell text for every match, meant to be `eval`'d/`source`d by the
-    *caller's own shell*. This is what `cmd/envoke shell-hook` uses once a
-    config is trusted — the only path where `export`/`source` in a script
-    actually affects the user's interactive shell. `shell` selects a
+    *caller's own shell*. This is what `cmd/envoke shell-hook` and `reload`
+    use once a config is trusted — the only path where `export`/`source` in
+    a script actually affects the user's interactive shell. **Each block's
+    vars are unset again right after its script** (`shellProfile.unset`, one
+    spelling per dialect): capture groups are numbered per block, so without
+    the teardown a two-group block followed by a zero-group one left
+    `ENVOKE_MATCH_2` visible to a script that never captured anything, and
+    every var — all exported — outlived the `cd` and was inherited by every
+    process started later. This is what makes `Render` match `Run`'s
+    scoping; don't drop it for a "cleaner" output. `shell` selects a
     `shellProfile` (posix, fish, tcsh, powershell — each with its own
     quoting function to prevent injection via directory names or capture
-    groups); an unrecognized name falls back to POSIX. **`tcshQuote` is not
+    groups); an unrecognized name falls back to POSIX, which is right for a
+    library and wrong for a CLI flag — hence `IsKnownShell`, which
+    `cmd/envoke` uses to reject `--shell fsh` before it feeds `export` to a
+    fish session. **`tcshQuote` is not
     `posixQuote`**: csh does history expansion at the lexer, before quote
     processing, so `!` is expanded even inside single quotes and must be
     backslash-escaped — a directory named `foo!bar` otherwise aborted the
@@ -144,6 +159,20 @@ public API to commit to yet):
   (used verbatim, even if missing) → `~/.envokerc` if present →
   `$XDG_CONFIG_HOME/envoke/config` (or `~/.config/envoke/config`) if present
   → not found (normal state, not an error).
+- **`internal/state`** — envoke's on-disk runtime state. `DataHome()` is the
+  `$XDG_DATA_HOME`/`~/.local/share` resolution, owned here because
+  `internal/trust` needs it too (it used to duplicate the lookup).
+  `Disabled() (bool, Source, error)` / `Disable()` / `Enable()` back the off
+  switch: a marker file at `<data home>/envoke/disabled` for the persistent
+  half, `$ENVOKE_DISABLE` for the per-session half. **The env var decides on
+  its own, in both directions** — `=0` has to be able to turn envoke back on
+  in a shell where the flag is set, or the persistent switch would be
+  inescapable without deleting a file. Unset or empty defers to the flag;
+  any other value counts as disabled, so a typo errs toward *not* executing
+  scripts. `shell-hook` checks it first and stays completely silent (it runs
+  on every `cd`); `exec` and `reload` report it on stderr and still exit 0;
+  `debug` keeps working and reports it next to the trust status. Disabling
+  never touches trust records — being off is not withdrawing approval.
 - **`internal/trust`** — `Allow(path, content)` / `IsTrusted(path, content)`
   / `PreviousContent(path) (content string, ok bool, err error)`. Trust is a
   SHA-256 hash of the config file's *content*, recorded under
@@ -232,14 +261,28 @@ public API to commit to yet):
   prior trust state; reads a `y`/`yes` confirmation from stdin unless
   `--yes`); `shell-hook [--shell <name>] [--] <from> <to>` (checks trust
   before ever calling `executor.Render`; an untrusted match is reported on
-  stderr only, with an `envoke allow` hint); `exec [<from> <to>]`
-  (subprocess execution via `internal/envoke`, for scripts/CI); `debug
-  [<from> <to>]` (same `matcher.Resolve` as shell-hook, but always prints
-  matches + trust status and never executes). `exec` and `debug` share
+  stderr only, with an `envoke allow` hint); `disable`/`enable` (both via
+  `cmdSwitch`, which also warns when `$ENVOKE_DISABLE` overrides what was
+  just asked for, so neither can appear to do nothing); `reload [--shell
+  <name>]` (renders `matcher.Enters` for `$PWD`, used as `eval "$(envoke
+  reload)"` — `allow` prints that line on success, since `allow` is a child
+  process and cannot export into the shell that ran it); `exec [<from>
+  <to>]` (subprocess execution via `internal/envoke`, for scripts/CI, under
+  a `signal.NotifyContext` so SIGINT/SIGTERM interrupts the block rather
+  than orphaning its `sh`); `debug [<from> <to>]` (same `matcher.Resolve` as
+  shell-hook, but always prints matches + trust status and never executes;
+  `printWorkingDirNote` flags that a matched block runs where the shell
+  landed, not in the directory it matched — true of the hook, not of
+  `exec`). `exec` and `debug` share
   `transitionArgs`: both are human-typed, so both accept relative paths and
   default to `$OLDPWD -> $PWD`. `shell-hook` does not — it only ever
   receives generated arguments, and every hook passes `--` before them so a
-  directory named like a flag can't be parsed as one.
+  directory named like a flag can't be parsed as one. `allow` and `revoke`
+  share `resolveConfigPath` (the given path, or the located config).
+  Terminal output goes through the local `fprintf`/`fprintln`/`fprint`
+  helpers rather than `_, _ = fmt.Fprintf(...)` at every call site — a
+  failed write to a terminal is not something a CLI can act on, and errcheck
+  is in golangci-lint's default set.
 - **`.dagger/`** — a separate Go module (own `go.mod`, `dagger/envoke`), not
   a dependency of the main module. `main.go` defines checks (`// +check`
   pragma, run via `dagger check -m .dagger`): `fmt`/`vet`/`build`/`test`
@@ -295,6 +338,15 @@ update this template, not the README, if a new install method ships.
 installed on the dev machine.
 
 ## Go conventions
+
+- **Comments carry what the code can't say, and nothing else.** csh
+  expanding `!` inside single quotes, bash 3.2 lacking `mapfile`, why the
+  hash record is written last — those belong in a comment. What the code
+  used to do, which bug a line came from, how long it took to find, and
+  which section of this file justifies it do not: that is what commit
+  messages and `docs/design-notes.md` are for. Narrated history bloats the
+  file, buries the invariant a reader needs, and drifts out of date — the
+  `killGrace` comment described a protection that had never existed.
 
 - **CLI framework: stdlib `flag`.** No subcommands existed to justify
   `cobra`/`urfave-cli` when this was decided; revisit only if subcommand

@@ -88,7 +88,7 @@ shell text in your shell's dialect, which your *own* shell evaluates — so
 
 ```
 enter ~/Projects/([^/]+)
-    source venv/bin/activate
+    source "$ENVOKE_DIR/venv/bin/activate"
     alias t='go test ./...'
 
 leave ~/Projects/([^/]+)

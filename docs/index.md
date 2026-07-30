@@ -12,7 +12,7 @@ few specific long-standing rough edges, and reaches every major shell and
 OS with a single static binary.
 
 !!! warning "Status: early development"
-    The matching engine, shell hooks for bash/zsh/fish/tcsh/PowerShell, the `envoke allow` trust mechanism, and `envoke debug` dry-run diagnostics all exist and are tested end-to-end against real interpreters — a `cd` into a trusted, matching directory really does run its `enter` block in your shell today. GitHub Releases, a Homebrew tap, a Scoop bucket, and `.deb`/`.rpm` packages are all live, each release carrying a per-archive SBOM alongside cosign-signed checksums. See the [README's Status section](https://github.com/Neirda24/envoke/blob/main/README.md#status) for exact scope.
+    Everything documented here exists and is tested end-to-end against real interpreters — a `cd` into a trusted, matching directory really does run its `enter` block in your shell today. That covers the matching engine, shell hooks for bash/zsh/fish/tcsh/PowerShell, the trust mechanism (`allow`, `revoke`, `list`, `prune`), the `disable`/`enable` off switch, `reload`, non-interactive `exec`, and `debug` dry-run diagnostics. GitHub Releases, a Homebrew tap, a Scoop bucket, and `.deb`/`.rpm` packages are all live, each release carrying a per-archive SBOM alongside cosign-signed checksums. The [Reference](reference.md) is the complete list of commands, flags, variables and exit codes.
 
 ## Why not just use ondir / direnv?
 
@@ -36,7 +36,9 @@ shell support beyond bash/zsh.
 - [Getting Started](getting-started.md) — install, hook into your shell, write your first config.
 - [Configuration](configuration.md) — the config file syntax, path patterns, and what a matched script sees.
 - [Trust Model](trust.md) — why `envoke allow` exists and how it works.
-- [Debugging](debugging.md) — inspect what would fire before trusting a config.
+- [Non-interactive Use](non-interactive.md) — running blocks from scripts, Makefiles and CI.
+- [Debugging](debugging.md) — inspect what would fire, switch envoke off, reload a config in place.
+- [Reference](reference.md) — every command, flag, environment variable, file and exit code.
 - [Uninstalling](uninstall.md) — remove the shell hook and the binary, per install method.
 - [Design Notes](design-notes.md) — the specific points where envoke departs from ondir.
 

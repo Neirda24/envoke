@@ -47,6 +47,7 @@ nav:
   - Trust Model: trust.md
   - Non-interactive Use: non-interactive.md
   - Debugging: debugging.md
+  - Reference: reference.md
   - Uninstalling: uninstall.md
   - Design Notes: design-notes.md
   - Contributing: contributing.md

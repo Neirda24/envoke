@@ -45,7 +45,8 @@ envoke revoke   # withdraw trust, removing the record and its content copy
 Otherwise, remove the directory outright:
 
 ```sh
-# Trust records (SHA-256 hashes + approved content per config path)
+# Trust records (SHA-256 hashes + approved content per config path), and
+# the disable flag if you ever ran `envoke disable`
 rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/envoke"
 
 # Your config file, if you don't want to keep it

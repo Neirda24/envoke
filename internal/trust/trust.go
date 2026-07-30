@@ -12,17 +12,14 @@
 //	<sha256(abs path)>.content  a copy of the approved content, for diffing
 //	<sha256(abs path)>.path     the config's absolute path, for listing
 //
-// Each sibling was added later than the hash file and is optional on read,
-// which is what lets envoke upgrade without revoking anyone's trust: an
-// older record is just a hash file with no siblings, and IsTrusted,
-// PreviousContent and List all treat that as a normal state rather than
-// corruption. The hash file is always written *last* for the same reason
-// the whole thing is content-addressed — a torn write must leave the config
-// untrusted, never trusted against something it isn't.
+// Both siblings are optional on read, so an older record — a bare hash file
+// — stays valid and upgrading never revokes anyone's trust. The hash file
+// is always written last: a torn write must leave a config untrusted, never
+// trusted against content it isn't.
 //
-// The .path sibling exists because the record name is a one-way hash: there
-// is no way to answer "what have I trusted?" or "which of these records are
-// for configs that no longer exist?" without storing the path itself.
+// The .path sibling exists because the record name is a one-way hash, so
+// nothing else could answer "what have I trusted?" or "which of these
+// configs no longer exist?".
 package trust
 
 import (
@@ -35,6 +32,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/Neirda24/envoke/internal/state"
 )
 
 // IsTrusted reports whether content — the config bytes the caller has
@@ -43,14 +42,12 @@ import (
 // reports false, not an error: "not trusted" is the normal, expected state
 // for anything that hasn't been through Allow yet.
 //
-// Taking the content rather than re-reading configPath is deliberate and
-// load-bearing. The security property envoke actually needs is that the
-// bytes that get executed are the bytes that were approved; a function that
-// reads the file itself can only promise that *some* version of the file
-// once matched, leaving the caller free to parse and execute a different
-// one. Callers should get their bytes from config.LoadFile, which reads the
-// file exactly once and hands back both the parsed config and its source
-// bytes for exactly this purpose.
+// Taking the content rather than re-reading configPath is load-bearing.
+// The property envoke needs is that the bytes executed are the bytes
+// approved; a function that reads the file itself can only promise that
+// *some* version once matched, leaving the caller free to execute another.
+// Callers get their bytes from config.LoadFile, which reads once and hands
+// back both the parsed config and its source.
 func IsTrusted(configPath string, content []byte) (bool, error) {
 	recorded, err := readRecord(configPath)
 	if err != nil {
@@ -86,13 +83,11 @@ func Allow(configPath string, content []byte) error {
 	if err := os.MkdirAll(filepath.Dir(recPath), 0o700); err != nil {
 		return fmt.Errorf("allow %s: %w", configPath, err)
 	}
-	// The siblings are written before the hash record, so the files can only
-	// ever be torn in the harmless direction. If this process dies partway,
-	// the record still holds the *previous* hash: the config reads as
-	// untrusted (fails closed) and the stale-but-newer siblings only affect
-	// which diff the next `envoke allow` shows. Writing the hash first would
-	// instead leave a record claiming content is trusted while .content
-	// still described something else.
+	// Siblings first, hash record last, so a torn write can only fail in the
+	// harmless direction: the record still holds the previous hash, the
+	// config reads as untrusted, and the newer siblings only affect which
+	// diff the next allow shows. The other order would leave a record
+	// claiming content is trusted while .content described something else.
 	if err := writeRecordFile(contentPath(recPath), content); err != nil {
 		return fmt.Errorf("allow %s: %w", configPath, err)
 	}
@@ -292,10 +287,8 @@ func readRecord(configPath string) (string, error) {
 }
 
 // recordPath maps a config path to its trust record file, named by the hash
-// of its own absolute path so distinct config files never collide. This is
-// the same path/format Allow has always written the trust hash to — kept
-// stable so upgrading to a version of envoke that also writes contentPath
-// never revokes an existing user's trust.
+// of its own absolute path so distinct configs never collide. The format is
+// kept stable: changing it would revoke every existing approval.
 func recordPath(configPath string) (string, error) {
 	dir, err := storeDir()
 	if err != nil {
@@ -309,19 +302,14 @@ func recordPath(configPath string) (string, error) {
 	return filepath.Join(dir, hex.EncodeToString(sum[:])), nil
 }
 
-// contentPath is the sibling file next to a hash record (recPath) that
-// holds the approved content itself, for PreviousContent. Deriving it from
-// recPath rather than giving it an independent name keeps the two files
-// tied together mechanically and makes the "new, additive artifact" nature
-// of this file obvious at the call site.
+// contentPath is the sibling holding the approved content, for
+// PreviousContent's diff. Derived from recPath so the two stay tied
+// together mechanically.
 func contentPath(recPath string) string {
 	return recPath + ".content"
 }
 
-// pathPath is the sibling holding the approved config's absolute path. The
-// record name is sha256(abs path), which is one-way, so without this there
-// is no way to answer "what have I trusted?" or to spot records whose
-// config has since been deleted.
+// pathPath is the sibling holding the approved config's absolute path.
 func pathPath(recPath string) string {
 	return recPath + ".path"
 }
@@ -333,18 +321,14 @@ func hashContent(content []byte) string {
 
 // UnsafeStorePermissions reports whether the trust store directory is
 // writable by group or other. That matters more than the config's own
-// permissions: anyone who can write here can drop in a record that makes
-// any config read as trusted, which forges an approval the user never gave
-// — the store is the root of the whole trust mechanism.
+// permissions: anyone who can write here can drop in a record making any
+// config read as trusted, forging an approval that was never given.
 //
-// It's checked rather than enforced because os.MkdirAll only applies its
-// mode to directories it actually creates. A pre-existing
-// ~/.local/share/envoke (or a $XDG_DATA_HOME with loose permissions) keeps
-// whatever mode it already had, so the 0o700 in Allow is not the guarantee
-// it looks like.
+// Checked rather than enforced because os.MkdirAll only applies its mode to
+// directories it creates, so a pre-existing store keeps whatever mode it
+// had and Allow's 0o700 is not the guarantee it looks like.
 //
-// unsafe is false, with no error, when the store doesn't exist yet — that's
-// the normal state before the first `envoke allow`.
+// A store that doesn't exist yet is safe, not an error.
 func UnsafeStorePermissions() (unsafe bool, mode os.FileMode, path string, err error) {
 	dir, err := storeDir()
 	if err != nil {
@@ -361,17 +345,12 @@ func UnsafeStorePermissions() (unsafe bool, mode os.FileMode, path string, err e
 	return perm&0o022 != 0, perm, dir, nil
 }
 
-// storeDir is $XDG_DATA_HOME/envoke/allow, or ~/.local/share/envoke/allow
-// if XDG_DATA_HOME isn't set — the XDG Base Directory default for
-// application state, matching README's XDG support for the config path.
+// storeDir is envoke's data home plus "envoke/allow" — see state.DataHome
+// for why trust records are state rather than config.
 func storeDir() (string, error) {
-	base := os.Getenv("XDG_DATA_HOME")
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("trust: %w", err)
-		}
-		base = filepath.Join(home, ".local", "share")
+	base, err := state.DataHome()
+	if err != nil {
+		return "", err
 	}
 	return filepath.Join(base, "envoke", "allow"), nil
 }

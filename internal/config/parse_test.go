@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -133,4 +134,44 @@ func assertParseErrorLine(t *testing.T, err error, wantLine int) {
 	if perr.Line != wantLine {
 		t.Errorf("ParseError.Line = %d, want %d", perr.Line, wantLine)
 	}
+}
+
+// TestParse_CommentPlacement pins the rule documented in
+// docs/configuration.md: `#` starts a comment only outside a block, so an
+// indented one is script text, and an unindented one ends the block above
+// it.
+func TestParse_CommentPlacement(t *testing.T) {
+	t.Run("indented comment stays in the script", func(t *testing.T) {
+		cfg, err := Parse(strings.NewReader("enter /a\n    echo one\n    # a shell comment\n    echo two\n"))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if len(cfg.Blocks) != 1 {
+			t.Fatalf("expected 1 block, got %d", len(cfg.Blocks))
+		}
+		if want := "echo one\n# a shell comment\necho two"; cfg.Blocks[0].Script != want {
+			t.Errorf("script = %q, want %q", cfg.Blocks[0].Script, want)
+		}
+	})
+
+	t.Run("unindented comment ends the block", func(t *testing.T) {
+		cfg, err := Parse(strings.NewReader("enter /a\n    echo one\n# not part of it\n"))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if cfg.Blocks[0].Script != "echo one" {
+			t.Errorf("script = %q, want %q", cfg.Blocks[0].Script, "echo one")
+		}
+	})
+
+	t.Run("a body resumed after one is a positioned error", func(t *testing.T) {
+		_, err := Parse(strings.NewReader("enter /a\n    echo one\n# ends the block\n    echo orphan\n"))
+		var perr *ParseError
+		if !errors.As(err, &perr) {
+			t.Fatalf("expected a *ParseError, got %v", err)
+		}
+		if perr.Line != 4 {
+			t.Errorf("error reported on line %d, want 4", perr.Line)
+		}
+	})
 }

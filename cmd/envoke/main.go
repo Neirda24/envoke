@@ -16,15 +16,18 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 
 	"github.com/Neirda24/envoke/internal/config"
 	"github.com/Neirda24/envoke/internal/envoke"
 	"github.com/Neirda24/envoke/internal/executor"
 	"github.com/Neirda24/envoke/internal/matcher"
 	"github.com/Neirda24/envoke/internal/shellinit"
+	"github.com/Neirda24/envoke/internal/state"
 	"github.com/Neirda24/envoke/internal/trust"
 )
 
@@ -40,6 +43,14 @@ var date = "unknown"
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, os.Stdin))
 }
+
+// fprintf, fprintln and fprint wrap the fmt equivalents and drop the error.
+// Every write here goes to the user's terminal, where a failed write is not
+// something a CLI can report or recover from; without them errcheck demands
+// `_, _ =` on all hundred-odd call sites, which buries the logic.
+func fprintf(w io.Writer, format string, a ...any) { _, _ = fmt.Fprintf(w, format, a...) }
+func fprintln(w io.Writer, a ...any)               { _, _ = fmt.Fprintln(w, a...) }
+func fprint(w io.Writer, a ...any)                 { _, _ = fmt.Fprint(w, a...) }
 
 // run dispatches a subcommand, writing to the given streams instead of
 // os.Stdout/os.Stderr directly so it can be exercised in tests without
@@ -70,6 +81,12 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 		return cmdList(args[1:], stdout, stderr)
 	case "prune":
 		return cmdPrune(args[1:], stdout, stderr)
+	case "disable":
+		return cmdSwitch(args[1:], stdout, stderr, false)
+	case "enable":
+		return cmdSwitch(args[1:], stdout, stderr, true)
+	case "reload":
+		return cmdReload(args[1:], stdout, stderr)
 	case "exec":
 		return cmdExec(args[1:], stderr)
 	case "debug":
@@ -78,7 +95,7 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 		usage(stdout)
 		return 0
 	default:
-		_, _ = fmt.Fprintf(stderr, "envoke: unknown command %q\n\n", args[0])
+		fprintf(stderr, "envoke: unknown command %q\n\n", args[0])
 		usage(stderr)
 		return 2
 	}
@@ -102,10 +119,10 @@ func newFlagSet(name string) *flag.FlagSet {
 func parseFlags(fs *flag.FlagSet, args []string, usage string, stderr io.Writer) (ok bool, code int) {
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			_, _ = fmt.Fprintln(stderr, "usage:", usage)
+			fprintln(stderr, "usage:", usage)
 			return false, 0
 		}
-		_, _ = fmt.Fprintf(stderr, "envoke: %v\nusage: %s\n", err, usage)
+		fprintf(stderr, "envoke: %v\nusage: %s\n", err, usage)
 		return false, 2
 	}
 	return true, 0
@@ -116,8 +133,8 @@ func parseFlags(fs *flag.FlagSet, args []string, usage string, stderr io.Writer)
 // local `go build`/`go test`, which never sets them) plus the Go toolchain
 // and OS/arch the binary was built with, on two lines.
 func printVersion(stdout io.Writer) {
-	_, _ = fmt.Fprintf(stdout, "envoke %s (commit %s, built %s)\n", version, commit, date)
-	_, _ = fmt.Fprintf(stdout, "%s %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
+	fprintf(stdout, "envoke %s (commit %s, built %s)\n", version, commit, date)
+	fprintf(stdout, "%s %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
 }
 
 const allowUsage = "envoke allow [--yes|-y] [path]"
@@ -169,23 +186,23 @@ func cmdCompletion(args []string, stdout, stderr io.Writer) int {
 		var err error
 		shell, err = detectShell(os.Getenv("SHELL"))
 		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "envoke:", err)
-			_, _ = fmt.Fprintln(stderr, "usage:", completionUsage)
+			fprintln(stderr, "envoke:", err)
+			fprintln(stderr, "usage:", completionUsage)
 			return 2
 		}
 	case 1:
 		shell = flags.Arg(0)
 	default:
-		_, _ = fmt.Fprintln(stderr, "usage:", completionUsage)
+		fprintln(stderr, "usage:", completionUsage)
 		return 2
 	}
 
 	script, err := shellinit.Completion(shell)
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		fprintln(stderr, "envoke:", err)
 		return 1
 	}
-	_, _ = fmt.Fprint(stdout, script)
+	fprint(stdout, script)
 	return 0
 }
 
@@ -205,47 +222,39 @@ func cmdShellInit(args []string, stdout, stderr io.Writer) int {
 		var err error
 		shell, err = detectShell(os.Getenv("SHELL"))
 		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "envoke:", err)
-			_, _ = fmt.Fprintln(stderr, "usage:", shellInitUsage)
+			fprintln(stderr, "envoke:", err)
+			fprintln(stderr, "usage:", shellInitUsage)
 			return 2
 		}
 	case 1:
 		shell = flags.Arg(0)
 	default:
-		_, _ = fmt.Fprintln(stderr, "usage:", shellInitUsage)
+		fprintln(stderr, "usage:", shellInitUsage)
 		return 2
 	}
 
 	script, err := shellinit.Generate(shell)
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		fprintln(stderr, "envoke:", err)
 		return 1
 	}
-	_, _ = fmt.Fprint(stdout, script)
+	fprint(stdout, script)
 	return 0
 }
 
-// cmdShellHook is invoked by the generated shell hook on every directory
-// change. If the config that matched has been allowed (see cmdAllow) and
-// its content hasn't changed since, it prints executor.Render's output to
-// stdout for the shell to eval/source — running the matched blocks in the
-// caller's own shell process, which is what makes exported vars or
-// `source`d scripts actually take effect. Otherwise it reports the match on
-// stderr only and prints nothing, so evaluating the (empty) output stays a
-// safe no-op.
+// cmdShellHook is invoked by the generated hook on every directory change.
+// If the matched config is trusted it prints executor.Render's output for
+// the shell to eval; otherwise it reports the match on stderr and prints
+// nothing, so evaluating the empty output stays a safe no-op.
 //
-// --shell <name> tells Render which export syntax to speak (bash/zsh/fish/
-// tcsh/powershell); omitting it (as bash's and zsh's generated hooks do)
-// defaults to the POSIX profile, so existing installs keep working
-// unchanged.
+// Omitting --shell defaults to the POSIX profile, which is what bash's and
+// zsh's hooks rely on.
 //
-// The two directories may be supplied either as positional arguments or,
-// when no positional arguments are given at all, via the ENVOKE_FROM and
-// ENVOKE_TO environment variables. The environment form exists for the tcsh
-// hook, whose only way to pipe into `source` is through an `eval` — and
-// interpolating directory names into a string that gets re-parsed is a
-// command-injection hole (see internal/shellinit's tcshHook comment). Every
-// other shell's hook passes them positionally.
+// The directories come as positional arguments, or from ENVOKE_FROM and
+// ENVOKE_TO when there are none. The environment form exists for the tcsh
+// hook, whose only route into `source` is an `eval`: interpolating directory
+// names into a string that gets re-parsed is a command-injection hole (see
+// internal/shellinit's tcshHook).
 const shellHookUsage = "envoke shell-hook [--shell <name>] [--] <from> <to>  (or set ENVOKE_FROM/ENVOKE_TO)"
 
 func cmdShellHook(args []string, stdout, stderr io.Writer) int {
@@ -253,6 +262,20 @@ func cmdShellHook(args []string, stdout, stderr io.Writer) int {
 	shell := flags.String("shell", "", "shell dialect to render for (bash, zsh, fish, tcsh, powershell)")
 	if ok, code := parseFlags(flags, args, shellHookUsage, stderr); !ok {
 		return code
+	}
+	if !executor.IsKnownShell(*shell) {
+		fprintf(stderr, "envoke: unknown shell %q (supported: bash, zsh, fish, tcsh, powershell)\n", *shell)
+		return 2
+	}
+
+	// Checked before anything else, and silently: this runs on every
+	// directory change, so a switched-off envoke has to cost one stat and
+	// say nothing at all. `envoke debug` is where the state is reported.
+	if disabled, _, err := state.Disabled(); err != nil {
+		fprintln(stderr, "envoke:", err)
+		return 1
+	} else if disabled {
+		return 0
 	}
 
 	var from, to string
@@ -266,17 +289,17 @@ func cmdShellHook(args []string, stdout, stderr io.Writer) int {
 			to, ok = os.LookupEnv("ENVOKE_TO")
 		}
 		if !ok {
-			_, _ = fmt.Fprintln(stderr, "usage:", shellHookUsage)
+			fprintln(stderr, "usage:", shellHookUsage)
 			return 2
 		}
 	default:
-		_, _ = fmt.Fprintln(stderr, "usage:", shellHookUsage)
+		fprintln(stderr, "usage:", shellHookUsage)
 		return 2
 	}
 
 	path, found, err := config.Locate()
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		fprintln(stderr, "envoke:", err)
 		return 1
 	}
 	if !found {
@@ -290,24 +313,21 @@ func cmdShellHook(args []string, stdout, stderr io.Writer) int {
 	// hash was computed over (see config.LoadFile).
 	cfg, content, err := config.LoadFile(path)
 	if err != nil {
-		// A config path that doesn't exist is a normal state, not a
-		// failure: $ENVOKERC is honoured verbatim (see config.Locate), so
-		// pointing it at a file you haven't written yet is ordinary. This
-		// runs on every single directory change, so reporting that as an
-		// error would print a message on every `cd` until the file appears.
-		// Anything else — a parse error, a permission problem — stays loud,
-		// because it means a config that exists is not doing what its owner
-		// thinks it is.
+		// $ENVOKERC is honoured verbatim, so pointing it at a file you
+		// haven't written yet is ordinary — and this runs on every cd, so
+		// reporting it would print on every one until the file appears.
+		// Anything else stays loud: a config that exists and doesn't parse
+		// is not doing what its owner thinks it is.
 		if errors.Is(err, fs.ErrNotExist) {
 			return 0
 		}
-		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		fprintln(stderr, "envoke:", err)
 		return 1
 	}
 
 	leaves, enters, err := matcher.Resolve(cfg, from, to)
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		fprintln(stderr, "envoke:", err)
 		return 1
 	}
 
@@ -318,42 +338,51 @@ func cmdShellHook(args []string, stdout, stderr io.Writer) int {
 
 	trusted, err := trust.IsTrusted(path, content)
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		fprintln(stderr, "envoke:", err)
 		return 1
 	}
 	if !trusted {
-		_, _ = fmt.Fprintf(stderr, "envoke: %d block(s) matched for %s -> %s but %s is not trusted: run `envoke allow %s`\n", total, from, to, path, path)
+		fprintf(stderr, "envoke: %d block(s) matched for %s -> %s but %s is not trusted: run `envoke allow %s`\n", total, from, to, path, path)
 		return 0
 	}
 
-	_, _ = fmt.Fprint(stdout, executor.Render(*shell, leaves, enters))
+	fprint(stdout, executor.Render(*shell, leaves, enters))
 	return 0
 }
 
+// resolveConfigPath turns a subcommand's leftover positional arguments into
+// the config path to act on: the one given, or the located config when none
+// is. Shared by allow and revoke, which offer the same "default to the
+// config envoke would use" convenience and must agree on what that means.
+func resolveConfigPath(positional []string, cmd, usage string, stderr io.Writer) (path string, code int, ok bool) {
+	switch len(positional) {
+	case 0:
+		p, found, err := config.Locate()
+		if err != nil {
+			fprintln(stderr, "envoke:", err)
+			return "", 1, false
+		}
+		if !found {
+			fprintf(stderr, "envoke: no config found (looked for %s); pass a path explicitly: envoke %s <path>\n", p, cmd)
+			return "", 1, false
+		}
+		return p, 0, true
+	case 1:
+		return positional[0], 0, true
+	default:
+		fprintln(stderr, "usage:", usage)
+		return "", 2, false
+	}
+}
+
 // cmdAllow trusts a config file's current content, so shell-hook will run
-// blocks matched against it from now on until it's edited again. With no
-// path argument it trusts the config found by config.Locate.
+// blocks matched against it until it is edited again.
 //
-// What gets shown for review depends on whether there's a prior approval to
-// compare against (trust.PreviousContent):
-//   - No prior approval: the full block dump (printBlocksForReview), same as
-//     always -- there's nothing to diff against, so a full read-through is
-//     the right thing for a first-time trust.
-//   - Prior approval, content unchanged: nothing to review at all. Reports
-//     that the config is already trusted and returns immediately, without
-//     prompting or touching the trust record again -- see the comment at the
-//     call site for why.
-//   - Prior approval, content changed: a labeled +/- line diff
-//     (printDiff/diffLines) against the previously-approved content, instead
-//     of the full dump -- this is the actual point of the feature: reviewing
-//     a small edit to an already-trusted config shouldn't require re-reading
-//     the whole file.
-//
-// In the first and third cases, this then reads a y/N confirmation from
-// stdin by default, and aborts (without calling trust.Allow) on anything
-// other than "y"/"yes" (case-insensitive), including empty input or EOF.
-// --yes/-y skips the prompt entirely, for scripts/CI. The flag may appear
-// anywhere in args, before or after the optional path.
+// What it shows for review depends on whether there is a prior approval to
+// compare against: the full block dump for a first-time trust, a +/- line
+// diff when the file changed since the last one, and nothing at all when it
+// didn't. The first two then ask for a y/N confirmation on stdin, which
+// --yes/-y skips.
 func cmdAllow(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 	flags := newFlagSet("allow")
 	yes := flags.Bool("yes", false, "skip the y/N confirmation prompt")
@@ -362,12 +391,10 @@ func cmdAllow(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 		return code
 	}
 
-	// stdlib flag stops at the first non-flag argument, but `envoke allow
-	// <path> --yes` was documented and released as working, so the trailing
-	// form keeps working rather than silently becoming a second path.
-	// Deliberately just this one boolean rather than a general
-	// flags-anywhere reimplementation: a config file genuinely named
-	// `--yes` can still be approved as `./--yes`.
+	// stdlib flag stops at the first non-flag argument, so `envoke allow
+	// <path> --yes` would otherwise read --yes as a second path. Picking out
+	// this one boolean rather than reimplementing flags-anywhere keeps a
+	// config genuinely named `--yes` approvable as `./--yes`.
 	var positional []string
 	for _, a := range flags.Args() {
 		if a == "--yes" || a == "-y" {
@@ -377,67 +404,44 @@ func cmdAllow(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 		positional = append(positional, a)
 	}
 
-	var path string
-	switch len(positional) {
-	case 0:
-		p, found, err := config.Locate()
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "envoke:", err)
-			return 1
-		}
-		if !found {
-			_, _ = fmt.Fprintf(stderr, "envoke: no config found (looked for %s); pass a path explicitly: envoke allow <path>\n", p)
-			return 1
-		}
-		path = p
-	case 1:
-		path = positional[0]
-	default:
-		_, _ = fmt.Fprintln(stderr, "usage:", allowUsage)
-		return 2
+	path, code, ok := resolveConfigPath(positional, "allow", allowUsage, stderr)
+	if !ok {
+		return code
 	}
 
 	warnUnsafePermissions(stderr, path)
 
-	// The file is read exactly once here, and the same bytes are what gets
-	// parsed, shown for review, and finally recorded as trusted. Reading it
-	// again at any of those steps would mean approving content the user was
-	// never shown -- an edit landing between the diff and the y/N answer
-	// would be trusted sight-unseen (see config.LoadFile).
+	// One read feeds the parse, the review and the trust record alike.
+	// Reading again at any of those steps would record a hash for content
+	// the user was never shown, so an edit landing between the diff and the
+	// y/N answer would be approved sight-unseen (see config.LoadFile).
 	cfg, current, err := config.LoadFile(path)
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		fprintln(stderr, "envoke:", err)
 		return 1
 	}
 
 	previous, hadPrevious, err := trust.PreviousContent(path)
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		fprintln(stderr, "envoke:", err)
 		return 1
 	}
 	alreadyTrusted, err := trust.IsTrusted(path, current)
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		fprintln(stderr, "envoke:", err)
 		return 1
 	}
 
 	if hadPrevious && alreadyTrusted && previous == string(current) {
-		// The file wasn't actually edited since it was last approved, and
-		// the trust record agrees, so there's nothing to review and nothing
-		// new to approve. Re-printing the full block dump (or even just
-		// re-running the y/N prompt) would be pure busywork: the user would
-		// be asked to confirm that nothing changed, for a config they
-		// already reviewed and approved verbatim. Report the state honestly
-		// and return without prompting or re-recording trust -- --yes is a
-		// no-op here for the same reason: there was never a prompt in this
-		// branch for it to skip.
+		// Nothing changed, so there is nothing to review: asking the user to
+		// confirm a config they already approved verbatim is busywork, and
+		// --yes has no prompt to skip here either.
 		//
-		// alreadyTrusted is checked on top of the content comparison so a
-		// half-written trust record (content copy landed, hash record
-		// didn't -- see trust.Allow's write ordering) can't wedge this into
-		// reporting an untrusted config as trusted forever. In that state
-		// the config falls through and gets re-approved normally.
-		_, _ = fmt.Fprintf(stdout, "envoke: %s is unchanged since it was last trusted -- nothing to review\n", path)
+		// alreadyTrusted is tested on top of the content comparison so a
+		// half-written record (content copy landed, hash record didn't) can't
+		// wedge this into reporting an untrusted config as trusted forever.
+		// In that state it falls through and gets re-approved normally.
+		fprintf(stdout, "envoke: %s is unchanged since it was last trusted -- nothing to review\n", path)
 		return 0
 	}
 
@@ -448,85 +452,84 @@ func cmdAllow(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 	}
 
 	if !*yes {
-		_, _ = fmt.Fprint(stdout, "envoke: trust and run these blocks on every matching cd? [y/N] ")
+		fprint(stdout, "envoke: trust and run these blocks on every matching cd? [y/N] ")
 		line, _ := bufio.NewReader(stdin).ReadString('\n')
 		answer := strings.ToLower(strings.TrimSpace(line))
 		if answer != "y" && answer != "yes" {
-			_, _ = fmt.Fprintln(stderr, "envoke: aborted, not trusted")
+			fprintln(stderr, "envoke: aborted, not trusted")
 			return 1
 		}
 	}
 
 	if err := trust.Allow(path, current); err != nil {
-		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		fprintln(stderr, "envoke:", err)
 		return 1
 	}
-	_, _ = fmt.Fprintf(stdout, "envoke: trusted %s\n", path)
+	fprintf(stdout, "envoke: trusted %s\n", path)
+	// allow is a child process and cannot export into the shell that ran it,
+	// so what was just approved applies from the next cd on. Naming the way
+	// out here is the only place a user is guaranteed to be looking.
+	fprintln(stdout, `envoke: to apply it to this shell without leaving the directory: eval "$(envoke reload)"`)
 	return 0
 }
 
-// printBlocksForReview prints the full contents (type, pattern, line, and
-// script body) of every block in cfg before it's trusted, so `envoke allow`
-// can't be run as a blind habitual reflex (see CLAUDE.md's
-// trust-before-execution principle and the audit this addresses): a user
-// approving a config gets the actual code that will run on every matching
-// `cd`, not just a hash getting recorded silently. Used for a first-time
-// trust, where there's no prior approval to diff against (see printDiff for
-// the re-allow-after-an-edit case).
+// printBlocksForReview dumps every block's pattern, line and script body
+// before it is trusted, so approving a config means seeing the code that
+// will run on every matching cd rather than a hash being recorded silently.
+// Used for a first-time trust; see printDiff for the re-approval case.
 func printBlocksForReview(stdout io.Writer, path string, blocks []config.Block) {
-	_, _ = fmt.Fprintf(stdout, "envoke: about to trust %s -- review each block below before confirming:\n\n", path)
+	fprintf(stdout, "envoke: about to trust %s -- review each block below before confirming:\n\n", path)
 	if len(blocks) == 0 {
-		_, _ = fmt.Fprintln(stdout, "  (no blocks defined)")
-		_, _ = fmt.Fprintln(stdout)
+		fprintln(stdout, "  (no blocks defined)")
+		fprintln(stdout)
 		return
 	}
 	for _, b := range blocks {
-		_, _ = fmt.Fprintf(stdout, "  %s %s (line %d)\n", b.Type, b.RawPattern, b.Line)
+		fprintf(stdout, "  %s %s (line %d)\n", b.Type, b.RawPattern, b.Line)
 		for _, line := range strings.Split(b.Script, "\n") {
-			_, _ = fmt.Fprintf(stdout, "    %s\n", line)
+			fprintf(stdout, "    %s\n", line)
 		}
-		_, _ = fmt.Fprintln(stdout)
+		fprintln(stdout)
 	}
 }
 
-// printDiff prints a labeled +/- line diff (see diffLines) between the
-// previously-approved content and the config's current content, in place of
-// printBlocksForReview's full dump, when there's a prior approval to compare
-// against. Only the lines that actually changed are shown, so re-approving
-// a config after a small edit doesn't require re-reading the entire file to
-// spot what's different -- the whole point of this feature (see CLAUDE.md's
-// Status entry on diff-on-allow).
+// printDiff replaces printBlocksForReview's full dump when there is a prior
+// approval to compare against, so re-approving after a small edit doesn't
+// mean re-reading the whole file to spot what changed.
 func printDiff(stdout io.Writer, path, previous, current string) {
-	_, _ = fmt.Fprintf(stdout, "envoke: %s changed since it was last trusted -- here's what's different:\n\n", path)
-	for _, line := range diffLines(strings.Split(previous, "\n"), strings.Split(current, "\n")) {
-		_, _ = fmt.Fprintln(stdout, line)
+	fprintf(stdout, "envoke: %s changed since it was last trusted -- here's what's different:\n\n", path)
+	for _, line := range diffLines(splitLines(previous), splitLines(current)) {
+		fprintln(stdout, line)
 	}
-	_, _ = fmt.Fprintln(stdout)
+	fprintln(stdout)
 }
 
-// diffLines computes a simple LCS-based (longest common subsequence) line
-// diff between old and new, returning only the lines that differ, each
-// prefixed "- " (present in old, removed) or "+ " (present in new, added)
-// -- the same convention as `diff -u`/git's unified diff output, so it reads
-// immediately without an explanation. Lines common to both are aligned via
-// the LCS and omitted entirely rather than printed as context, so an edit
-// that only touches one block doesn't drag the rest of an unchanged config
-// into the output -- that's the actual problem this feature solves (see
-// CLAUDE.md's Status entry). This is a classic O(len(old)*len(new)) DP
-// table, not a full Myers diff: config files are small (a handful of
-// blocks), so the simpler algorithm is both correct and fast enough, and
-// needs no dependency beyond the stdlib slices/strings already in use here
-// (see CLAUDE.md's zero-non-stdlib-dependency rule).
+// splitLines drops a trailing carriage return the way the parser's scanner
+// does, so the diff shows the same lines the review dump does and a CRLF
+// config doesn't print stray \r at every line end.
+func splitLines(s string) []string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimSuffix(l, "\r")
+	}
+	return lines
+}
+
+// diffLines returns only the lines that differ between old and new, prefixed
+// "- " and "+ " as `diff -u` does. Common lines are aligned via a longest
+// common subsequence and omitted rather than printed as context, so an edit
+// touching one block doesn't drag the rest of the config into the output.
+//
+// A plain O(len(old)*len(new)) DP table rather than Myers: diffCap keeps the
+// inputs small, and this needs nothing beyond the stdlib.
 func diffLines(oldLines, newLines []string) []string {
 	n, m := len(oldLines), len(newLines)
 
-	// lcs is the (n+1)x(m+1) DP table flattened into one allocation:
-	// lcs[i*(m+1)+j] is the length of the longest common subsequence of
-	// oldLines[i:] and newLines[j:]. One contiguous block rather than n+1
-	// separate row slices -- same asymptotics, one allocation instead of
-	// n+2, and the inner loop walks memory in order. int32 because the
-	// value is bounded by the line count, which diffCap keeps well inside
-	// it, halving the table's footprint.
+	// lcs is the (n+1)x(m+1) table flattened into one allocation:
+	// lcs[i*stride+j] is the LCS length of oldLines[i:] and newLines[j:].
+	// One contiguous block keeps the inner loop walking memory in order, and
+	// int32 halves its footprint -- the values are bounded by the line count,
+	// which diffCap keeps well inside it.
 	stride := m + 1
 	lcs := make([]int32, (n+1)*stride)
 	for i := n - 1; i >= 0; i-- {
@@ -584,63 +587,33 @@ func canDiff(previous, current string) bool {
 	return strings.Count(previous, "\n") < diffCap && strings.Count(current, "\n") < diffCap
 }
 
-// cmdExec runs the blocks matching a directory change in a subprocess each,
-// for non-interactive callers — scripts, Makefiles, CI — that want a
-// project's enter hooks to have run without an interactive shell to hook
-// into.
-//
-// This is emphatically not what the shell hook uses, and the distinction
-// matters enough to be worth stating at the call site: each block runs in
-// its own `sh -c` subprocess, so `export`, `source` and `cd` inside a block
-// affect that subprocess and nothing else. Anything meant to change the
-// caller's own shell needs `envoke shell-hook` via the generated hook.
-//
-// Trust is enforced inside envoke.Transition rather than here, so no future
-// caller of that package can forget it.
 const revokeUsage = "envoke revoke [path]"
 
-// cmdRevoke is the counterpart `envoke allow` never had. Trust is the one
-// thing envoke asks a user to grant deliberately, and until now the only
-// ways to take it back were editing the config (which revokes it as a side
-// effect of something else) or deleting a sha256-named file out of
-// ~/.local/share by hand.
+// cmdRevoke withdraws trust for a config. Without it the only ways back are
+// editing the config, which revokes trust as a side effect of something
+// else, or deleting a sha256-named file out of the data home by hand.
 func cmdRevoke(args []string, stdout, stderr io.Writer) int {
 	flags := newFlagSet("revoke")
 	if ok, code := parseFlags(flags, args, revokeUsage, stderr); !ok {
 		return code
 	}
 
-	var path string
-	switch flags.NArg() {
-	case 0:
-		p, found, err := config.Locate()
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "envoke:", err)
-			return 1
-		}
-		if !found {
-			_, _ = fmt.Fprintf(stderr, "envoke: no config found (looked for %s); pass a path explicitly: envoke revoke <path>\n", p)
-			return 1
-		}
-		path = p
-	case 1:
-		path = flags.Arg(0)
-	default:
-		_, _ = fmt.Fprintln(stderr, "usage:", revokeUsage)
-		return 2
+	path, code, ok := resolveConfigPath(flags.Args(), "revoke", revokeUsage, stderr)
+	if !ok {
+		return code
 	}
 
 	found, err := trust.Revoke(path)
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		fprintln(stderr, "envoke:", err)
 		return 1
 	}
 	if !found {
 		// Not an error: the requested end state already holds.
-		_, _ = fmt.Fprintf(stdout, "envoke: %s was not trusted -- nothing to revoke\n", path)
+		fprintf(stdout, "envoke: %s was not trusted -- nothing to revoke\n", path)
 		return 0
 	}
-	_, _ = fmt.Fprintf(stdout, "envoke: revoked trust for %s\n", path)
+	fprintf(stdout, "envoke: revoked trust for %s\n", path)
 	return 0
 }
 
@@ -656,32 +629,41 @@ func cmdList(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	if flags.NArg() != 0 {
-		_, _ = fmt.Fprintln(stderr, "usage:", listUsage)
+		fprintln(stderr, "usage:", listUsage)
 		return 2
 	}
 
 	records, err := trust.List()
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		fprintln(stderr, "envoke:", err)
 		return 1
 	}
 	if len(records) == 0 {
-		_, _ = fmt.Fprintln(stdout, "envoke: no configs are trusted")
+		fprintln(stdout, "envoke: no configs are trusted")
 		return 0
 	}
 
 	for _, r := range records {
 		if r.ConfigPath == "" {
-			_, _ = fmt.Fprintf(stdout, "  %-9s <unknown path, approved by an older envoke> (%s)\n", "unknown", r.StorePath)
+			fprintf(stdout, "  %-9s <unknown path, approved by an older envoke> (%s)\n", "unknown", r.StorePath)
 			continue
 		}
-		_, _ = fmt.Fprintf(stdout, "  %-9s %s\n", listStatus(r), r.ConfigPath)
+		fprintf(stdout, "  %-9s %s\n", listStatus(r), r.ConfigPath)
 	}
 	return 0
 }
 
 // listStatus classifies a record against the config as it exists now:
 // whether shell-hook would currently act on it, and if not, why.
+//
+// This is the one place that reads a config outside config.LoadFile, and
+// the read-once rule it appears to break does not apply here. That rule
+// exists so the bytes that get *executed* are the bytes that were approved;
+// list executes nothing and renders nothing for a shell to eval. The worst
+// a file changing mid-listing can do is print a status that was true a
+// moment earlier — which is all any status report can ever promise.
+// Parsing the file would be strictly worse: an unparseable config is still
+// a trusted record worth listing.
 func listStatus(r trust.Record) string {
 	content, err := os.ReadFile(r.ConfigPath)
 	if err != nil {
@@ -711,34 +693,176 @@ func cmdPrune(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	if flags.NArg() != 0 {
-		_, _ = fmt.Fprintln(stderr, "usage:", pruneUsage)
+		fprintln(stderr, "usage:", pruneUsage)
 		return 2
 	}
 
 	removed, skipped, err := trust.Prune()
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		fprintln(stderr, "envoke:", err)
 		return 1
 	}
 
 	for _, r := range removed {
-		_, _ = fmt.Fprintf(stdout, "envoke: removed the trust record for %s (config no longer exists)\n", r.ConfigPath)
+		fprintf(stdout, "envoke: removed the trust record for %s (config no longer exists)\n", r.ConfigPath)
 	}
 	if len(removed) == 0 {
-		_, _ = fmt.Fprintln(stdout, "envoke: nothing to prune")
+		fprintln(stdout, "envoke: nothing to prune")
 	}
 	if len(skipped) > 0 {
-		_, _ = fmt.Fprintf(stderr, "envoke: %d record(s) approved by an older envoke have no recorded path and were left alone; remove them by hand or re-run `envoke allow` on those configs\n", len(skipped))
+		fprintf(stderr, "envoke: %d record(s) approved by an older envoke have no recorded path and were left alone; remove them by hand or re-run `envoke allow` on those configs\n", len(skipped))
 	}
 	return 0
 }
 
-// transitionArgs resolves the <from> <to> pair shared by `exec` and
-// `debug`. Both are things a human types, unlike shell-hook which is only
-// ever called by generated code, so both accept relative paths and both
-// default to the shell's own last transition ($OLDPWD -> $PWD) — typing out
-// two absolute paths to ask "what would fire where I am right now?" was
-// pure friction, and `envoke debug . /tmp` used to fail outright.
+const reloadUsage = `envoke reload [--shell <name>]  (used as: eval "$(envoke reload)")`
+
+// cmdReload re-applies the enter blocks for the current directory, for the
+// case `envoke allow` cannot cover: allow runs as a child of your shell and
+// cannot export anything into it, so a freshly approved config only takes
+// effect on the next cd. Rather than cd .. && cd -, this prints the same
+// shell text the hook does, for the caller to eval.
+//
+// Only enter blocks, and no unwinding of what a previous version of the
+// config set: nothing has been left, and envoke does not snapshot state to
+// restore later.
+func cmdReload(args []string, stdout, stderr io.Writer) int {
+	flags := newFlagSet("reload")
+	shell := flags.String("shell", "", "shell dialect to render for (bash, zsh, fish, tcsh, powershell)")
+	if ok, code := parseFlags(flags, args, reloadUsage, stderr); !ok {
+		return code
+	}
+	if flags.NArg() != 0 {
+		fprintln(stderr, "usage:", reloadUsage)
+		return 2
+	}
+	if !executor.IsKnownShell(*shell) {
+		fprintf(stderr, "envoke: unknown shell %q (supported: bash, zsh, fish, tcsh, powershell)\n", *shell)
+		return 2
+	}
+
+	if disabled, source, err := state.Disabled(); err != nil {
+		fprintln(stderr, "envoke:", err)
+		return 1
+	} else if disabled {
+		fprintf(stderr, "envoke: disabled by %s -- nothing was applied\n", source)
+		return 0
+	}
+
+	dir, err := currentDir()
+	if err != nil {
+		fprintln(stderr, "envoke:", err)
+		return 1
+	}
+
+	path, found, err := config.Locate()
+	if err != nil {
+		fprintln(stderr, "envoke:", err)
+		return 1
+	}
+	if !found {
+		fprintf(stderr, "envoke: no config found (looked for %s)\n", path)
+		return 1
+	}
+
+	warnUnsafePermissions(stderr, path)
+
+	cfg, content, err := config.LoadFile(path)
+	if err != nil {
+		fprintln(stderr, "envoke:", err)
+		return 1
+	}
+
+	trusted, err := trust.IsTrusted(path, content)
+	if err != nil {
+		fprintln(stderr, "envoke:", err)
+		return 1
+	}
+	if !trusted {
+		// Louder than shell-hook's equivalent, which merely notes it: this
+		// was typed, so doing nothing has to be an error rather than a
+		// no-op the user might not notice.
+		fprintf(stderr, "envoke: %s is not trusted: run `envoke allow %s`\n", path, path)
+		return 1
+	}
+
+	enters, err := matcher.Enters(cfg, dir)
+	if err != nil {
+		fprintln(stderr, "envoke:", err)
+		return 1
+	}
+	fprint(stdout, executor.Render(*shell, nil, enters))
+	return 0
+}
+
+// currentDir prefers $PWD over os.Getwd for the same reason the hooks pass
+// the shell's own $PWD: through a symlinked directory the two disagree, and
+// the patterns a user writes describe the path they cd'd through.
+func currentDir() (string, error) {
+	if pwd := os.Getenv("PWD"); filepath.IsAbs(pwd) {
+		return pwd, nil
+	}
+	return os.Getwd()
+}
+
+const (
+	disableUsage = "envoke disable"
+	enableUsage  = "envoke enable"
+)
+
+// cmdSwitch backs both `envoke disable` and `envoke enable`. The two are the
+// same operation with opposite arguments, and splitting them into separate
+// functions would mean duplicating the part that actually matters: telling
+// the user when $ENVOKE_DISABLE is going to override what they just asked
+// for, so a `disable` that appears to do nothing has a visible reason.
+func cmdSwitch(args []string, stdout, stderr io.Writer, enable bool) int {
+	usage := disableUsage
+	if enable {
+		usage = enableUsage
+	}
+
+	flags := newFlagSet(strings.TrimPrefix(usage, "envoke "))
+	if ok, code := parseFlags(flags, args, usage, stderr); !ok {
+		return code
+	}
+	if flags.NArg() != 0 {
+		fprintln(stderr, "usage:", usage)
+		return 2
+	}
+
+	apply, verb := state.Disable, "disabled"
+	if enable {
+		apply, verb = state.Enable, "enabled"
+	}
+	if err := apply(); err != nil {
+		fprintln(stderr, "envoke:", err)
+		return 1
+	}
+	fprintf(stdout, "envoke: %s for every shell\n", verb)
+
+	disabled, source, err := state.Disabled()
+	if err != nil {
+		fprintln(stderr, "envoke:", err)
+		return 1
+	}
+	if source == state.Env && disabled == enable {
+		fprintf(stderr, "envoke: warning: %s is set in this shell and overrides that, so envoke stays %s here until you unset it\n",
+			state.DisableEnv, enabledWord(disabled))
+	}
+	return 0
+}
+
+func enabledWord(disabled bool) string {
+	if disabled {
+		return "off"
+	}
+	return "on"
+}
+
+// transitionArgs resolves the <from> <to> pair shared by exec and debug.
+// Both are typed by a human, unlike shell-hook which only ever receives
+// generated arguments, so both accept relative paths and default to the
+// shell's own last transition.
 func transitionArgs(args []string) (from, to string, err error) {
 	switch len(args) {
 	case 0:
@@ -763,6 +887,17 @@ func transitionArgs(args []string) (from, to string, err error) {
 
 const execUsage = "envoke exec [<from> <to>]  (defaults to $OLDPWD -> $PWD)"
 
+// cmdExec runs the matching blocks for non-interactive callers — scripts,
+// Makefiles, CI — that want a project's enter hooks to have run without an
+// interactive shell to hook into.
+//
+// Each block runs in its own `sh -c`, so export, source and cd inside one
+// affect that subprocess and nothing else. Anything meant to change the
+// caller's own shell needs the generated hook instead.
+//
+// Trust is enforced inside envoke.Transition rather than here, so no future
+// caller of that package can forget it.
+
 func cmdExec(args []string, stderr io.Writer) int {
 	flags := newFlagSet("exec")
 	if ok, code := parseFlags(flags, args, execUsage, stderr); !ok {
@@ -770,29 +905,53 @@ func cmdExec(args []string, stderr io.Writer) int {
 	}
 	from, to, err := transitionArgs(flags.Args())
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "envoke:", err)
-		_, _ = fmt.Fprintln(stderr, "usage:", execUsage)
+		fprintln(stderr, "envoke:", err)
+		fprintln(stderr, "usage:", execUsage)
 		return 2
+	}
+
+	// Unlike shell-hook, this says so out loud. exec is called deliberately,
+	// usually from a script, and silently running nothing is how a build
+	// ends up mysteriously missing half its environment. Still exit 0: the
+	// user asked for envoke to be off, that isn't a failure.
+	if disabled, source, err := state.Disabled(); err != nil {
+		fprintln(stderr, "envoke:", err)
+		return 1
+	} else if disabled {
+		fprintf(stderr, "envoke: disabled by %s -- no blocks were run\n", source)
+		return 0
 	}
 
 	path, found, err := config.Locate()
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		fprintln(stderr, "envoke:", err)
 		return 1
 	}
 	if !found {
-		_, _ = fmt.Fprintf(stderr, "envoke: no config found (looked for %s)\n", path)
+		fprintf(stderr, "envoke: no config found (looked for %s)\n", path)
 		return 1
 	}
 
 	warnUnsafePermissions(stderr, path)
 
-	if err := envoke.Transition(context.Background(), path, from, to); err != nil {
+	// Without this, Go's default handling terminates envoke on the spot and
+	// leaves the block's `sh` running — visible when exec is driven from a
+	// script or CI runner that sends SIGTERM. Cancelling the context instead
+	// interrupts the script and gives it killGrace to clean up.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := envoke.Transition(ctx, path, from, to); err != nil {
+		if ctx.Err() != nil {
+			// Conventional exit status for "died from a signal", and the
+			// signal is not news to whoever sent it.
+			return 130
+		}
 		if errors.Is(err, envoke.ErrUntrusted) {
-			_, _ = fmt.Fprintf(stderr, "envoke: %v: run `envoke allow %s`\n", err, path)
+			fprintf(stderr, "envoke: %v: run `envoke allow %s`\n", err, path)
 			return 1
 		}
-		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		fprintln(stderr, "envoke:", err)
 		return 1
 	}
 	return 0
@@ -813,18 +972,18 @@ func cmdDebug(args []string, stdout, stderr io.Writer) int {
 	}
 	from, to, err := transitionArgs(flags.Args())
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "envoke:", err)
-		_, _ = fmt.Fprintln(stderr, "usage:", debugUsage)
+		fprintln(stderr, "envoke:", err)
+		fprintln(stderr, "usage:", debugUsage)
 		return 2
 	}
 
 	path, found, err := config.Locate()
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		fprintln(stderr, "envoke:", err)
 		return 1
 	}
 	if !found {
-		_, _ = fmt.Fprintf(stderr, "envoke: no config found (looked for %s)\n", path)
+		fprintf(stderr, "envoke: no config found (looked for %s)\n", path)
 		return 1
 	}
 
@@ -832,19 +991,19 @@ func cmdDebug(args []string, stdout, stderr io.Writer) int {
 
 	cfg, content, err := config.LoadFile(path)
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		fprintln(stderr, "envoke:", err)
 		return 1
 	}
 
 	leaves, enters, err := matcher.Resolve(cfg, from, to)
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		fprintln(stderr, "envoke:", err)
 		return 1
 	}
 
 	trusted, err := trust.IsTrusted(path, content)
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		fprintln(stderr, "envoke:", err)
 		return 1
 	}
 	trustNote := "trusted"
@@ -852,20 +1011,59 @@ func cmdDebug(args []string, stdout, stderr io.Writer) int {
 		trustNote = fmt.Sprintf("NOT trusted -- run `envoke allow %s` before these would actually run", path)
 	}
 
-	_, _ = fmt.Fprintf(stdout, "envoke debug: %s -> %s using %s (%s)\n", from, to, path, trustNote)
+	fprintf(stdout, "envoke debug: %s -> %s using %s (%s)\n", from, to, path, trustNote)
+
+	// debug never executes anything, so being switched off doesn't stop it —
+	// but it does change whether what follows would happen for real, exactly
+	// like the trust state above.
+	disabled, source, err := state.Disabled()
+	if err != nil {
+		fprintln(stderr, "envoke:", err)
+		return 1
+	}
+	if disabled {
+		fprintf(stdout, "  envoke is disabled by %s -- nothing below would run; re-enable with `envoke enable`\n", source)
+	}
+
 	if len(leaves)+len(enters) == 0 {
-		_, _ = fmt.Fprintln(stdout, "  no blocks would fire")
+		fprintln(stdout, "  no blocks would fire")
 		return 0
 	}
+	printWorkingDirNote(stdout, to, leaves, enters)
 	for _, m := range leaves {
-		_, _ = fmt.Fprintf(stdout, "  %s %s (line %d: %s)\n", m.Block.Type, m.Dir, m.Block.Line, m.Block.RawPattern)
+		fprintf(stdout, "  %s %s (line %d: %s)\n", m.Block.Type, m.Dir, m.Block.Line, m.Block.RawPattern)
 		printIndentedScript(stdout, m.Block.Script)
 	}
 	for _, m := range enters {
-		_, _ = fmt.Fprintf(stdout, "  %s %s (line %d: %s)\n", m.Block.Type, m.Dir, m.Block.Line, m.Block.RawPattern)
+		fprintf(stdout, "  %s %s (line %d: %s)\n", m.Block.Type, m.Dir, m.Block.Line, m.Block.RawPattern)
 		printIndentedScript(stdout, m.Block.Script)
 	}
 	return 0
+}
+
+// printWorkingDirNote spells out where a matched script actually runs,
+// whenever that is not the directory it matched.
+//
+// debug lists the matched directory next to each block, which reads as
+// though relative paths in the script resolve from there. That holds for
+// exec, which sets the working directory to the match, and not for the
+// hook, which eval's the block in the shell that has already landed
+// somewhere else.
+func printWorkingDirNote(stdout io.Writer, to string, matches ...[]matcher.Match) {
+	differs := false
+	for _, ms := range matches {
+		for _, m := range ms {
+			if m.Dir != to {
+				differs = true
+			}
+		}
+	}
+	if !differs {
+		return
+	}
+	fprintf(stdout, "  note: via the shell hook these run in %s, where your shell lands;\n", to)
+	fprintln(stdout, "        via `envoke exec` each runs in the directory it matched.")
+	fprintln(stdout, "        $ENVOKE_DIR always names the matched directory -- use it for relative paths.")
 }
 
 // printIndentedScript prints a block's script body indented further than the
@@ -873,36 +1071,33 @@ func cmdDebug(args []string, stdout, stderr io.Writer) int {
 // run, not just metadata about the match.
 func printIndentedScript(stdout io.Writer, script string) {
 	for _, line := range strings.Split(script, "\n") {
-		_, _ = fmt.Fprintf(stdout, "    %s\n", line)
+		fprintf(stdout, "    %s\n", line)
 	}
 }
 
-// warnUnsafePermissions prints a non-fatal stderr warning if the config file
-// at path is writable by group or other — relevant on shared homes, NFS, or
-// multi-user machines, where such a file could be tampered with by someone
-// other than its owner. internal/trust's content-hash revocation already
-// stops a silently-modified config from running unapproved; this warns
-// proactively about a config whose permissions make that tampering possible
-// in the first place. Never blocks execution: a Stat failure or safe mode is
-// silently ignored here, since the caller's own config.Locate/ParseFile call
-// already handles a genuinely missing or unreadable file.
+// warnUnsafePermissions warns, without ever blocking, when a config is
+// writable by group or other. Content-hash revocation already stops a
+// silently-modified config from running unapproved; this flags the
+// permissions that make such tampering possible to begin with. A Stat
+// failure is ignored: the caller's own load already handles a missing or
+// unreadable file.
 func warnUnsafePermissions(stderr io.Writer, path string) {
 	if unsafe, mode, err := config.UnsafePermissions(path); err == nil && unsafe {
-		_, _ = fmt.Fprintf(stderr, "envoke: warning: %s is writable by group/other (mode %o) -- consider tightening its permissions\n", path, mode)
+		fprintf(stderr, "envoke: warning: %s is writable by group/other (mode %o) -- consider tightening its permissions\n", path, mode)
 	}
 
 	// The store matters more than the config it describes: a writable store
 	// lets someone forge an approval outright, rather than merely tamper
-	// with a config whose next edit would revoke its own trust. It isn't
-	// covered by Allow's 0o700, because os.MkdirAll only applies its mode to
+	// with a config whose next edit would revoke its own trust. Allow's
+	// 0o700 doesn't cover it — os.MkdirAll only applies its mode to
 	// directories it actually creates.
 	if unsafe, mode, dir, err := trust.UnsafeStorePermissions(); err == nil && unsafe {
-		_, _ = fmt.Fprintf(stderr, "envoke: warning: the trust store %s is writable by group/other (mode %o) -- anyone who can write there can forge an approval; run `chmod go-w %s`\n", dir, mode, dir)
+		fprintf(stderr, "envoke: warning: the trust store %s is writable by group/other (mode %o) -- anyone who can write there can forge an approval; run `chmod go-w %s`\n", dir, mode, dir)
 	}
 }
 
 func usage(w io.Writer) {
-	_, _ = fmt.Fprintln(w, `envoke - run shell scripts when you cd into or out of a directory
+	fprintln(w, `envoke - run shell scripts when you cd into or out of a directory
 
 Usage:
   envoke version                                     print version, commit, build date, and Go/OS/arch info, then exit
@@ -912,6 +1107,9 @@ Usage:
   envoke revoke [path]                               withdraw trust for a config (default: the located config)
   envoke list                                        list every trusted config and whether its current content still matches
   envoke prune                                       drop trust records whose config no longer exists
+  envoke disable                                     stop running blocks, in every shell, until enable
+  envoke enable                                      undo disable (set ENVOKE_DISABLE=1 or =0 to override either one for a single shell)
+  envoke reload [--shell <name>]                     re-apply the enter blocks for the current directory: eval "$(envoke reload)"
   envoke exec [<from> <to>]                          run the blocks matching a directory change, each in its own subprocess (for scripts/CI, not your interactive shell)
   envoke debug [<from> <to>]                         print which blocks would fire for a directory change, without running them
   envoke shell-hook [--shell <name>] <from> <to>     run blocks matching a directory change (internal, called by the shell hook; <from>/<to> may also come from $ENVOKE_FROM/$ENVOKE_TO)

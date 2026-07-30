@@ -52,6 +52,65 @@ func TestRender_ExportsMatchVarsBeforeScript(t *testing.T) {
 	}
 }
 
+// unsetDialects pairs each profile with the teardown line it must emit for a
+// single variable.
+var unsetDialects = []struct {
+	profile string
+	want    string
+}{
+	{"bash", "unset ENVOKE_DIR ENVOKE_TYPE ENVOKE_MATCH ENVOKE_MATCH_1"},
+	{"fish", "set -e ENVOKE_DIR ENVOKE_TYPE ENVOKE_MATCH ENVOKE_MATCH_1"},
+	{"tcsh", "unsetenv ENVOKE_MATCH_1"},
+	{"powershell", "Remove-Item -LiteralPath Env:ENVOKE_MATCH_1 -ErrorAction SilentlyContinue"},
+}
+
+func TestRender_UnsetsMatchVarsAfterScript(t *testing.T) {
+	m := mustMatch(t, "/Projects/foo", config.Block{
+		Type:    config.Enter,
+		Pattern: regexp.MustCompile(`^/Projects/([^/]+)$`),
+		Script:  "echo hi",
+	})
+
+	for _, d := range unsetDialects {
+		t.Run(d.profile, func(t *testing.T) {
+			got := Render(d.profile, nil, []matcher.Match{m})
+			idx := strings.Index(got, d.want)
+			if idx == -1 {
+				t.Fatalf("expected teardown %q, got:\n%s", d.want, got)
+			}
+			if idx < strings.Index(got, "echo hi") {
+				t.Errorf("teardown must come after the script, got:\n%s", got)
+			}
+		})
+	}
+}
+
+// TestRender_TearsDownBetweenBlocks is the anti-staleness contract: capture
+// groups are numbered per block, so a block with two of them followed by one
+// with none would otherwise leave ENVOKE_MATCH_2 visible to a script that
+// never captured anything.
+func TestRender_TearsDownBetweenBlocks(t *testing.T) {
+	two := mustMatch(t, "/p/x/y", config.Block{
+		Type:    config.Enter,
+		Pattern: regexp.MustCompile(`^/p/([^/]+)/([^/]+)$`),
+		Script:  "echo first",
+	})
+	none := mustMatch(t, "/p/z", config.Block{
+		Type:    config.Enter,
+		Pattern: regexp.MustCompile(`^/p/z$`),
+		Script:  "echo second",
+	})
+
+	got := Render("bash", nil, []matcher.Match{two, none})
+	teardown := strings.Index(got, "unset ENVOKE_DIR ENVOKE_TYPE ENVOKE_MATCH ENVOKE_MATCH_1 ENVOKE_MATCH_2")
+	if teardown == -1 {
+		t.Fatalf("expected the two-group block to unset both capture groups, got:\n%s", got)
+	}
+	if second := strings.Index(got, "echo second"); teardown > second {
+		t.Errorf("teardown must run before the next block's script, got:\n%s", got)
+	}
+}
+
 func TestRender_UnrecognizedShellFallsBackToPosix(t *testing.T) {
 	m := mustMatch(t, "/a", config.Block{Type: config.Enter, Pattern: regexp.MustCompile(`^/a$`), Script: "echo hi"})
 	for _, shell := range []string{"", "zsh", "ksh", "bogus"} {
@@ -143,31 +202,125 @@ func basenames() []string {
 }
 
 // renderShell is one shell profile plus how to actually execute Render's
-// output in it, and how that dialect spells "echo three variables".
+// output in it, how that dialect spells "echo three variables", and how it
+// spells "count the ENVOKE_ variables still in the environment".
+//
+// The probe delegates to `env` in a child sh rather than to each shell's own
+// introspection, because csh makes referencing an undefined variable a hard
+// error while the others expand it to nothing — one probe with one expected
+// answer keeps the assertion identical across dialects.
 type renderShell struct {
 	profile     string
 	interpreter string
 	echo        string
+	probe       string
 	command     func(script string) *exec.Cmd
 }
 
 func renderShells() []renderShell {
 	const posixEcho = `echo "$ENVOKE_DIR|$ENVOKE_TYPE|$ENVOKE_MATCH_1"`
+	const posixProbe = `sh -c 'env | grep "^ENVOKE_" | wc -l'`
 	return []renderShell{
-		{profile: "bash", interpreter: "sh", echo: posixEcho, command: func(s string) *exec.Cmd {
+		{profile: "bash", interpreter: "sh", echo: posixEcho, probe: posixProbe, command: func(s string) *exec.Cmd {
 			return exec.Command("sh", "-c", s)
 		}},
-		{profile: "fish", interpreter: "fish", echo: posixEcho, command: func(s string) *exec.Cmd {
+		{profile: "fish", interpreter: "fish", echo: posixEcho, probe: posixProbe, command: func(s string) *exec.Cmd {
 			return exec.Command("fish", "--no-config", "-c", s)
 		}},
-		{profile: "tcsh", interpreter: "tcsh", echo: posixEcho, command: func(s string) *exec.Cmd {
+		{profile: "tcsh", interpreter: "tcsh", echo: posixEcho, probe: posixProbe, command: func(s string) *exec.Cmd {
 			return exec.Command("tcsh", "-f", "-c", s)
 		}},
 		{profile: "powershell", interpreter: "pwsh",
-			echo: `Write-Output "$env:ENVOKE_DIR|$env:ENVOKE_TYPE|$env:ENVOKE_MATCH_1"`,
+			echo:  `Write-Output "$env:ENVOKE_DIR|$env:ENVOKE_TYPE|$env:ENVOKE_MATCH_1"`,
+			probe: `& sh -c 'env | grep "^ENVOKE_" | wc -l'`,
 			command: func(s string) *exec.Cmd {
 				return exec.Command("pwsh", "-NoProfile", "-Command", s)
 			}},
+	}
+}
+
+// TestRender_LeavesNoVariablesBehind drives each real interpreter and checks
+// that the environment is clean once the rendered output has run. Every
+// ENVOKE_* variable is exported, so without the teardown they would be
+// inherited by every process the user starts after a cd, with ENVOKE_DIR
+// naming a directory they may well have left.
+func TestRender_LeavesNoVariablesBehind(t *testing.T) {
+	for _, rs := range renderShells() {
+		t.Run(rs.profile, func(t *testing.T) {
+			if _, err := exec.LookPath(rs.interpreter); err != nil {
+				t.Skipf("%s not available on this system, skipping", rs.interpreter)
+			}
+			m := mustMatch(t, "/Projects/foo", config.Block{
+				Type:    config.Enter,
+				Pattern: regexp.MustCompile(`^/Projects/([^/]+)$`),
+				Script:  rs.echo,
+			})
+
+			script := Render(rs.profile, nil, []matcher.Match{m}) + rs.probe + "\n"
+			out, err := rs.command(script).CombinedOutput()
+			if err != nil {
+				t.Fatalf("running rendered script: %v\nscript:\n%s\noutput:\n%s", err, script, out)
+			}
+			lines := strings.Fields(strings.ReplaceAll(string(out), "\r\n", "\n"))
+			if got := lines[len(lines)-1]; got != "0" {
+				t.Errorf("%s ENVOKE_ variables survived the teardown, want 0\nscript:\n%s\noutput:\n%s", got, script, out)
+			}
+		})
+	}
+}
+
+// TestRender_LeavesTheBlocksOwnVariablesAlone draws the line the teardown
+// stops at. The unset list is built from matchVars, so it names the ENVOKE_*
+// variables Render itself exported and nothing else: what a block exports is
+// the whole point of envoke and persists until the user's own leave block
+// clears it.
+func TestRender_LeavesTheBlocksOwnVariablesAlone(t *testing.T) {
+	requirePOSIXShell(t)
+
+	m := mustMatch(t, "/Projects/foo", config.Block{
+		Type:    config.Enter,
+		Pattern: regexp.MustCompile(`^/Projects/([^/]+)$`),
+		Script:  `export MY_VAR="$ENVOKE_MATCH_1"`,
+	})
+
+	script := Render("bash", nil, []matcher.Match{m}) +
+		`echo "[${MY_VAR-gone}][${ENVOKE_MATCH_1-gone}]"` + "\n"
+	out, err := exec.Command("sh", "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("running rendered script: %v\nscript:\n%s\noutput:\n%s", err, script, out)
+	}
+	// The block's own variable survives, including the ENVOKE_* value it
+	// captured while it ran; only the ENVOKE_* variables themselves go.
+	if got := strings.TrimSpace(string(out)); got != "[foo][gone]" {
+		t.Errorf("teardown scope = %s, want [foo][gone]\nscript:\n%s", got, script)
+	}
+}
+
+// TestRender_StaleCaptureGroupIsNotVisibleToTheNextBlock is the behavioral
+// half of TestRender_TearsDownBetweenBlocks. POSIX only: the mechanism is
+// dialect-independent, only the teardown syntax differs, and that is what
+// the string-level test covers per dialect.
+func TestRender_StaleCaptureGroupIsNotVisibleToTheNextBlock(t *testing.T) {
+	requirePOSIXShell(t)
+
+	two := mustMatch(t, "/p/x/y", config.Block{
+		Type:    config.Enter,
+		Pattern: regexp.MustCompile(`^/p/([^/]+)/([^/]+)$`),
+		Script:  "true",
+	})
+	none := mustMatch(t, "/p/z", config.Block{
+		Type:    config.Enter,
+		Pattern: regexp.MustCompile(`^/p/z$`),
+		Script:  `echo "[${ENVOKE_MATCH_1-unset}][${ENVOKE_MATCH_2-unset}]"`,
+	})
+
+	script := Render("bash", nil, []matcher.Match{two, none})
+	out, err := exec.Command("sh", "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("running rendered script: %v\nscript:\n%s\noutput:\n%s", err, script, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != "[unset][unset]" {
+		t.Errorf("second block saw the first block's capture groups: %s\nscript:\n%s", got, script)
 	}
 }
 
