@@ -238,8 +238,8 @@ func Completion(shell string) (string, error) {
 // updating this is caught by TestCompletion_CoversEverySubcommand rather
 // than by a user noticing tab does nothing.
 var subcommands = []string{
-	"allow", "completion", "debug", "exec", "help", "list",
-	"prune", "revoke", "shell-hook", "shell-init", "version",
+	"allow", "completion", "debug", "disable", "enable", "exec", "help",
+	"list", "prune", "revoke", "shell-hook", "shell-init", "version",
 }
 
 // bashCompletion completes subcommands first, then argument types per
@@ -261,7 +261,7 @@ const bashCompletion = `_envoke_compgen() {
 _envoke_complete() {
   local cur="${COMP_WORDS[COMP_CWORD]}"
   if [ "${COMP_CWORD}" -eq 1 ]; then
-    _envoke_compgen -W "allow completion debug exec help list prune revoke shell-hook shell-init version" -- "$cur"
+    _envoke_compgen -W "allow completion debug disable enable exec help list prune revoke shell-hook shell-init version" -- "$cur"
     return
   fi
   case "${COMP_WORDS[1]}" in
@@ -294,6 +294,8 @@ const zshCompletion = `_envoke() {
     'allow:trust a config file after reviewing it'
     'completion:print a tab-completion script'
     'debug:show which blocks would fire, without running them'
+    'disable:stop running blocks in every shell until enable'
+    'enable:undo disable'
     'exec:run matching blocks in subprocesses (scripts/CI)'
     'help:show usage'
     'list:list every trusted config'
@@ -334,6 +336,8 @@ const fishCompletion = `complete -c envoke -f
 complete -c envoke -n __fish_use_subcommand -a allow -d 'trust a config file after reviewing it'
 complete -c envoke -n __fish_use_subcommand -a completion -d 'print a tab-completion script'
 complete -c envoke -n __fish_use_subcommand -a debug -d 'show which blocks would fire, without running them'
+complete -c envoke -n __fish_use_subcommand -a disable -d 'stop running blocks in every shell until enable'
+complete -c envoke -n __fish_use_subcommand -a enable -d 'undo disable'
 complete -c envoke -n __fish_use_subcommand -a exec -d 'run matching blocks in subprocesses (scripts/CI)'
 complete -c envoke -n __fish_use_subcommand -a help -d 'show usage'
 complete -c envoke -n __fish_use_subcommand -a list -d 'list every trusted config'

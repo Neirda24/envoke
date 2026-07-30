@@ -27,6 +27,7 @@ import (
 	"github.com/Neirda24/envoke/internal/executor"
 	"github.com/Neirda24/envoke/internal/matcher"
 	"github.com/Neirda24/envoke/internal/shellinit"
+	"github.com/Neirda24/envoke/internal/state"
 	"github.com/Neirda24/envoke/internal/trust"
 )
 
@@ -72,6 +73,10 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 		return cmdList(args[1:], stdout, stderr)
 	case "prune":
 		return cmdPrune(args[1:], stdout, stderr)
+	case "disable":
+		return cmdSwitch(args[1:], stdout, stderr, false)
+	case "enable":
+		return cmdSwitch(args[1:], stdout, stderr, true)
 	case "exec":
 		return cmdExec(args[1:], stderr)
 	case "debug":
@@ -259,6 +264,16 @@ func cmdShellHook(args []string, stdout, stderr io.Writer) int {
 	if !executor.IsKnownShell(*shell) {
 		_, _ = fmt.Fprintf(stderr, "envoke: unknown shell %q (supported: bash, zsh, fish, tcsh, powershell)\n", *shell)
 		return 2
+	}
+
+	// Checked before anything else, and silently: this runs on every
+	// directory change, so a switched-off envoke has to cost one stat and
+	// say nothing at all. `envoke debug` is where the state is reported.
+	if disabled, _, err := state.Disabled(); err != nil {
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		return 1
+	} else if disabled {
+		return 0
 	}
 
 	var from, to string
@@ -739,6 +754,60 @@ func cmdPrune(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+const (
+	disableUsage = "envoke disable"
+	enableUsage  = "envoke enable"
+)
+
+// cmdSwitch backs both `envoke disable` and `envoke enable`. The two are the
+// same operation with opposite arguments, and splitting them into separate
+// functions would mean duplicating the part that actually matters: telling
+// the user when $ENVOKE_DISABLE is going to override what they just asked
+// for, so a `disable` that appears to do nothing has a visible reason.
+func cmdSwitch(args []string, stdout, stderr io.Writer, enable bool) int {
+	usage := disableUsage
+	if enable {
+		usage = enableUsage
+	}
+
+	flags := newFlagSet(strings.TrimPrefix(usage, "envoke "))
+	if ok, code := parseFlags(flags, args, usage, stderr); !ok {
+		return code
+	}
+	if flags.NArg() != 0 {
+		_, _ = fmt.Fprintln(stderr, "usage:", usage)
+		return 2
+	}
+
+	apply, verb := state.Disable, "disabled"
+	if enable {
+		apply, verb = state.Enable, "enabled"
+	}
+	if err := apply(); err != nil {
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		return 1
+	}
+	_, _ = fmt.Fprintf(stdout, "envoke: %s for every shell\n", verb)
+
+	disabled, source, err := state.Disabled()
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		return 1
+	}
+	if source == state.Env && disabled == enable {
+		_, _ = fmt.Fprintf(stderr, "envoke: warning: %s is set in this shell and overrides that, so envoke stays %s here until you unset it\n",
+			state.DisableEnv, enabledWord(disabled))
+	}
+	return 0
+}
+
+func enabledWord(disabled bool) string {
+	if disabled {
+		return "off"
+	}
+	return "on"
+}
+
 // transitionArgs resolves the <from> <to> pair shared by `exec` and
 // `debug`. Both are things a human types, unlike shell-hook which is only
 // ever called by generated code, so both accept relative paths and both
@@ -779,6 +848,18 @@ func cmdExec(args []string, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, "envoke:", err)
 		_, _ = fmt.Fprintln(stderr, "usage:", execUsage)
 		return 2
+	}
+
+	// Unlike shell-hook, this says so out loud. exec is called deliberately,
+	// usually from a script, and silently running nothing is how a build
+	// ends up mysteriously missing half its environment. Still exit 0: the
+	// user asked for envoke to be off, that isn't a failure.
+	if disabled, source, err := state.Disabled(); err != nil {
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		return 1
+	} else if disabled {
+		_, _ = fmt.Fprintf(stderr, "envoke: disabled by %s -- no blocks were run\n", source)
+		return 0
 	}
 
 	path, found, err := config.Locate()
@@ -871,6 +952,19 @@ func cmdDebug(args []string, stdout, stderr io.Writer) int {
 	}
 
 	_, _ = fmt.Fprintf(stdout, "envoke debug: %s -> %s using %s (%s)\n", from, to, path, trustNote)
+
+	// debug never executes anything, so being switched off doesn't stop it —
+	// but it does change whether what follows would happen for real, exactly
+	// like the trust state above.
+	disabled, source, err := state.Disabled()
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		return 1
+	}
+	if disabled {
+		_, _ = fmt.Fprintf(stdout, "  envoke is disabled by %s -- nothing below would run; re-enable with `envoke enable`\n", source)
+	}
+
 	if len(leaves)+len(enters) == 0 {
 		_, _ = fmt.Fprintln(stdout, "  no blocks would fire")
 		return 0
@@ -958,6 +1052,8 @@ Usage:
   envoke revoke [path]                               withdraw trust for a config (default: the located config)
   envoke list                                        list every trusted config and whether its current content still matches
   envoke prune                                       drop trust records whose config no longer exists
+  envoke disable                                     stop running blocks, in every shell, until enable
+  envoke enable                                      undo disable (set ENVOKE_DISABLE=1 or =0 to override either one for a single shell)
   envoke exec [<from> <to>]                          run the blocks matching a directory change, each in its own subprocess (for scripts/CI, not your interactive shell)
   envoke debug [<from> <to>]                         print which blocks would fire for a directory change, without running them
   envoke shell-hook [--shell <name>] <from> <to>     run blocks matching a directory change (internal, called by the shell hook; <from>/<to> may also come from $ENVOKE_FROM/$ENVOKE_TO)

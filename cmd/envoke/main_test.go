@@ -421,6 +421,145 @@ enter /a
 	}
 }
 
+// allowedConfig writes a one-block config matching /a and trusts it, which
+// is the starting point for every switch test: the only thing left that can
+// stop a block from running is the switch itself.
+func allowedConfig(t *testing.T) {
+	t.Helper()
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo hi
+`)
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+}
+
+func TestRun_DisableStopsShellHookSilently(t *testing.T) {
+	allowedConfig(t)
+
+	if _, _, code := runFor(t, "disable"); code != 0 {
+		t.Fatalf("disable exit code = %d, want 0", code)
+	}
+
+	stdout, stderr, code := runFor(t, "shell-hook", "/", "/a")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if stdout != "" {
+		t.Errorf("a disabled envoke must render nothing, got %q", stdout)
+	}
+	// This runs on every single directory change, so any output at all
+	// would be a per-cd nuisance for as long as the switch is off.
+	if stderr != "" {
+		t.Errorf("a disabled envoke must stay silent, got %q", stderr)
+	}
+}
+
+func TestRun_EnableRestoresShellHook(t *testing.T) {
+	allowedConfig(t)
+
+	if _, _, code := runFor(t, "disable"); code != 0 {
+		t.Fatalf("disable failed")
+	}
+	if _, _, code := runFor(t, "enable"); code != 0 {
+		t.Fatalf("enable failed")
+	}
+
+	stdout, _, code := runFor(t, "shell-hook", "/", "/a")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "echo hi") {
+		t.Errorf("expected the block back after enable, got %q", stdout)
+	}
+}
+
+// TestRun_EnvDisableOverridesTheFlag covers both directions of the
+// per-session override, which is the whole point of having two switches.
+func TestRun_EnvDisableOverridesTheFlag(t *testing.T) {
+	allowedConfig(t)
+
+	t.Setenv("ENVOKE_DISABLE", "1")
+	stdout, _, _ := runFor(t, "shell-hook", "/", "/a")
+	if stdout != "" {
+		t.Errorf("ENVOKE_DISABLE=1 must stop the hook, got %q", stdout)
+	}
+
+	if _, _, code := runFor(t, "disable"); code != 0 {
+		t.Fatalf("disable failed")
+	}
+	t.Setenv("ENVOKE_DISABLE", "0")
+	stdout, _, _ = runFor(t, "shell-hook", "/", "/a")
+	if !strings.Contains(stdout, "echo hi") {
+		t.Errorf("ENVOKE_DISABLE=0 must re-enable this shell, got %q", stdout)
+	}
+}
+
+// TestRun_DisableWarnsWhenTheEnvOverrideWins keeps `envoke disable` from
+// looking like it did nothing in a shell that has already overridden it.
+func TestRun_DisableWarnsWhenTheEnvOverrideWins(t *testing.T) {
+	allowedConfig(t)
+	t.Setenv("ENVOKE_DISABLE", "0")
+
+	stdout, stderr, code := runFor(t, "disable")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "disabled for every shell") {
+		t.Errorf("expected the switch to be reported as set, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "ENVOKE_DISABLE") {
+		t.Errorf("expected a warning that the override wins here, got %q", stderr)
+	}
+}
+
+func TestRun_ExecReportsBeingDisabled(t *testing.T) {
+	allowedConfig(t)
+	if _, _, code := runFor(t, "disable"); code != 0 {
+		t.Fatalf("disable failed")
+	}
+
+	// Exit 0: the user asked for envoke to be off, which is not a failure.
+	// But exec is invoked deliberately, so silence would leave a script
+	// mysteriously missing its environment.
+	_, stderr, code := runFor(t, "exec", "/", "/a")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stderr, "disabled") {
+		t.Errorf("expected exec to say why it did nothing, got %q", stderr)
+	}
+}
+
+func TestRun_DebugStillWorksWhenDisabled(t *testing.T) {
+	allowedConfig(t)
+	if _, _, code := runFor(t, "disable"); code != 0 {
+		t.Fatalf("disable failed")
+	}
+
+	stdout, _, code := runFor(t, "debug", "/", "/a")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "echo hi") {
+		t.Errorf("debug must keep listing blocks while disabled, got %q", stdout)
+	}
+	if !strings.Contains(stdout, "disabled") {
+		t.Errorf("debug must report the switch, got %q", stdout)
+	}
+}
+
+func TestRun_SwitchRejectsArguments(t *testing.T) {
+	isolateHome(t)
+	for _, cmd := range []string{"disable", "enable"} {
+		if _, _, code := runFor(t, cmd, "extra"); code != 2 {
+			t.Errorf("%s with an argument: exit code = %d, want 2", cmd, code)
+		}
+	}
+}
+
 func TestRun_AllowLocatedConfig(t *testing.T) {
 	home := isolateHome(t)
 	writeConfig(t, home, "enter /a\n    echo hi\n")
@@ -1565,6 +1704,7 @@ func isolateHome(t *testing.T) (home string) {
 	// $SHELL, and only the macOS runner ever showed it.
 	unsetEnv(t, "ENVOKE_FROM")
 	unsetEnv(t, "ENVOKE_TO")
+	unsetEnv(t, "ENVOKE_DISABLE")
 	return home
 }
 

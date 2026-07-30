@@ -35,6 +35,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/Neirda24/envoke/internal/state"
 )
 
 // IsTrusted reports whether content — the config bytes the caller has
@@ -361,17 +363,12 @@ func UnsafeStorePermissions() (unsafe bool, mode os.FileMode, path string, err e
 	return perm&0o022 != 0, perm, dir, nil
 }
 
-// storeDir is $XDG_DATA_HOME/envoke/allow, or ~/.local/share/envoke/allow
-// if XDG_DATA_HOME isn't set — the XDG Base Directory default for
-// application state, matching README's XDG support for the config path.
+// storeDir is envoke's data home plus "envoke/allow" — see state.DataHome
+// for why trust records are state rather than config.
 func storeDir() (string, error) {
-	base := os.Getenv("XDG_DATA_HOME")
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("trust: %w", err)
-		}
-		base = filepath.Join(home, ".local", "share")
+	base, err := state.DataHome()
+	if err != nil {
+		return "", err
 	}
 	return filepath.Join(base, "envoke", "allow"), nil
 }
