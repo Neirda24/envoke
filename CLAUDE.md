@@ -70,7 +70,13 @@ public API to commit to yet):
   `~` and `$VAR`/`${VAR}` as literal (`regexp.QuoteMeta`'d) substitutions,
   then anchors the result as `^(?:...)$` — that anchoring is what makes
   matching segment-based rather than prefix-based. Malformed config fails
-  with a positioned `*ParseError{Line, Msg}`, never silently.
+  with a positioned `*ParseError{Line, Msg}`, never silently — **including
+  an undefined `$VAR`**, which used to expand to `""` and produce a valid
+  pattern that could never match. `expandEnv` is hand-rolled rather than
+  `os.Expand` because patterns are regexes: `os.Expand` would eat `$?`,
+  `$*`, `$#` and `$0`-`$9` as shell special variables, so only `$` followed
+  by a real identifier is treated as a reference and every other `$` stays
+  the regex anchor it almost certainly is.
   `UnsafePermissions(path)` (`permissions.go`) reports whether the config
   file is group/other-writable (`0o022`), which `cmd/envoke` surfaces as a
   non-fatal warning on `allow`/`shell-hook`/`debug` — content-hash trust

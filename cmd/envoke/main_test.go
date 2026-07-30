@@ -221,6 +221,41 @@ enter /never/matches
 	}
 }
 
+// TestRun_ShellHookMissingEnvokercIsSilent covers a real papercut:
+// $ENVOKERC is honoured verbatim, so pointing it at a file you haven't
+// written yet is an ordinary state — but shell-hook reported the resulting
+// ENOENT as an error, on every single `cd`, until the file appeared.
+func TestRun_ShellHookMissingEnvokercIsSilent(t *testing.T) {
+	home := isolateHome(t)
+	t.Setenv("ENVOKERC", filepath.Join(home, "not-written-yet"))
+
+	stdout, stderr, code := runFor(t, "shell-hook", "/", "/a")
+	if code != 0 || stdout != "" || stderr != "" {
+		t.Errorf("shell-hook with a missing $ENVOKERC: stdout=%q stderr=%q code=%d, want all empty/0", stdout, stderr, code)
+	}
+}
+
+// A config that exists but is unreadable is the opposite case: something is
+// wrong with a config its owner believes is in effect, so it stays loud.
+func TestRun_ShellHookUnreadableConfigStillReportsError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root, permission bits are not enforced")
+	}
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /a\n    echo hi\n")
+	if err := os.Chmod(filepath.Join(home, ".envokerc"), 0o000); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+
+	_, stderr, code := runFor(t, "shell-hook", "/", "/a")
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if stderr == "" {
+		t.Errorf("expected an error for an unreadable config")
+	}
+}
+
 func TestRun_ShellHookInvalidConfigReportsError(t *testing.T) {
 	home := isolateHome(t)
 	writeConfig(t, home, "not a valid block\n")

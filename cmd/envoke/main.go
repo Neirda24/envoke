@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"runtime"
 	"strings"
@@ -161,6 +162,17 @@ func cmdShellHook(args []string, stdout, stderr io.Writer) int {
 	// hash was computed over (see config.LoadFile).
 	cfg, content, err := config.LoadFile(path)
 	if err != nil {
+		// A config path that doesn't exist is a normal state, not a
+		// failure: $ENVOKERC is honoured verbatim (see config.Locate), so
+		// pointing it at a file you haven't written yet is ordinary. This
+		// runs on every single directory change, so reporting that as an
+		// error would print a message on every `cd` until the file appears.
+		// Anything else — a parse error, a permission problem — stays loud,
+		// because it means a config that exists is not doing what its owner
+		// thinks it is.
+		if errors.Is(err, fs.ErrNotExist) {
+			return 0
+		}
 		_, _ = fmt.Fprintln(stderr, "envoke:", err)
 		return 1
 	}
