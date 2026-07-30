@@ -100,11 +100,18 @@ public API to commit to yet):
     groups); an unrecognized name falls back to POSIX. Render can only
     translate the ENVOKE_* plumbing — a script body still has to be written
     in the calling shell's own syntax.
-- **`internal/envoke`** — `Transition(ctx, cfg, from, to)` is the
-  subprocess-based core loop: resolve, run all leaves, then all enters via
-  `executor.Run`, stopping at the first failing block (no partial-transition
-  unwind — see the enter/leave independence principle). Used for
-  non-interactive automation, not the shell hook or `envoke debug`.
+- **`internal/envoke`** — `Transition(ctx, configPath, from, to)` is the
+  subprocess-based core loop behind `envoke exec`: load + trust-check,
+  resolve, run all leaves, then all enters via `executor.Run`, stopping at
+  the first failing block (no partial-transition unwind — see the
+  enter/leave independence principle). It takes a config **path**, not a
+  parsed `*config.Config`, on purpose: it is the only thing in the codebase
+  that spawns a shell from config, so the `trust.IsTrusted` gate lives
+  inside it where no caller can skip it (it returns `ErrUntrusted` having
+  run nothing). Don't "simplify" it back to accepting a parsed config.
+  Used for non-interactive automation (scripts/CI), not the shell hook or
+  `envoke debug` — side effects stay in the subprocess, which is what
+  `docs/non-interactive.md` exists to spell out.
 - **`internal/config.Locate()`** — resolves the config path: `$ENVOKERC`
   (used verbatim, even if missing) → `~/.envokerc` if present →
   `$XDG_CONFIG_HOME/envoke/config` (or `~/.config/envoke/config`) if present

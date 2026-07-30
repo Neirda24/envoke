@@ -5,12 +5,13 @@ package envoke
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/Neirda24/envoke/internal/config"
+	"github.com/Neirda24/envoke/internal/trust"
 )
 
 func TestTransition_VenvActivateDeactivateReadmeExample(t *testing.T) {
@@ -133,17 +134,88 @@ enter $ENVOKE_IT_ROOT
 	assertLog(t, root, "")
 }
 
-func writeConfig(t *testing.T, root, body string) *config.Config {
+// TestTransition_UntrustedConfigRunsNothing is the guard on this package's
+// reason for taking a path instead of a parsed config. Transition is the
+// only code path in envoke that spawns a shell from config, so the trust
+// check lives inside it where a caller cannot forget it — an earlier
+// version accepted a *config.Config and did no trust check at all, which
+// made it a violation of the trust-before-execution principle waiting for
+// its first caller.
+func TestTransition_UntrustedConfigRunsNothing(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("ENVOKE_IT_ROOT", root)
+
+	child := filepath.Join(root, "child")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	cfg := writeConfigUntrusted(t, root, `
+enter $ENVOKE_IT_ROOT/child
+    echo should-not-run >> "$ENVOKE_IT_ROOT/log.txt"
+`)
+
+	err := Transition(context.Background(), cfg, root, child)
+	if !errors.Is(err, ErrUntrusted) {
+		t.Fatalf("Transition on an unapproved config = %v, want ErrUntrusted", err)
+	}
+	assertLog(t, root, "")
+}
+
+// TestTransition_EditingAfterApprovalRunsNothing checks the trust gate keeps
+// tracking content, not just "was ever approved".
+func TestTransition_EditingAfterApprovalRunsNothing(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("ENVOKE_IT_ROOT", root)
+
+	child := filepath.Join(root, "child")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	cfg := writeConfig(t, root, `
+enter $ENVOKE_IT_ROOT/child
+    echo approved >> "$ENVOKE_IT_ROOT/log.txt"
+`)
+	if err := os.WriteFile(cfg, []byte("enter $ENVOKE_IT_ROOT/child\n    echo smuggled >> \"$ENVOKE_IT_ROOT/log.txt\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	err := Transition(context.Background(), cfg, root, child)
+	if !errors.Is(err, ErrUntrusted) {
+		t.Fatalf("Transition on an edited config = %v, want ErrUntrusted", err)
+	}
+	assertLog(t, root, "")
+}
+
+// writeConfig writes a config under root and approves it, returning its
+// path. Transition takes a path rather than a parsed config precisely so it
+// can enforce trust itself, so every test that expects blocks to run has to
+// go through a real approval — the same thing a user does with
+// `envoke allow`.
+func writeConfig(t *testing.T, root, body string) string {
 	t.Helper()
+	path := writeConfigUntrusted(t, root, body)
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if err := trust.Allow(path, content); err != nil {
+		t.Fatalf("trust.Allow: %v", err)
+	}
+	return path
+}
+
+// writeConfigUntrusted writes a config without approving it, and points the
+// trust store at a temp directory so a real ~/.local/share is never touched.
+func writeConfigUntrusted(t *testing.T, root, body string) string {
+	t.Helper()
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	path := filepath.Join(root, "envokerc")
 	if err := os.WriteFile(path, []byte(strings.TrimPrefix(body, "\n")), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	cfg, err := config.ParseFile(path)
-	if err != nil {
-		t.Fatalf("ParseFile: %v", err)
-	}
-	return cfg
+	return path
 }
 
 func assertLog(t *testing.T, root, want string) {

@@ -980,6 +980,68 @@ enter /a
 // A single read now feeds all three, so an edit that lands after the review
 // simply leaves the config untrusted -- which is what this asserts: approve,
 // then modify, and the modified config must not inherit the approval.
+func TestRun_ExecRunsTrustedBlocksInSubprocesses(t *testing.T) {
+	home := isolateHome(t)
+	target := filepath.Join(home, "proj")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	marker := filepath.Join(home, "marker")
+	writeConfig(t, home, "enter "+target+"\n    echo ran > "+marker+"\n")
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+
+	if _, stderr, code := runFor(t, "exec", home, target); code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("expected the enter block to have run: %v", err)
+	}
+}
+
+// TestRun_ExecRefusesUntrustedConfig is the CLI-visible half of the trust
+// gate that now lives inside envoke.Transition. `envoke exec` is the only
+// subcommand that spawns shells directly, so it is the one that would have
+// been the first caller of the previously unguarded code path.
+func TestRun_ExecRefusesUntrustedConfig(t *testing.T) {
+	home := isolateHome(t)
+	target := filepath.Join(home, "proj")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	marker := filepath.Join(home, "marker")
+	writeConfig(t, home, "enter "+target+"\n    echo ran > "+marker+"\n")
+
+	_, stderr, code := runFor(t, "exec", home, target)
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr, "not trusted") || !strings.Contains(stderr, "envoke allow") {
+		t.Errorf("expected an untrusted-config error hinting at `envoke allow`, got %q", stderr)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Errorf("an unapproved block must not have run")
+	}
+}
+
+func TestRun_ExecWrongArgCount(t *testing.T) {
+	if _, _, code := runFor(t, "exec", "/only-one"); code != 2 {
+		t.Errorf("exit code = %d, want 2", code)
+	}
+}
+
+func TestRun_ExecNoConfigIsError(t *testing.T) {
+	isolateHome(t)
+	_, stderr, code := runFor(t, "exec", "/a", "/b")
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr, "no config found") {
+		t.Errorf("expected a no-config error, got %q", stderr)
+	}
+}
+
 func TestRun_AllowRecordsTheContentItReviewed(t *testing.T) {
 	home := isolateHome(t)
 	writeConfig(t, home, "enter /a\n    echo reviewed\n")

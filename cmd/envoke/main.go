@@ -10,6 +10,8 @@ package main
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/Neirda24/envoke/internal/config"
+	"github.com/Neirda24/envoke/internal/envoke"
 	"github.com/Neirda24/envoke/internal/executor"
 	"github.com/Neirda24/envoke/internal/matcher"
 	"github.com/Neirda24/envoke/internal/shellinit"
@@ -57,6 +60,8 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 		return cmdShellHook(args[1:], stdout, stderr)
 	case "allow":
 		return cmdAllow(args[1:], stdout, stderr, stdin)
+	case "exec":
+		return cmdExec(args[1:], stderr)
 	case "debug":
 		return cmdDebug(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -406,6 +411,48 @@ func diffLines(oldLines, newLines []string) []string {
 	return out
 }
 
+// cmdExec runs the blocks matching a directory change in a subprocess each,
+// for non-interactive callers — scripts, Makefiles, CI — that want a
+// project's enter hooks to have run without an interactive shell to hook
+// into.
+//
+// This is emphatically not what the shell hook uses, and the distinction
+// matters enough to be worth stating at the call site: each block runs in
+// its own `sh -c` subprocess, so `export`, `source` and `cd` inside a block
+// affect that subprocess and nothing else. Anything meant to change the
+// caller's own shell needs `envoke shell-hook` via the generated hook.
+//
+// Trust is enforced inside envoke.Transition rather than here, so no future
+// caller of that package can forget it.
+func cmdExec(args []string, stderr io.Writer) int {
+	if len(args) != 2 {
+		_, _ = fmt.Fprintln(stderr, "usage: envoke exec <from> <to>")
+		return 2
+	}
+
+	path, found, err := config.Locate()
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		return 1
+	}
+	if !found {
+		_, _ = fmt.Fprintf(stderr, "envoke: no config found (looked for %s)\n", path)
+		return 1
+	}
+
+	warnUnsafePermissions(stderr, path)
+
+	if err := envoke.Transition(context.Background(), path, args[0], args[1]); err != nil {
+		if errors.Is(err, envoke.ErrUntrusted) {
+			_, _ = fmt.Fprintf(stderr, "envoke: %v: run `envoke allow %s`\n", err, path)
+			return 1
+		}
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		return 1
+	}
+	return 0
+}
+
 // cmdDebug prints which enter/leave blocks would fire for a directory
 // transition, without running them and regardless of trust — a dry-run
 // diagnostic for developing a config without surprises (see README's
@@ -502,6 +549,7 @@ Usage:
   envoke version                                    print version, commit, build date, and Go/OS/arch info, then exit
   envoke shell-init <bash|zsh|fish|tcsh|powershell>  print shell hook code to eval/source
   envoke allow [--yes|-y] [path]                     trust a config file after reviewing and confirming it (default: the located config; --yes/-y skips the y/N prompt)
+  envoke exec <from> <to>                            run the blocks matching a directory change, each in its own subprocess (for scripts/CI, not your interactive shell)
   envoke debug <from> <to>                           print which blocks would fire for a directory change, without running them
   envoke shell-hook [--shell <name>] <from> <to>      run blocks matching a directory change (internal, called by the shell hook; <from>/<to> may also come from $ENVOKE_FROM/$ENVOKE_TO)`)
 }

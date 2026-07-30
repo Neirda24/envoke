@@ -6,13 +6,27 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"time"
 
 	"github.com/Neirda24/envoke/internal/matcher"
 )
 
+// killGrace is how long a cancelled script gets between the context's kill
+// signal and Run giving up on Wait. exec.CommandContext only signals the
+// `sh` it started, not the process group, so a script that backgrounded
+// something would otherwise be able to keep Wait blocked indefinitely.
+// Killing the whole process group would need OS-specific SysProcAttr and a
+// build-tag split for Windows; bounding the wait is the portable 90% of the
+// benefit.
+const killGrace = 5 * time.Second
+
 // Run executes m's script through the shell, with the matched directory as
 // the script's working directory and ENVOKE_* env vars set. Stdio is
 // inherited from the caller so interactive scripts behave normally.
+//
+// Callers are responsible for having verified trust before getting here —
+// internal/envoke.Transition is the only caller and does exactly that, by
+// design (see its doc comment).
 func Run(ctx context.Context, m matcher.Match) error {
 	cmd := exec.CommandContext(ctx, "sh", "-c", m.Block.Script)
 	cmd.Dir = m.Dir
@@ -20,6 +34,7 @@ func Run(ctx context.Context, m matcher.Match) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.WaitDelay = killGrace
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("%s %s (%s:%d): %w", m.Block.Type, m.Block.RawPattern, m.Dir, m.Block.Line, err)
