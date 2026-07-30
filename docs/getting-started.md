@@ -106,7 +106,7 @@ Create `~/.envokerc`:
 
 ```
 enter ~/Projects/([^/]+)
-    source venv/bin/activate
+    source "$ENVOKE_DIR/venv/bin/activate"
 
 leave ~/Projects/([^/]+)
     deactivate
@@ -119,7 +119,7 @@ $ envoke allow
 envoke: about to trust /home/you/.envokerc -- review each block below before confirming:
 
   enter ~/Projects/([^/]+) (line 1)
-    source venv/bin/activate
+    source "$ENVOKE_DIR/venv/bin/activate"
 
   leave ~/Projects/([^/]+) (line 4)
     deactivate

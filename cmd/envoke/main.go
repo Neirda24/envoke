@@ -875,6 +875,7 @@ func cmdDebug(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stdout, "  no blocks would fire")
 		return 0
 	}
+	printWorkingDirNote(stdout, to, leaves, enters)
 	for _, m := range leaves {
 		_, _ = fmt.Fprintf(stdout, "  %s %s (line %d: %s)\n", m.Block.Type, m.Dir, m.Block.Line, m.Block.RawPattern)
 		printIndentedScript(stdout, m.Block.Script)
@@ -884,6 +885,33 @@ func cmdDebug(args []string, stdout, stderr io.Writer) int {
 		printIndentedScript(stdout, m.Block.Script)
 	}
 	return 0
+}
+
+// printWorkingDirNote spells out where a matched script actually runs,
+// whenever that is not the directory it matched.
+//
+// The two execution paths genuinely differ, and the difference is invisible
+// otherwise: `envoke exec` runs each block with the matched directory as its
+// working directory, while the shell hook eval's the block in the shell you
+// landed in. Since debug lists the matched directory next to each block, it
+// reads as though relative paths in the script resolve from there — which is
+// true of exec and false of the hook. This is the note that makes the
+// difference visible at the moment someone is debugging a config.
+func printWorkingDirNote(stdout io.Writer, to string, matches ...[]matcher.Match) {
+	differs := false
+	for _, ms := range matches {
+		for _, m := range ms {
+			if m.Dir != to {
+				differs = true
+			}
+		}
+	}
+	if !differs {
+		return
+	}
+	_, _ = fmt.Fprintf(stdout, "  note: via the shell hook these run in %s, where your shell lands;\n", to)
+	_, _ = fmt.Fprintln(stdout, "        via `envoke exec` each runs in the directory it matched.")
+	_, _ = fmt.Fprintln(stdout, "        $ENVOKE_DIR always names the matched directory -- use it for relative paths.")
 }
 
 // printIndentedScript prints a block's script body indented further than the

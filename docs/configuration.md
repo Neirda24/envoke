@@ -52,6 +52,23 @@ Each matched block runs with these environment variables set:
 
 For example, `enter ~/Projects/([^/]+)` exposes the matched project name via `ENVOKE_MATCH_1`, so one generic block can handle every directory under `~/Projects` instead of duplicating config per project.
 
+These variables are scoped to the block that sets them: they are cleared again as soon as its script finishes, so one block never sees another's capture groups and nothing leaks into the processes you start afterwards.
+
+### Where the script runs
+
+**Use `$ENVOKE_DIR` for anything relative — the working directory is not the directory that matched.**
+
+Through the shell hook, a block runs in your own shell, which has already arrived at your destination. The two are the same only when you `cd` exactly onto the matching directory:
+
+```sh
+cd ~/Projects/my-app            # ENVOKE_DIR and the working directory both ~/Projects/my-app
+cd ~/Projects/my-app/cmd/srv    # ENVOKE_DIR is ~/Projects/my-app, you are three levels below it
+```
+
+The pattern `~/Projects/([^/]+)` matches whole path segments, so it still fires exactly once in both cases, for `~/Projects/my-app` — but in the second, `source venv/bin/activate` would look under `cmd/srv`. Write `source "$ENVOKE_DIR/venv/bin/activate"` and it works from anywhere in the tree. `leave` blocks always run from outside the directory they matched, so they never have a usable relative path.
+
+`envoke exec` differs here: it runs each block as a subprocess with the matched directory as its working directory. `envoke debug` points out the discrepancy whenever it applies.
+
 ## Example envokerc
 
 Blocks are separated by a blank line; a line starting with `#` outside a
@@ -62,7 +79,7 @@ block is a comment. Here's a single config combining several common cases:
 
 # --- Python virtualenv, activated per project ---
 enter ~/Projects/([^/]+)
-    source venv/bin/activate
+    source "$ENVOKE_DIR/venv/bin/activate"
 
 leave ~/Projects/([^/]+)
     deactivate

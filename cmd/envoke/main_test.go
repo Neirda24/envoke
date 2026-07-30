@@ -974,6 +974,34 @@ enter /b
 	}
 }
 
+// TestRun_DebugNotesWorkingDirOnlyWhenItDiffers covers the note that makes
+// the exec/shell-hook working-directory split visible. Listing the matched
+// directory next to a block reads as "relative paths resolve from here",
+// which holds for exec and not for the hook.
+func TestRun_DebugNotesWorkingDirOnlyWhenItDiffers(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo hi
+`)
+
+	deep, _, code := runFor(t, "debug", "/", "/a/b/c")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(deep, "$ENVOKE_DIR") {
+		t.Errorf("expected a working-directory note when landing below the match, got %q", deep)
+	}
+
+	exact, _, code := runFor(t, "debug", "/", "/a")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if strings.Contains(exact, "$ENVOKE_DIR") {
+		t.Errorf("no note is warranted when the match is the destination, got %q", exact)
+	}
+}
+
 func TestRun_ShellHookWarnsOnUnsafeConfigPermissions(t *testing.T) {
 	home := isolateHome(t)
 	writeConfig(t, home, `

@@ -23,7 +23,7 @@ echo 'eval "$(envoke shell-init zsh)"' >> ~/.zshrc   # bash, fish, tcsh, powersh
 ```
 # ~/.envokerc
 enter ~/Projects/([^/]+)
-    source venv/bin/activate
+    source "$ENVOKE_DIR/venv/bin/activate"
 
 leave ~/Projects/([^/]+)
     deactivate
