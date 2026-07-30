@@ -79,6 +79,19 @@ func profileFor(shell string) shellProfile {
 	return posixProfile
 }
 
+// posixShells are the names the POSIX profile legitimately serves. "" is one
+// of them because bash's and zsh's generated hooks omit --shell entirely.
+var posixShells = map[string]bool{"": true, "bash": true, "zsh": true}
+
+// IsKnownShell reports whether shell is a dialect Render can actually speak.
+// Render itself still falls back to POSIX for anything else, which is right
+// for a library but wrong for a CLI flag: a typo would otherwise emit
+// `export` into a fish or tcsh session, where it is a syntax error on every
+// directory change.
+func IsKnownShell(shell string) bool {
+	return posixShells[shell] || profiles[shell].export != nil
+}
+
 func posixExport(name, value string) string {
 	return fmt.Sprintf("export %s=%s", name, posixQuote(value))
 }

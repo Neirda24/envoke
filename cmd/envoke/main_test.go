@@ -395,6 +395,32 @@ enter /a
 	}
 }
 
+// TestRun_ShellHookUnknownShellIsRejected guards the CLI boundary rather
+// than Render's own behavior: Render deliberately falls back to POSIX for an
+// unknown dialect, which would mean a typo silently feeds `export` to a fish
+// or tcsh session on every directory change.
+func TestRun_ShellHookUnknownShellIsRejected(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, `
+enter /a
+    echo hi
+`)
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+
+	stdout, stderr, code := runFor(t, "shell-hook", "--shell", "fsh", "/", "/a")
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if stdout != "" {
+		t.Errorf("nothing may reach the shell for eval, got %q", stdout)
+	}
+	if !strings.Contains(stderr, `unknown shell "fsh"`) {
+		t.Errorf("expected the rejected name in the error, got %q", stderr)
+	}
+}
+
 func TestRun_AllowLocatedConfig(t *testing.T) {
 	home := isolateHome(t)
 	writeConfig(t, home, "enter /a\n    echo hi\n")

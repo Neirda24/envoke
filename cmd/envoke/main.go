@@ -16,9 +16,11 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 
 	"github.com/Neirda24/envoke/internal/config"
 	"github.com/Neirda24/envoke/internal/envoke"
@@ -253,6 +255,10 @@ func cmdShellHook(args []string, stdout, stderr io.Writer) int {
 	shell := flags.String("shell", "", "shell dialect to render for (bash, zsh, fish, tcsh, powershell)")
 	if ok, code := parseFlags(flags, args, shellHookUsage, stderr); !ok {
 		return code
+	}
+	if !executor.IsKnownShell(*shell) {
+		_, _ = fmt.Fprintf(stderr, "envoke: unknown shell %q (supported: bash, zsh, fish, tcsh, powershell)\n", *shell)
+		return 2
 	}
 
 	var from, to string
@@ -787,7 +793,19 @@ func cmdExec(args []string, stderr io.Writer) int {
 
 	warnUnsafePermissions(stderr, path)
 
-	if err := envoke.Transition(context.Background(), path, from, to); err != nil {
+	// Without this, Go's default handling terminates envoke on the spot and
+	// leaves the block's `sh` running — visible when exec is driven from a
+	// script or CI runner that sends SIGTERM. Cancelling the context instead
+	// interrupts the script and gives it killGrace to clean up.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := envoke.Transition(ctx, path, from, to); err != nil {
+		if ctx.Err() != nil {
+			// Conventional exit status for "died from a signal", and the
+			// signal is not news to whoever sent it.
+			return 130
+		}
 		if errors.Is(err, envoke.ErrUntrusted) {
 			_, _ = fmt.Fprintf(stderr, "envoke: %v: run `envoke allow %s`\n", err, path)
 			return 1
