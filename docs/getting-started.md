@@ -15,9 +15,6 @@ Each release's `checksums.txt` is signed keylessly with
 [cosign](https://docs.sigstore.dev/cosign/) — see the release notes for the
 exact verification command.
 
-Not yet published: a **Scoop** bucket (Windows) and `.deb`/`.rpm` **Linux
-packages** via [nfpm](https://nfpm.goreleaser.com/).
-
 ## Shell integration
 
 Add one of these to your shell's rc file, matching your shell:

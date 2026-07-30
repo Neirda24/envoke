@@ -21,12 +21,13 @@ bash/zsh/fish/tcsh/PowerShell, the `envoke allow` trust mechanism, `envoke
 debug` dry-run diagnostics, and a Dagger-based CI pipeline (`.dagger/`) that
 also audits the GitHub Actions workflows themselves (zizmor, actions-up).
 
-Packaging: GitHub Releases, Homebrew tap, and tag-triggered release CI are
-live and have been exercised against real tagged releases. A Scoop bucket
-and `.deb`/`.rpm` (nfpm) packaging are wired into `.goreleaser.yaml` but not
-yet exercised against a real release — pending the one-time manual setup
-in Packaging below (creating the `scoop-bucket` repo and granting the
-existing tap GitHub App access to it).
+Packaging is fully live and exercised against real tagged releases: GitHub
+Releases, the Homebrew tap, the Scoop bucket, `.deb`/`.rpm` (nfpm) packages,
+per-archive SBOMs, and tag-triggered release CI. Verified against v0.1.4 —
+`Neirda24/scoop-bucket` holds a `bucket/envoke.json` manifest for that tag,
+and the release carries both `.deb` and `.rpm` assets. The one-time manual
+setup (creating `scoop-bucket`, granting the tap GitHub App access to it)
+is done; nothing in Packaging below is pending any more.
 
 Build in the order the codebase already establishes — matching engine, then
 shell integration, then trust, then packaging — rather than adding polish
@@ -280,10 +281,9 @@ to `Neirda24/homebrew-tap` plus the Scoop manifest (`scoops:`) to
 `Neirda24/scoop-bucket`. Both pushes share one short-lived GitHub App
 installation token scoped to just those two repos (minted per-run in
 `release.yml`, not a long-lived cross-repo PAT) — the ambient per-job
-`GITHUB_TOKEN` only ever needs write access to `envoke` itself. Unlike the
-Homebrew tap, `scoop-bucket` isn't provisioned yet — see the repo's
-`.goreleaser.yaml` for what a first `Publish` run needs the App's
-installation to already have access to. `release.footer` in
+`GITHUB_TOKEN` only ever needs write access to `envoke` itself. Both target repos are
+provisioned and the App's installation already covers them, so a `Publish`
+run needs no manual setup. `release.footer` in
 `.goreleaser.yaml` appends install/upgrade instructions (Homebrew, Scoop,
 `.deb`/`.rpm`, manual download, `go install`) to every release's notes —
 update this template, not the README, if a new install method ships.
