@@ -262,7 +262,13 @@ public API to commit to yet):
   check -m .dagger` on push/PR to `main` and daily; `dagger.gen.go`/
   `internal/dagger`/`internal/telemetry` are generated and gitignored —
   regenerate with `dagger develop -m .dagger` after changing `New`'s
-  signature, don't hand-edit.
+  signature, don't hand-edit. Consequence worth knowing: an IDE will report
+  *"Struct Envoke has methods on both value and pointer receivers"* on this
+  package. Every method in `main.go` takes `*Envoke`; the sole value
+  receiver is `func (r Envoke) MarshalJSON()` in the generated
+  `dagger.gen.go`. It is neither actionable (the file is regenerated and
+  untracked) nor a bug (dagger only ever holds a `*Envoke`). Suppress it
+  locally if it bothers you — there is nothing here to commit.
 
 ## Packaging (`.goreleaser.yaml` + `.dagger`)
 
