@@ -16,7 +16,43 @@ import (
 // directory on the path between them).
 type Match struct {
 	Block config.Block
-	Dir   string
+	// Dir is the directory in the platform's own form (backslashes on
+	// Windows), because it is used as a working directory and handed to
+	// scripts as ENVOKE_DIR.
+	Dir string
+	// Groups holds the pattern's submatches, Groups[0] being the whole
+	// match, captured against the slash-normalized form of Dir (see
+	// MatchPath). Storing them means the pattern runs once per candidate
+	// directory instead of once to test and again to extract — matching is
+	// on the hot path of every single `cd`.
+	Groups []string
+}
+
+// NewMatch runs b's pattern against dir once, returning the resulting Match
+// and whether it matched at all. Everything that builds a Match goes through
+// here so the "captured against the normalized path" rule can't be
+// implemented differently in two places.
+func NewMatch(b config.Block, dir string) (Match, bool) {
+	groups := b.Pattern.FindStringSubmatch(MatchPath(dir))
+	if groups == nil {
+		return Match{}, false
+	}
+	return Match{Block: b, Dir: dir, Groups: groups}, true
+}
+
+// MatchPath is the form of a path that patterns are matched against:
+// forward-slash separated, whatever the platform uses natively.
+//
+// Config patterns are written with `/` — they're regexes over paths, and
+// `\` is the regex escape character, so nobody writes a Windows-style
+// pattern. Without this, filepath.Dir's backslash output on Windows could
+// never match any pattern a user would plausibly write, which made the
+// whole matching engine a no-op there. filepath.ToSlash is deliberately the
+// mechanism rather than a blind ReplaceAll: `\` is a perfectly legal
+// character in a Unix filename, and rewriting it there would corrupt real
+// directory names.
+func MatchPath(dir string) string {
+	return filepath.ToSlash(dir)
 }
 
 // Resolve computes which leave blocks fire walking out of from, and which
@@ -34,21 +70,26 @@ func Resolve(cfg *config.Config, from, to string) (leaves, enters []Match, err e
 		return nil, nil, err
 	}
 
-	for _, dir := range left {
-		for _, b := range cfg.Blocks {
-			if b.Type == config.Leave && b.Pattern.MatchString(dir) {
-				leaves = append(leaves, Match{Block: b, Dir: dir})
-			}
-		}
-	}
-	for _, dir := range entered {
-		for _, b := range cfg.Blocks {
-			if b.Type == config.Enter && b.Pattern.MatchString(dir) {
-				enters = append(enters, Match{Block: b, Dir: dir})
-			}
-		}
-	}
+	leaves = collect(cfg, left, config.Leave)
+	enters = collect(cfg, entered, config.Enter)
 	return leaves, enters, nil
+}
+
+// collect returns every block of the given type matching any of dirs, in
+// (directory, declaration) order.
+func collect(cfg *config.Config, dirs []string, want config.BlockType) []Match {
+	var matches []Match
+	for _, dir := range dirs {
+		for _, b := range cfg.Blocks {
+			if b.Type != want {
+				continue
+			}
+			if m, ok := NewMatch(b, dir); ok {
+				matches = append(matches, m)
+			}
+		}
+	}
+	return matches
 }
 
 // Transitions splits a directory change from -> to into the ancestor

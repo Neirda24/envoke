@@ -3,10 +3,19 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
 func TestUnsafePermissions_BitmaskCases(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Windows has no group/other write bits: Go synthesises 0666 or
+		// 0444 from the read-only attribute, so every case here would be
+		// meaningless rather than merely different. The warning this backs
+		// is a Unix multi-user concern in the first place.
+		t.Skip("Unix permission bits are not modelled on Windows")
+	}
+
 	tests := []struct {
 		name       string
 		mode       os.FileMode

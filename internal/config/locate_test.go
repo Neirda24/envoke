@@ -3,30 +3,49 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
-// isolateEnv points HOME at a fresh temp dir and clears the env vars Locate
-// consults, so each test starts from a known-empty state.
+// isolateEnv points the home directory at a fresh temp dir and clears the
+// env vars Locate consults, so each test starts from a known-empty state.
+//
+// Both HOME and USERPROFILE are set because os.UserHomeDir reads a
+// different one per platform (USERPROFILE on Windows, HOME elsewhere).
+// Setting only HOME would leave these tests quietly pointing at the real
+// home directory on Windows.
 func isolateEnv(t *testing.T) (home string) {
 	t.Helper()
 	home = t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("ENVOKERC", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
 	return home
 }
 
+// absTestPath makes a Unix-style literal absolute on this platform, the same
+// trick internal/matcher's tp uses -- Locate hands $ENVOKERC back verbatim,
+// but a test asserting on it should still use a path that is plausible for
+// the platform it runs on.
+func absTestPath(p string) string {
+	if runtime.GOOS == "windows" {
+		return "C:" + p
+	}
+	return p
+}
+
 func TestLocate_EnvokercEnvVarWinsEvenIfMissing(t *testing.T) {
 	isolateEnv(t)
-	t.Setenv("ENVOKERC", "/somewhere/custom-config")
+	want := absTestPath("/somewhere/custom-config")
+	t.Setenv("ENVOKERC", want)
 
 	path, found, err := Locate()
 	if err != nil {
 		t.Fatalf("Locate: %v", err)
 	}
-	if !found || path != "/somewhere/custom-config" {
-		t.Errorf("Locate() = (%q, %v), want (/somewhere/custom-config, true)", path, found)
+	if !found || path != want {
+		t.Errorf("Locate() = (%q, %v), want (%q, true)", path, found, want)
 	}
 }
 

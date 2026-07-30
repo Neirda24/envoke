@@ -15,9 +15,6 @@ Each release's `checksums.txt` is signed keylessly with
 [cosign](https://docs.sigstore.dev/cosign/) — see the release notes for the
 exact verification command.
 
-Not yet published: a **Scoop** bucket (Windows) and `.deb`/`.rpm` **Linux
-packages** via [nfpm](https://nfpm.goreleaser.com/).
-
 ## Shell integration
 
 Add one of these to your shell's rc file, matching your shell:
@@ -26,6 +23,12 @@ Add one of these to your shell's rc file, matching your shell:
 # bash/zsh
 eval "$(envoke shell-init bash)"   # or zsh
 ```
+
+`envoke shell-init` with no argument guesses the shell from `$SHELL`, which
+is usually what you want when adding the line to your own rc file. It never
+falls back to a default it isn't sure about: an unrecognised `$SHELL` is an
+error telling you to name the shell, rather than a bash hook quietly written
+into a fish config.
 
 ```fish
 # fish
@@ -45,6 +48,47 @@ envoke shell-init tcsh | source /dev/stdin
 ```
 
 Restart your shell (or re-source your rc file) after adding the hook.
+
+### Tab completion
+
+Optional, and separate from the hook above:
+
+```sh
+envoke completion bash >> ~/.bashrc          # or: source <(envoke completion bash)
+envoke completion zsh  > "${fpath[1]}/_envoke"   # zsh, with compinit already set up
+envoke completion fish > ~/.config/fish/completions/envoke.fish
+```
+
+With no argument it guesses from `$SHELL`, like `shell-init`. Only bash, zsh
+and fish are covered — tcsh and PowerShell would need a half-working script
+to be worth shipping, so they get an explicit error instead.
+
+### A note on Windows
+
+Windows binaries are published (and a Scoop manifest with them), and the
+PowerShell hook is generated the same way as the others. Two things are
+worth knowing before you rely on it:
+
+- **Write patterns with `/`, not `\`.** Patterns are regexes, where `\` is
+  the escape character, so `C:\Users\you` would not mean what it looks like.
+  envoke normalizes the directories it tests to forward slashes, so
+  `C:/Users/you/Projects/([^/]+)` is the form that works. `ENVOKE_DIR` is
+  still handed to your script in native `C:\...` form; the `ENVOKE_MATCH*`
+  capture variables come from the normalized path.
+- **Matching is case-sensitive**, while Windows paths generally are not. If
+  that matters for a rule, write the pattern case-insensitively with
+  `(?i)`.
+- [`envoke exec`](non-interactive.md) runs blocks through `sh -c` and so
+  needs a POSIX shell on `PATH` (Git Bash, WSL, MSYS2). The shell hook
+  itself has no such requirement.
+
+Windows is tested on a real `windows-latest` CI runner, not just
+cross-compiled: the matching engine, config parsing and the trust store all
+run their full suites there. The end-to-end tests that drive bash/zsh/fish/
+tcsh still run on Linux and macOS only, since those shells aren't what a
+Windows user is running anyway. Please
+[open an issue](https://github.com/Neirda24/envoke/issues) if something
+behaves differently than documented here.
 
 ## Checking your version
 

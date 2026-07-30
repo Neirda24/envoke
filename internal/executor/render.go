@@ -84,7 +84,7 @@ func fishExport(name, value string) string {
 // no `export`/`VAR=value` syntax at all, so eval'ing posixExport's output in
 // tcsh is a syntax error on the very first line.
 func tcshExport(name, value string) string {
-	return fmt.Sprintf("setenv %s %s", name, posixQuote(value))
+	return fmt.Sprintf("setenv %s %s", name, tcshQuote(value))
 }
 
 func powershellExport(name, value string) string {
@@ -94,12 +94,27 @@ func powershellExport(name, value string) string {
 // posixQuote wraps s in single quotes so it's always emitted as a literal
 // POSIX shell value, regardless of its contents — including embedded single
 // quotes, spaces, or `$`/backtick metacharacters that would otherwise be
-// interpreted by the shell evaluating Render's output. tcsh's csh-family
-// quoting accepts the same close-quote/escape/reopen-quote trick for an
-// embedded `'` (verified against a real tcsh), so tcshExport reuses this
-// instead of duplicating it.
+// interpreted by the shell evaluating Render's output.
 func posixQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// tcshQuote is posixQuote plus csh's own extra hazard: csh performs history
+// expansion at the lexer, *before* quote processing, so a `!` is expanded
+// even inside single quotes. A directory named `foo!bar` therefore made
+// tcsh abort the whole sourced block with "bar: Event not found." — the
+// ENVOKE_* variables never got set and the matched script never ran. A
+// leading backslash suppresses it (verified against a real tcsh, including
+// for a value that already contains a literal backslash, since `\` is
+// otherwise not an escape inside csh single quotes).
+//
+// Known limitation, also verified: a literal newline cannot be represented
+// at all in a csh single-quoted string — not even escaped with a trailing
+// backslash — so a directory name containing one is unsupported under tcsh.
+// It fails loudly ("Unmatched '") rather than silently doing the wrong
+// thing, which is the acceptable outcome for a case this exotic.
+func tcshQuote(s string) string {
+	return strings.ReplaceAll(posixQuote(s), "!", `\!`)
 }
 
 // fishQuote wraps s in single quotes using fish's own escaping rule: inside

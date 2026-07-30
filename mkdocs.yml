@@ -44,6 +44,7 @@ nav:
   - Getting Started: getting-started.md
   - Configuration: configuration.md
   - Trust Model: trust.md
+  - Non-interactive Use: non-interactive.md
   - Debugging: debugging.md
   - Uninstalling: uninstall.md
   - Design Notes: design-notes.md
