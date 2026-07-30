@@ -17,8 +17,8 @@ func TestRender_NoMatchesIsEmpty(t *testing.T) {
 }
 
 func TestRender_OrdersLeavesBeforeEnters(t *testing.T) {
-	leave := matcher.Match{Dir: "/a", Block: config.Block{Type: config.Leave, Pattern: regexp.MustCompile(`^/a$`), Script: "echo leave"}}
-	enter := matcher.Match{Dir: "/b", Block: config.Block{Type: config.Enter, Pattern: regexp.MustCompile(`^/b$`), Script: "echo enter"}}
+	leave := mustMatch(t, "/a", config.Block{Type: config.Leave, Pattern: regexp.MustCompile(`^/a$`), Script: "echo leave"})
+	enter := mustMatch(t, "/b", config.Block{Type: config.Enter, Pattern: regexp.MustCompile(`^/b$`), Script: "echo enter"})
 
 	got := Render("bash", []matcher.Match{leave}, []matcher.Match{enter})
 	leaveIdx := strings.Index(got, "echo leave")
@@ -29,14 +29,11 @@ func TestRender_OrdersLeavesBeforeEnters(t *testing.T) {
 }
 
 func TestRender_ExportsMatchVarsBeforeScript(t *testing.T) {
-	m := matcher.Match{
-		Dir: "/Projects/foo",
-		Block: config.Block{
-			Type:    config.Enter,
-			Pattern: regexp.MustCompile(`^/Projects/([^/]+)$`),
-			Script:  "echo hi",
-		},
-	}
+	m := mustMatch(t, "/Projects/foo", config.Block{
+		Type:    config.Enter,
+		Pattern: regexp.MustCompile(`^/Projects/([^/]+)$`),
+		Script:  "echo hi",
+	})
 	got := Render("bash", nil, []matcher.Match{m})
 
 	for _, want := range []string{
@@ -55,7 +52,7 @@ func TestRender_ExportsMatchVarsBeforeScript(t *testing.T) {
 }
 
 func TestRender_UnrecognizedShellFallsBackToPosix(t *testing.T) {
-	m := matcher.Match{Dir: "/a", Block: config.Block{Type: config.Enter, Pattern: regexp.MustCompile(`^/a$`), Script: "echo hi"}}
+	m := mustMatch(t, "/a", config.Block{Type: config.Enter, Pattern: regexp.MustCompile(`^/a$`), Script: "echo hi"})
 	for _, shell := range []string{"", "zsh", "ksh", "bogus"} {
 		got := Render(shell, nil, []matcher.Match{m})
 		if !strings.Contains(got, "export ENVOKE_DIR='/a'") {
@@ -65,7 +62,7 @@ func TestRender_UnrecognizedShellFallsBackToPosix(t *testing.T) {
 }
 
 func TestRender_FishUsesSetGx(t *testing.T) {
-	m := matcher.Match{Dir: "/a", Block: config.Block{Type: config.Enter, Pattern: regexp.MustCompile(`^/a$`), Script: "echo hi"}}
+	m := mustMatch(t, "/a", config.Block{Type: config.Enter, Pattern: regexp.MustCompile(`^/a$`), Script: "echo hi"})
 	got := Render("fish", nil, []matcher.Match{m})
 	if !strings.Contains(got, "set -gx ENVOKE_DIR '/a'") {
 		t.Errorf("expected fish `set -gx` syntax, got:\n%s", got)
@@ -76,7 +73,7 @@ func TestRender_FishUsesSetGx(t *testing.T) {
 }
 
 func TestRender_TcshUsesSetenv(t *testing.T) {
-	m := matcher.Match{Dir: "/a", Block: config.Block{Type: config.Enter, Pattern: regexp.MustCompile(`^/a$`), Script: "echo hi"}}
+	m := mustMatch(t, "/a", config.Block{Type: config.Enter, Pattern: regexp.MustCompile(`^/a$`), Script: "echo hi"})
 	got := Render("tcsh", nil, []matcher.Match{m})
 	if !strings.Contains(got, "setenv ENVOKE_DIR '/a'") {
 		t.Errorf("expected tcsh `setenv` syntax, got:\n%s", got)
@@ -87,7 +84,7 @@ func TestRender_TcshUsesSetenv(t *testing.T) {
 }
 
 func TestRender_PowershellUsesEnvDrive(t *testing.T) {
-	m := matcher.Match{Dir: "/a", Block: config.Block{Type: config.Enter, Pattern: regexp.MustCompile(`^/a$`), Script: "echo hi"}}
+	m := mustMatch(t, "/a", config.Block{Type: config.Enter, Pattern: regexp.MustCompile(`^/a$`), Script: "echo hi"})
 	got := Render("powershell", nil, []matcher.Match{m})
 	if !strings.Contains(got, "$env:ENVOKE_DIR = '/a'") {
 		t.Errorf("expected powershell `$env:` syntax, got:\n%s", got)
@@ -177,14 +174,11 @@ func TestRender_QuotingRoundTripsThroughRealShells(t *testing.T) {
 				t.Run(base, func(t *testing.T) {
 					const parent = "/has space"
 					dir := parent + "/" + base
-					m := matcher.Match{
-						Dir: dir,
-						Block: config.Block{
-							Type:    config.Enter,
-							Pattern: regexp.MustCompile("^" + regexp.QuoteMeta(parent) + "/(.+)$"),
-							Script:  rs.echo,
-						},
-					}
+					m := mustMatch(t, dir, config.Block{
+						Type:    config.Enter,
+						Pattern: regexp.MustCompile("^" + regexp.QuoteMeta(parent) + "/(.+)$"),
+						Script:  rs.echo,
+					})
 
 					script := Render(rs.profile, nil, []matcher.Match{m})
 					out, err := rs.command(script).CombinedOutput()

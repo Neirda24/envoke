@@ -46,6 +46,31 @@ envoke shell-init tcsh | source /dev/stdin
 
 Restart your shell (or re-source your rc file) after adding the hook.
 
+### A note on Windows
+
+Windows binaries are published (and a Scoop manifest with them), and the
+PowerShell hook is generated the same way as the others. Two things are
+worth knowing before you rely on it:
+
+- **Write patterns with `/`, not `\`.** Patterns are regexes, where `\` is
+  the escape character, so `C:\Users\you` would not mean what it looks like.
+  envoke normalizes the directories it tests to forward slashes, so
+  `C:/Users/you/Projects/([^/]+)` is the form that works. `ENVOKE_DIR` is
+  still handed to your script in native `C:\...` form; the `ENVOKE_MATCH*`
+  capture variables come from the normalized path.
+- **Matching is case-sensitive**, while Windows paths generally are not. If
+  that matters for a rule, write the pattern case-insensitively with
+  `(?i)`.
+- [`envoke exec`](non-interactive.md) runs blocks through `sh -c` and so
+  needs a POSIX shell on `PATH` (Git Bash, WSL, MSYS2). The shell hook
+  itself has no such requirement.
+
+Windows is verified to compile and is covered by unit tests for the path
+handling above, but the end-to-end suites that drive real shells run on
+Linux only — so treat Windows as supported-but-less-travelled, and please
+[open an issue](https://github.com/Neirda24/envoke/issues) if something
+behaves differently than documented here.
+
 ## Checking your version
 
 ```sh

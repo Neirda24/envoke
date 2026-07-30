@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -17,6 +18,12 @@ import (
 //   - A leading "~" (as in "~/Projects/foo" or a bare "~") expands to the
 //     current user's home directory.
 //   - "$VAR" / "${VAR}" expands to the environment variable's value.
+//
+// Both substituted values are also slash-normalized (filepath.ToSlash), for
+// the same reason matcher.MatchPath normalizes the paths being tested: the
+// pattern text around them is written with "/", so a Windows home directory
+// of `C:\Users\you` has to become `C:/Users/you` or `~/Projects` could never
+// match anything. On Unix this is a no-op.
 //
 // The result is then wrapped as "^(?:...)$" so matching is always a full
 // match against a whole directory path — this is what makes matching
@@ -61,7 +68,7 @@ func expandHome(pattern string, homeDir func() (string, error)) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("expand ~ in pattern %q: %w", pattern, err)
 	}
-	return regexp.QuoteMeta(home) + pattern[1:], nil
+	return regexp.QuoteMeta(filepath.ToSlash(home)) + pattern[1:], nil
 }
 
 // expandEnv replaces $VAR / ${VAR} references with their environment value,
@@ -98,7 +105,7 @@ func expandEnv(pattern string) (expanded string, missing []string) {
 		// An explicitly-empty variable is a legitimate value, so this
 		// distinguishes "set to empty" from "not set at all".
 		if value, defined := os.LookupEnv(name); defined {
-			b.WriteString(regexp.QuoteMeta(value))
+			b.WriteString(regexp.QuoteMeta(filepath.ToSlash(value)))
 			continue
 		}
 		if !seen[name] {

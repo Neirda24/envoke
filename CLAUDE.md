@@ -87,7 +87,18 @@ public API to commit to yet):
   directories left (deepest-first) and entered (shallowest-first) — jumping
   straight from `/a` to `/a/x/y/z` still fires `/a/x` and `/a/x/y`'s rules.
   `Resolve(cfg, from, to)` runs every block's pattern against the relevant
-  directories and returns ordered `[]Match`.
+  directories and returns ordered `[]Match`. Every `Match` is built by
+  `NewMatch`, which runs the pattern **once** and stores the submatches in
+  `Match.Groups` — `executor.matchVars` reads them from there rather than
+  re-running the regex, since this is the hot path of every `cd`. Patterns
+  are matched against `MatchPath(dir)` (`filepath.ToSlash`), not `dir`:
+  patterns are regexes and are therefore written with `/`, so on Windows
+  `filepath.Dir`'s backslashes could never match anything a user would
+  write. It must stay `filepath.ToSlash` and never a plain `ReplaceAll` —
+  `\` is legal in a Unix filename, and rewriting it there would corrupt
+  real directory names (guarded by `matchpath_unix_test.go`). `Match.Dir`
+  stays in native form since it's used as a working directory and exported
+  as `ENVOKE_DIR`.
 - **`internal/executor`** — two execution models sharing `matchVars` (the
   `ENVOKE_DIR`/`ENVOKE_TYPE`/`ENVOKE_MATCH`/`ENVOKE_MATCH_N` a matched block
   sees):
@@ -210,6 +221,11 @@ public API to commit to yet):
   a dependency of the main module. `main.go` defines checks (`// +check`
   pragma, run via `dagger check -m .dagger`): `fmt`/`vet`/`build`/`test`
   mirror the manual commands in CONTRIBUTING.md; `lint` runs golangci-lint;
+  `cross-build` compiles + vets every OS/arch `.goreleaser.yaml` ships
+  (linux/darwin/windows × amd64/arm64), which is also the only thing that
+  type-checks the GOOS-gated test files the Linux containers never load —
+  it is a *compile*-level guarantee only, nothing proves runtime behaviour
+  off Linux;
   `test-shell-{bash,zsh,fish,tcsh,powershell}` each build a container with
   exactly one shell installed and run `internal/shellinit`'s **and
   `internal/executor`'s** suites in it (both emit shell code, both `t.Skip`

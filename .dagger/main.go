@@ -159,6 +159,41 @@ func (m *Envoke) Build(ctx context.Context) error {
 	return err
 }
 
+// CrossBuild compiles and vets every OS/arch .goreleaser.yaml publishes,
+// so a platform that ships as a release artifact can't silently stop
+// building. It also type-checks the GOOS-specific test files (via `go vet`,
+// which loads them) that the Linux test containers never see — notably
+// internal/matcher's Windows path-separator tests.
+//
+// This is a compile-level guarantee only. The behavioural suites all run on
+// Linux; nothing here proves envoke behaves correctly on Windows or macOS.
+//
+// +check
+func (m *Envoke) CrossBuild(ctx context.Context) error {
+	targets := []struct{ goos, goarch string }{
+		{"linux", "amd64"}, {"linux", "arm64"},
+		{"darwin", "amd64"}, {"darwin", "arm64"},
+		{"windows", "amd64"}, {"windows", "arm64"},
+	}
+
+	c := m.withSource(m.goBase())
+	for _, t := range targets {
+		// CGO off: cross-compiling with cgo would need a cross toolchain,
+		// and envoke is a pure-Go, dependency-free binary anyway (the race
+		// detector in Test is the only thing that needs cgo).
+		staged := c.
+			WithEnvVariable("CGO_ENABLED", "0").
+			WithEnvVariable("GOOS", t.goos).
+			WithEnvVariable("GOARCH", t.goarch).
+			WithExec([]string{"go", "build", "./..."}).
+			WithExec([]string{"go", "vet", "./..."})
+		if _, err := staged.Sync(ctx); err != nil {
+			return fmt.Errorf("%s/%s: %w", t.goos, t.goarch, err)
+		}
+	}
+	return nil
+}
+
 // Test runs the full test suite with the race detector.
 //
 // +check
