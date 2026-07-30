@@ -268,7 +268,7 @@ func PreviousContent(configPath string) (content string, ok bool, err error) {
 	}
 	b, err := os.ReadFile(contentPath(recPath))
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return "", false, nil
 		}
 		return "", false, fmt.Errorf("trust: %w", err)
@@ -283,7 +283,7 @@ func readRecord(configPath string) (string, error) {
 	}
 	b, err := os.ReadFile(recPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return "", nil
 		}
 		return "", fmt.Errorf("trust: %w", err)
@@ -329,6 +329,36 @@ func pathPath(recPath string) string {
 func hashContent(content []byte) string {
 	sum := sha256.Sum256(content)
 	return hex.EncodeToString(sum[:])
+}
+
+// UnsafeStorePermissions reports whether the trust store directory is
+// writable by group or other. That matters more than the config's own
+// permissions: anyone who can write here can drop in a record that makes
+// any config read as trusted, which forges an approval the user never gave
+// — the store is the root of the whole trust mechanism.
+//
+// It's checked rather than enforced because os.MkdirAll only applies its
+// mode to directories it actually creates. A pre-existing
+// ~/.local/share/envoke (or a $XDG_DATA_HOME with loose permissions) keeps
+// whatever mode it already had, so the 0o700 in Allow is not the guarantee
+// it looks like.
+//
+// unsafe is false, with no error, when the store doesn't exist yet — that's
+// the normal state before the first `envoke allow`.
+func UnsafeStorePermissions() (unsafe bool, mode os.FileMode, path string, err error) {
+	dir, err := storeDir()
+	if err != nil {
+		return false, 0, "", err
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, 0, dir, nil
+		}
+		return false, 0, dir, fmt.Errorf("trust: %w", err)
+	}
+	perm := info.Mode().Perm()
+	return perm&0o022 != 0, perm, dir, nil
 }
 
 // storeDir is $XDG_DATA_HOME/envoke/allow, or ~/.local/share/envoke/allow

@@ -403,7 +403,7 @@ func cmdAllow(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 		return 0
 	}
 
-	if hadPrevious {
+	if hadPrevious && canDiff(previous, string(current)) {
 		printDiff(stdout, path, previous, string(current))
 	} else {
 		printBlocksForReview(stdout, path, cfg.Blocks)
@@ -481,21 +481,26 @@ func printDiff(stdout io.Writer, path, previous, current string) {
 // (see CLAUDE.md's zero-non-stdlib-dependency rule).
 func diffLines(oldLines, newLines []string) []string {
 	n, m := len(oldLines), len(newLines)
-	// lcs[i][j] = length of the longest common subsequence of
-	// oldLines[i:] and newLines[j:].
-	lcs := make([][]int, n+1)
-	for i := range lcs {
-		lcs[i] = make([]int, m+1)
-	}
+
+	// lcs is the (n+1)x(m+1) DP table flattened into one allocation:
+	// lcs[i*(m+1)+j] is the length of the longest common subsequence of
+	// oldLines[i:] and newLines[j:]. One contiguous block rather than n+1
+	// separate row slices -- same asymptotics, one allocation instead of
+	// n+2, and the inner loop walks memory in order. int32 because the
+	// value is bounded by the line count, which diffCap keeps well inside
+	// it, halving the table's footprint.
+	stride := m + 1
+	lcs := make([]int32, (n+1)*stride)
 	for i := n - 1; i >= 0; i-- {
+		row, next := i*stride, (i+1)*stride
 		for j := m - 1; j >= 0; j-- {
 			switch {
 			case oldLines[i] == newLines[j]:
-				lcs[i][j] = lcs[i+1][j+1] + 1
-			case lcs[i+1][j] >= lcs[i][j+1]:
-				lcs[i][j] = lcs[i+1][j]
+				lcs[row+j] = lcs[next+j+1] + 1
+			case lcs[next+j] >= lcs[row+j+1]:
+				lcs[row+j] = lcs[next+j]
 			default:
-				lcs[i][j] = lcs[i][j+1]
+				lcs[row+j] = lcs[row+j+1]
 			}
 		}
 	}
@@ -507,7 +512,7 @@ func diffLines(oldLines, newLines []string) []string {
 		case oldLines[i] == newLines[j]:
 			i++
 			j++
-		case lcs[i+1][j] >= lcs[i][j+1]:
+		case lcs[(i+1)*stride+j] >= lcs[i*stride+j+1]:
 			out = append(out, "- "+oldLines[i])
 			i++
 		default:
@@ -522,6 +527,23 @@ func diffLines(oldLines, newLines []string) []string {
 		out = append(out, "+ "+newLines[j])
 	}
 	return out
+}
+
+// diffCap bounds the LCS table. The algorithm is O(n*m) in both time and
+// memory, and while "config files are small" is true of every config anyone
+// would write by hand, nothing enforces it -- the parser accepts any number
+// of lines, and a config that grew a large generated block (or simply had
+// something appended to it) would make `envoke allow` allocate a table
+// quadratic in its size. At this cap the table is 2000*2000 int32 = 16 MiB,
+// which is the most an interactive approval prompt has any business
+// reserving. Beyond it, cmdAllow shows the full block dump instead: less
+// convenient, but bounded and never wrong.
+const diffCap = 2000
+
+// canDiff reports whether a line-level diff is worth attempting between two
+// config versions, given diffCap.
+func canDiff(previous, current string) bool {
+	return strings.Count(previous, "\n") < diffCap && strings.Count(current, "\n") < diffCap
 }
 
 // cmdExec runs the blocks matching a directory change in a subprocess each,
@@ -827,11 +849,18 @@ func printIndentedScript(stdout io.Writer, script string) {
 // silently ignored here, since the caller's own config.Locate/ParseFile call
 // already handles a genuinely missing or unreadable file.
 func warnUnsafePermissions(stderr io.Writer, path string) {
-	unsafe, mode, err := config.UnsafePermissions(path)
-	if err != nil || !unsafe {
-		return
+	if unsafe, mode, err := config.UnsafePermissions(path); err == nil && unsafe {
+		_, _ = fmt.Fprintf(stderr, "envoke: warning: %s is writable by group/other (mode %o) -- consider tightening its permissions\n", path, mode)
 	}
-	_, _ = fmt.Fprintf(stderr, "envoke: warning: %s is writable by group/other (mode %o) -- consider tightening its permissions\n", path, mode)
+
+	// The store matters more than the config it describes: a writable store
+	// lets someone forge an approval outright, rather than merely tamper
+	// with a config whose next edit would revoke its own trust. It isn't
+	// covered by Allow's 0o700, because os.MkdirAll only applies its mode to
+	// directories it actually creates.
+	if unsafe, mode, dir, err := trust.UnsafeStorePermissions(); err == nil && unsafe {
+		_, _ = fmt.Fprintf(stderr, "envoke: warning: the trust store %s is writable by group/other (mode %o) -- anyone who can write there can forge an approval; run `chmod go-w %s`\n", dir, mode, dir)
+	}
 }
 
 func usage(w io.Writer) {

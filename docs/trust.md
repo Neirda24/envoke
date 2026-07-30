@@ -167,6 +167,20 @@ envoke: warning: /home/you/.envokerc is writable by group/other (mode 664) -- co
 This is a warning, not a block — fix it with `chmod go-w ~/.envokerc` if you
 see it unexpectedly.
 
+The same check runs against the **trust store directory** itself, and that
+one matters more:
+
+```
+envoke: warning: the trust store /home/you/.local/share/envoke/allow is writable by group/other (mode 777) -- anyone who can write there can forge an approval; run `chmod go-w ...`
+```
+
+A writable config can be tampered with, but the tampering revokes its own
+trust — the content hash stops matching. A writable *store* lets someone
+drop in a record that makes any config read as trusted, forging an approval
+you never gave. envoke creates the store `0700`, but that only applies to
+directories it actually creates: a pre-existing `~/.local/share` tree, or an
+`$XDG_DATA_HOME` with loose permissions, keeps whatever mode it already had.
+
 ## Directory names are never executed
 
 The trust model only means something if the *only* code envoke can run is

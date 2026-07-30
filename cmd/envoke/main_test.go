@@ -1015,6 +1015,68 @@ enter /a
 // A single read now feeds all three, so an edit that lands after the review
 // simply leaves the config untrusted -- which is what this asserts: approve,
 // then modify, and the modified config must not inherit the approval.
+// TestDiffLines_LargeConfigFallsBackToFullDump guards the bound on the LCS
+// table. The algorithm is O(n*m) in time and memory; "config files are
+// small" is true of anything written by hand but nothing enforces it, so
+// past diffCap `envoke allow` shows the full block dump instead of
+// allocating a table quadratic in the file's size.
+func TestDiffLines_LargeConfigFallsBackToFullDump(t *testing.T) {
+	small := strings.Repeat("line\n", 10)
+	large := strings.Repeat("line\n", diffCap+1)
+
+	if !canDiff(small, small) {
+		t.Errorf("a normal-sized config should be diffed")
+	}
+	if canDiff(small, large) || canDiff(large, small) {
+		t.Errorf("a config past diffCap on either side must fall back to the full dump")
+	}
+}
+
+func TestDiffLines_ReportsOnlyChangedLines(t *testing.T) {
+	got := diffLines(
+		[]string{"enter /a", "    echo one", "    echo two"},
+		[]string{"enter /a", "    echo one", "    echo THREE"},
+	)
+	want := []string{"-     echo two", "+     echo THREE"}
+	if len(got) != len(want) {
+		t.Fatalf("diffLines = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("diffLines[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestRun_WarnsWhenTrustStoreIsGroupWritable covers the more serious half of
+// the permission warnings: a writable config can be tampered with, but the
+// tamper revokes its own trust. A writable store lets someone forge an
+// approval outright. Allow's 0o700 does not cover it, because os.MkdirAll
+// only applies its mode to directories it creates.
+func TestRun_WarnsWhenTrustStoreIsGroupWritable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root, permission bits are not enforced")
+	}
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /a\n    echo hi\n")
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+
+	store := filepath.Join(home, ".local", "share", "envoke", "allow")
+	if err := os.Chmod(store, 0o777); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+
+	_, stderr, code := runFor(t, "shell-hook", "/", "/a")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 -- this warns, it never blocks", code)
+	}
+	if !strings.Contains(stderr, "trust store") || !strings.Contains(stderr, "forge") {
+		t.Errorf("expected a warning that the store is writable, got %q", stderr)
+	}
+}
+
 func TestRun_ListRevokePruneLifecycle(t *testing.T) {
 	home := isolateHome(t)
 	writeConfig(t, home, "enter /a\n    echo hi\n")
