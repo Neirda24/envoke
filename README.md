@@ -62,7 +62,9 @@ shell support beyond bash/zsh. [direnv](https://direnv.net/) solves an
 adjacent but different problem: one `.envrc` per directory with
 load/unload semantics, not pattern-matched hooks across a whole tree.
 
-Full point-by-point comparison in [Design Notes](https://neirda24.github.io/envoke/design-notes/).
+Point-by-point: [envoke vs. direnv](https://neirda24.github.io/envoke/vs-direnv/)
+(central config vs. per-directory `.envrc`, and when to use which) and
+[Design Notes](https://neirda24.github.io/envoke/design-notes/) (vs. ondir).
 
 ## What you can do with it
 
