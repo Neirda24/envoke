@@ -5,23 +5,36 @@
 // principle requires: envoke must never auto-execute a new or modified
 // config.
 //
-// Alongside the trust hash, Allow also persists a copy of the approved
-// content itself (see PreviousContent), so a future "diff on allow" feature
-// can show what changed between the previously approved config and the one
-// being approved now. That copy lives in a new sibling file next to the
-// existing hash record (see contentPath) rather than folded into the hash
-// record's own format, so upgrading never revokes an existing user's trust:
-// a pre-upgrade record is just a hash file with no matching content file,
-// and both IsTrusted and PreviousContent treat that as a normal, valid
-// state rather than an error.
+// A record is three sibling files under the store directory, all named
+// after the hash of the config's absolute path:
+//
+//	<sha256(abs path)>          the approved content's SHA-256 — the trust token
+//	<sha256(abs path)>.content  a copy of the approved content, for diffing
+//	<sha256(abs path)>.path     the config's absolute path, for listing
+//
+// Each sibling was added later than the hash file and is optional on read,
+// which is what lets envoke upgrade without revoking anyone's trust: an
+// older record is just a hash file with no siblings, and IsTrusted,
+// PreviousContent and List all treat that as a normal state rather than
+// corruption. The hash file is always written *last* for the same reason
+// the whole thing is content-addressed — a torn write must leave the config
+// untrusted, never trusted against something it isn't.
+//
+// The .path sibling exists because the record name is a one-way hash: there
+// is no way to answer "what have I trusted?" or "which of these records are
+// for configs that no longer exist?" without storing the path itself.
 package trust
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 )
 
 // IsTrusted reports whether content — the config bytes the caller has
@@ -65,23 +78,179 @@ func Allow(configPath string, content []byte) error {
 	if err != nil {
 		return err
 	}
+	abs, err := filepath.Abs(configPath)
+	if err != nil {
+		return fmt.Errorf("allow %s: %w", configPath, err)
+	}
+
 	if err := os.MkdirAll(filepath.Dir(recPath), 0o700); err != nil {
 		return fmt.Errorf("allow %s: %w", configPath, err)
 	}
-	// The content copy is written before the hash record, so the two files
-	// can only ever be torn in the harmless direction. If this process dies
-	// in between, the record still holds the *previous* hash: the config
-	// reads as untrusted (fails closed) and the stale-but-newer .content
-	// only affects which diff the next `envoke allow` shows. Writing the
-	// hash first would instead leave a record claiming the new content is
-	// trusted while .content still described the old one.
-	if err := os.WriteFile(contentPath(recPath), content, 0o600); err != nil {
+	// The siblings are written before the hash record, so the files can only
+	// ever be torn in the harmless direction. If this process dies partway,
+	// the record still holds the *previous* hash: the config reads as
+	// untrusted (fails closed) and the stale-but-newer siblings only affect
+	// which diff the next `envoke allow` shows. Writing the hash first would
+	// instead leave a record claiming content is trusted while .content
+	// still described something else.
+	if err := writeRecordFile(contentPath(recPath), content); err != nil {
 		return fmt.Errorf("allow %s: %w", configPath, err)
 	}
-	if err := os.WriteFile(recPath, []byte(hash), 0o600); err != nil {
+	if err := writeRecordFile(pathPath(recPath), []byte(abs)); err != nil {
+		return fmt.Errorf("allow %s: %w", configPath, err)
+	}
+	if err := writeRecordFile(recPath, []byte(hash)); err != nil {
 		return fmt.Errorf("allow %s: %w", configPath, err)
 	}
 	return nil
+}
+
+// writeRecordFile writes a store file atomically: a truncated hash record
+// would read as "trusted, but not against anything" and a truncated content
+// copy would produce a nonsense diff, so a crash mid-write must leave the
+// previous file intact rather than a half-written one.
+func writeRecordFile(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }()
+
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
+}
+
+// Record describes one trusted config as the store knows it.
+type Record struct {
+	// ConfigPath is the absolute path that was approved, or "" for a record
+	// written before the store started recording it (see the package
+	// comment) — such a record can't be resolved back to a file, which is
+	// why List reports it rather than hiding it.
+	ConfigPath string
+	// Hash is the approved content's SHA-256.
+	Hash string
+	// StorePath is the hash record's own file, so a caller can report or
+	// remove it even when ConfigPath is unknown.
+	StorePath string
+}
+
+// List returns every trust record in the store, sorted by config path so
+// output is stable, with unresolvable (pre-upgrade) records last. An empty
+// or absent store is an empty list, not an error.
+func List() ([]Record, error) {
+	dir, err := storeDir()
+	if err != nil {
+		return nil, err
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("trust: %w", err)
+	}
+
+	var records []Record
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || strings.Contains(name, ".") {
+			// Siblings (.content/.path) and any leftover .tmp file from an
+			// interrupted write are not records in their own right.
+			continue
+		}
+		recPath := filepath.Join(dir, name)
+		hash, err := os.ReadFile(recPath)
+		if err != nil {
+			return nil, fmt.Errorf("trust: %w", err)
+		}
+		configPath, err := os.ReadFile(pathPath(recPath))
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("trust: %w", err)
+		}
+		records = append(records, Record{
+			ConfigPath: string(configPath),
+			Hash:       string(hash),
+			StorePath:  recPath,
+		})
+	}
+
+	sort.Slice(records, func(i, j int) bool {
+		if (records[i].ConfigPath == "") != (records[j].ConfigPath == "") {
+			return records[j].ConfigPath == ""
+		}
+		return records[i].ConfigPath < records[j].ConfigPath
+	})
+	return records, nil
+}
+
+// Revoke deletes configPath's trust record and its siblings, so the config
+// goes back to needing an explicit Allow. found reports whether there was
+// anything to revoke; revoking an untrusted config is a no-op, not an error
+// — the requested end state (this config is not trusted) already holds.
+func Revoke(configPath string) (found bool, err error) {
+	recPath, err := recordPath(configPath)
+	if err != nil {
+		return false, err
+	}
+	return removeRecord(recPath)
+}
+
+// removeRecord deletes a hash record and its siblings. The hash record goes
+// first: it is the trust token, so if only part of the removal succeeds the
+// config must end up untrusted rather than trusted with no content copy.
+func removeRecord(recPath string) (found bool, err error) {
+	for i, p := range []string{recPath, contentPath(recPath), pathPath(recPath)} {
+		if err := os.Remove(p); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return found, fmt.Errorf("trust: %w", err)
+		}
+		if i == 0 {
+			found = true
+		}
+	}
+	return found, nil
+}
+
+// Prune deletes the records of configs that no longer exist on disk,
+// returning the ones it removed. Records with no recorded path (see Record)
+// are left alone and returned in skipped: without the path there is no way
+// to tell whether the config is gone or simply predates the store recording
+// it, and deleting a trust record on a guess is the wrong way to be wrong.
+func Prune() (removed, skipped []Record, err error) {
+	records, err := List()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	for _, r := range records {
+		if r.ConfigPath == "" {
+			skipped = append(skipped, r)
+			continue
+		}
+		if _, statErr := os.Stat(r.ConfigPath); statErr == nil {
+			continue
+		} else if !errors.Is(statErr, fs.ErrNotExist) {
+			return nil, nil, fmt.Errorf("trust: %w", statErr)
+		}
+		if _, err := removeRecord(r.StorePath); err != nil {
+			return nil, nil, err
+		}
+		removed = append(removed, r)
+	}
+	return removed, skipped, nil
 }
 
 // PreviousContent returns the content that was approved by the most
@@ -147,6 +316,14 @@ func recordPath(configPath string) (string, error) {
 // of this file obvious at the call site.
 func contentPath(recPath string) string {
 	return recPath + ".content"
+}
+
+// pathPath is the sibling holding the approved config's absolute path. The
+// record name is sha256(abs path), which is one-way, so without this there
+// is no way to answer "what have I trusted?" or to spot records whose
+// config has since been deleted.
+func pathPath(recPath string) string {
+	return recPath + ".path"
 }
 
 func hashContent(content []byte) string {

@@ -1015,6 +1015,125 @@ enter /a
 // A single read now feeds all three, so an edit that lands after the review
 // simply leaves the config untrusted -- which is what this asserts: approve,
 // then modify, and the modified config must not inherit the approval.
+func TestRun_ListRevokePruneLifecycle(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /a\n    echo hi\n")
+	configPath := filepath.Join(home, ".envokerc")
+
+	t.Run("nothing trusted yet", func(t *testing.T) {
+		stdout, _, code := runFor(t, "list")
+		if code != 0 || !strings.Contains(stdout, "no configs are trusted") {
+			t.Errorf("list on an empty store: %q code %d", stdout, code)
+		}
+	})
+
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+
+	t.Run("lists the trusted config", func(t *testing.T) {
+		stdout, _, code := runFor(t, "list")
+		if code != 0 {
+			t.Fatalf("exit code = %d", code)
+		}
+		if !strings.Contains(stdout, configPath) || !strings.Contains(stdout, "trusted") {
+			t.Errorf("expected %s listed as trusted, got %q", configPath, stdout)
+		}
+	})
+
+	t.Run("reports an edited config as changed", func(t *testing.T) {
+		writeConfig(t, home, "enter /a\n    echo edited\n")
+		stdout, _, code := runFor(t, "list")
+		if code != 0 {
+			t.Fatalf("exit code = %d", code)
+		}
+		if !strings.Contains(stdout, "changed") {
+			t.Errorf("expected the edited config reported as changed, got %q", stdout)
+		}
+		writeConfig(t, home, "enter /a\n    echo hi\n")
+	})
+
+	t.Run("revoke withdraws trust", func(t *testing.T) {
+		stdout, _, code := runFor(t, "revoke")
+		if code != 0 || !strings.Contains(stdout, "revoked") {
+			t.Fatalf("revoke: %q code %d", stdout, code)
+		}
+		if stdout, _, _ := runFor(t, "list"); !strings.Contains(stdout, "no configs are trusted") {
+			t.Errorf("expected an empty store after revoke, got %q", stdout)
+		}
+		// shell-hook must actually stop acting on it, not just stop listing it.
+		if stdout, _, _ := runFor(t, "shell-hook", "/", "/a"); stdout != "" {
+			t.Errorf("a revoked config must not render, got %q", stdout)
+		}
+	})
+
+	t.Run("revoking again is a no-op, not an error", func(t *testing.T) {
+		stdout, _, code := runFor(t, "revoke")
+		if code != 0 || !strings.Contains(stdout, "nothing to revoke") {
+			t.Errorf("second revoke: %q code %d, want a clean no-op", stdout, code)
+		}
+	})
+
+	t.Run("prune drops records for deleted configs", func(t *testing.T) {
+		if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
+			t.Fatalf("allow failed")
+		}
+		if err := os.Remove(configPath); err != nil {
+			t.Fatalf("Remove: %v", err)
+		}
+
+		stdout, _, code := runFor(t, "prune")
+		if code != 0 {
+			t.Fatalf("exit code = %d", code)
+		}
+		if !strings.Contains(stdout, "removed the trust record") || !strings.Contains(stdout, configPath) {
+			t.Errorf("expected the stale record removed, got %q", stdout)
+		}
+		if stdout, _, _ := runFor(t, "prune"); !strings.Contains(stdout, "nothing to prune") {
+			t.Errorf("expected a second prune to be a no-op, got %q", stdout)
+		}
+	})
+}
+
+// A config whose file has been deleted is listed as missing rather than
+// omitted -- its plaintext copy is still sitting in the trust store, which
+// is exactly what `envoke prune` is for.
+func TestRun_ListReportsMissingConfig(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /a\n    echo hi\n")
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+	if err := os.Remove(filepath.Join(home, ".envokerc")); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	stdout, _, code := runFor(t, "list")
+	if code != 0 {
+		t.Fatalf("exit code = %d", code)
+	}
+	if !strings.Contains(stdout, "missing") {
+		t.Errorf("expected the deleted config reported as missing, got %q", stdout)
+	}
+}
+
+func TestRun_RevokeExplicitPath(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /a\n    echo hi\n")
+	path := filepath.Join(home, ".envokerc")
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+
+	stdout, stderr, code := runFor(t, "revoke", path)
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "revoked") {
+		t.Errorf("expected trust revoked, got %q", stdout)
+	}
+}
+
 func TestRun_VersionFlagsMatchVersionSubcommand(t *testing.T) {
 	want, _, _ := runFor(t, "version")
 	for _, arg := range []string{"--version", "-V"} {

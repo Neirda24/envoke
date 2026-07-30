@@ -44,6 +44,57 @@ envoke allow -y /path/to/config
 
 The flag may come before or after the path — `envoke allow --yes ~/.envokerc` and `envoke allow ~/.envokerc --yes` both work.
 
+## Seeing and withdrawing trust
+
+```sh
+envoke list                    # what's trusted, and whether it still matches
+envoke revoke                  # withdraw trust for the located config
+envoke revoke /path/to/config  # ...or an explicit one
+envoke prune                   # drop records whose config no longer exists
+```
+
+`envoke list` prints one line per record, with the status of the config as
+it exists right now:
+
+```
+$ envoke list
+  trusted   /home/you/.envokerc
+  changed   /home/you/work/envokerc
+  missing   /home/you/old-project/envokerc
+```
+
+- **trusted** — the file's current content is what you approved, so
+  `shell-hook` will act on it.
+- **changed** — it has been edited since; nothing runs until you
+  `envoke allow` it again.
+- **missing** — the config file is gone, but its record (and the copy of its
+  content, see below) is still in the store. `envoke prune` clears those.
+
+`envoke revoke` puts a config back to needing an explicit approval, without
+having to edit it or delete files out of the store by hand. Revoking
+something that wasn't trusted is a no-op, not an error.
+
+!!! note "Records approved by an older envoke"
+
+    Records written before envoke started storing the config's path can't be
+    resolved back to a file. `envoke list` shows them as `unknown` with their
+    store path, and `envoke prune` deliberately leaves them alone rather than
+    guessing — re-run `envoke allow` on the config to replace such a record,
+    or delete the file it names.
+
+### The store keeps a copy of what you approved
+
+`envoke allow` writes the approved content into the trust store so it can
+show you a diff next time. That is a **plaintext second copy** of your
+config, and since exporting project-scoped secrets is one of envoke's main
+uses, that copy may well contain them. It's written `0600` in a `0700`
+directory, but it does mean deleting a config isn't the whole story:
+
+```sh
+envoke revoke /path/to/config   # removes the record and its content copy
+envoke prune                    # same, for configs already deleted
+```
+
 ## Re-approving a changed config
 
 What `envoke allow` shows you before the confirmation prompt depends on whether the config was trusted before, and whether it's changed since:
@@ -69,7 +120,15 @@ What `envoke allow` shows you before the confirmation prompt depends on whether 
 
 ## How trust is tracked
 
-Trust is a SHA-256 hash of the config file's **content**, recorded under `$XDG_DATA_HOME/envoke/allow/<sha256(abs path)>` (or `~/.local/share/envoke/allow/...` if `$XDG_DATA_HOME` isn't set) — one record file per config path, so distinct configs never collide. `envoke allow` also persists a copy of the approved content itself, in a sibling `<record>.content` file — this is what makes the diff in the previous section possible; a pre-upgrade trust record with no content file yet is treated as a normal "no prior content to compare" state, not an error.
+Trust is a SHA-256 hash of the config file's **content**, recorded under `$XDG_DATA_HOME/envoke/allow/<sha256(abs path)>` (or `~/.local/share/envoke/allow/...` if `$XDG_DATA_HOME` isn't set) — one record per config path, so distinct configs never collide. Each record is three files:
+
+| File | Holds | Used for |
+|---|---|---|
+| `<sha256(abs path)>` | the approved content's hash | the trust decision itself |
+| `<sha256(abs path)>.content` | a copy of the approved content | the diff on re-approval |
+| `<sha256(abs path)>.path` | the config's absolute path | `envoke list` / `envoke prune` |
+
+The two siblings were added after the hash file and are optional on read, so upgrading envoke never revokes an existing approval — a record with no siblings is a normal state, not corruption. The hash file is always written last, and every file is written atomically, so an interrupted write leaves the config *untrusted* rather than trusted against content it doesn't describe.
 
 When `envoke shell-hook` runs, it recomputes the current file's content hash and compares it to the trusted record:
 

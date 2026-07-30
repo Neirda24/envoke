@@ -63,6 +63,12 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 		return cmdShellHook(args[1:], stdout, stderr)
 	case "allow":
 		return cmdAllow(args[1:], stdout, stderr, stdin)
+	case "revoke":
+		return cmdRevoke(args[1:], stdout, stderr)
+	case "list":
+		return cmdList(args[1:], stdout, stderr)
+	case "prune":
+		return cmdPrune(args[1:], stdout, stderr)
 	case "exec":
 		return cmdExec(args[1:], stderr)
 	case "debug":
@@ -531,6 +537,142 @@ func diffLines(oldLines, newLines []string) []string {
 //
 // Trust is enforced inside envoke.Transition rather than here, so no future
 // caller of that package can forget it.
+const revokeUsage = "envoke revoke [path]"
+
+// cmdRevoke is the counterpart `envoke allow` never had. Trust is the one
+// thing envoke asks a user to grant deliberately, and until now the only
+// ways to take it back were editing the config (which revokes it as a side
+// effect of something else) or deleting a sha256-named file out of
+// ~/.local/share by hand.
+func cmdRevoke(args []string, stdout, stderr io.Writer) int {
+	flags := newFlagSet("revoke")
+	if ok, code := parseFlags(flags, args, revokeUsage, stderr); !ok {
+		return code
+	}
+
+	var path string
+	switch flags.NArg() {
+	case 0:
+		p, found, err := config.Locate()
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "envoke:", err)
+			return 1
+		}
+		if !found {
+			_, _ = fmt.Fprintf(stderr, "envoke: no config found (looked for %s); pass a path explicitly: envoke revoke <path>\n", p)
+			return 1
+		}
+		path = p
+	case 1:
+		path = flags.Arg(0)
+	default:
+		_, _ = fmt.Fprintln(stderr, "usage:", revokeUsage)
+		return 2
+	}
+
+	found, err := trust.Revoke(path)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		return 1
+	}
+	if !found {
+		// Not an error: the requested end state already holds.
+		_, _ = fmt.Fprintf(stdout, "envoke: %s was not trusted -- nothing to revoke\n", path)
+		return 0
+	}
+	_, _ = fmt.Fprintf(stdout, "envoke: revoked trust for %s\n", path)
+	return 0
+}
+
+const listUsage = "envoke list"
+
+// cmdList shows what the trust store actually holds. Beyond "which configs
+// have I approved", it is the only way to notice that the store keeps a
+// plaintext copy of every approved config — which routinely means secrets,
+// since exporting project-scoped API keys is one of envoke's headline uses.
+func cmdList(args []string, stdout, stderr io.Writer) int {
+	flags := newFlagSet("list")
+	if ok, code := parseFlags(flags, args, listUsage, stderr); !ok {
+		return code
+	}
+	if flags.NArg() != 0 {
+		_, _ = fmt.Fprintln(stderr, "usage:", listUsage)
+		return 2
+	}
+
+	records, err := trust.List()
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		return 1
+	}
+	if len(records) == 0 {
+		_, _ = fmt.Fprintln(stdout, "envoke: no configs are trusted")
+		return 0
+	}
+
+	for _, r := range records {
+		if r.ConfigPath == "" {
+			_, _ = fmt.Fprintf(stdout, "  %-9s <unknown path, approved by an older envoke> (%s)\n", "unknown", r.StorePath)
+			continue
+		}
+		_, _ = fmt.Fprintf(stdout, "  %-9s %s\n", listStatus(r), r.ConfigPath)
+	}
+	return 0
+}
+
+// listStatus classifies a record against the config as it exists now:
+// whether shell-hook would currently act on it, and if not, why.
+func listStatus(r trust.Record) string {
+	content, err := os.ReadFile(r.ConfigPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "missing"
+		}
+		return "unreadable"
+	}
+	trusted, err := trust.IsTrusted(r.ConfigPath, content)
+	if err != nil {
+		return "unreadable"
+	}
+	if !trusted {
+		return "changed"
+	}
+	return "trusted"
+}
+
+const pruneUsage = "envoke prune"
+
+// cmdPrune drops records whose config no longer exists. Those records are
+// dead weight that also keeps a plaintext copy of a config the user has
+// already deleted, which is the part that actually matters.
+func cmdPrune(args []string, stdout, stderr io.Writer) int {
+	flags := newFlagSet("prune")
+	if ok, code := parseFlags(flags, args, pruneUsage, stderr); !ok {
+		return code
+	}
+	if flags.NArg() != 0 {
+		_, _ = fmt.Fprintln(stderr, "usage:", pruneUsage)
+		return 2
+	}
+
+	removed, skipped, err := trust.Prune()
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "envoke:", err)
+		return 1
+	}
+
+	for _, r := range removed {
+		_, _ = fmt.Fprintf(stdout, "envoke: removed the trust record for %s (config no longer exists)\n", r.ConfigPath)
+	}
+	if len(removed) == 0 {
+		_, _ = fmt.Fprintln(stdout, "envoke: nothing to prune")
+	}
+	if len(skipped) > 0 {
+		_, _ = fmt.Fprintf(stderr, "envoke: %d record(s) approved by an older envoke have no recorded path and were left alone; remove them by hand or re-run `envoke allow` on those configs\n", len(skipped))
+	}
+	return 0
+}
+
 // transitionArgs resolves the <from> <to> pair shared by `exec` and
 // `debug`. Both are things a human types, unlike shell-hook which is only
 // ever called by generated code, so both accept relative paths and both
@@ -699,6 +841,9 @@ Usage:
   envoke version                                     print version, commit, build date, and Go/OS/arch info, then exit
   envoke shell-init [<shell>]                        print shell hook code to eval/source (bash|zsh|fish|tcsh|powershell; guessed from $SHELL if omitted)
   envoke allow [--yes|-y] [path]                     trust a config file after reviewing and confirming it (default: the located config; --yes/-y skips the y/N prompt)
+  envoke revoke [path]                               withdraw trust for a config (default: the located config)
+  envoke list                                        list every trusted config and whether its current content still matches
+  envoke prune                                       drop trust records whose config no longer exists
   envoke exec [<from> <to>]                          run the blocks matching a directory change, each in its own subprocess (for scripts/CI, not your interactive shell)
   envoke debug [<from> <to>]                         print which blocks would fire for a directory change, without running them
   envoke shell-hook [--shell <name>] <from> <to>     run blocks matching a directory change (internal, called by the shell hook; <from>/<to> may also come from $ENVOKE_FROM/$ENVOKE_TO)

@@ -160,7 +160,15 @@ public API to commit to yet):
   `shell-hook` calls `IsTrusted` before ever calling `executor.Render`;
   `cmdAllow` combines `PreviousContent` *and* `IsTrusted` to decide
   full-dump vs. diff vs. "nothing changed" (content equality alone would
-  wedge on a torn record).
+  wedge on a torn record). A record is three sibling files —
+  `<hash>` (the trust token), `.content` (for the diff) and `.path` (the
+  config's absolute path, since the record name is a one-way hash and
+  nothing else could answer "what have I trusted?"). Both siblings are
+  optional on read so upgrading never revokes anyone's trust; the hash file
+  is written **last** and every file is written atomically, so a torn write
+  fails closed. `List`/`Revoke`/`Prune` back `envoke list`/`revoke`/`prune`;
+  `Prune` deliberately leaves path-less legacy records alone rather than
+  guessing whether their config still exists.
 - **`internal/shellinit`** — `Generate(shell)` returns the literal hook
   script for `"bash"`, `"zsh"`, `"fish"`, `"tcsh"`, or `"powershell"` (static
   strings, no templating). Every hook calls `envoke shell-hook --shell
