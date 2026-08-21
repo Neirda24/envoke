@@ -1,10 +1,10 @@
 ---
 title: envoke vs. direnv
 description: >-
-  How envoke differs from direnv: one central config of path patterns instead
-  of an .envrc file in every directory, arbitrary shell scripts instead of
-  environment variables only, and an explicit leave block instead of automatic
-  environment restore.
+  How envoke differs from direnv: path patterns in your own config directory
+  instead of an .envrc found by walking into it, arbitrary shell scripts
+  instead of environment variables only, and an explicit leave block instead
+  of automatic environment restore.
 ---
 
 # envoke vs. direnv
@@ -19,31 +19,32 @@ both.
     each directory, and restores them for you when you leave.
 
     **envoke** runs **arbitrary shell scripts** on enter *and* leave, declared
-    by **path pattern** in **one central config**, with nothing inside the
-    directories themselves.
+    by **path pattern**, in configs that live in *your* config directory — one
+    file, or one per project in `envokerc.d`. A project's own config can join
+    in, but by a symlink you create, never by walking into the directory.
 
-    Neither replaces the other outright. If your rules belong to a project and
-    should be committed with it, direnv fits better. If your rules belong to
-    *you* — spanning trees of repos you don't own, or doing things that aren't
-    environment variables — that's what envoke is for.
+    Neither replaces the other outright. direnv's stdlib (`layout python`,
+    `use nix`, `dotenv`) and its automatic environment restore have no
+    equivalent here. envoke is for rules that belong to *you*, or that do
+    things which aren't environment variables.
 
 ## Side by side
 
 | | direnv | envoke |
 |---|---|---|
-| **Where rules live** | An `.envrc` in each directory | One central config (`~/.envokerc`), rules selected by path pattern |
+| **Where rules live** | An `.envrc` in each directory, found by walking into it | Your own config directory — one central file and/or `envokerc.d` fragments — selecting directories by path pattern |
 | **How a directory is selected** | By the file's own location | RE2 regex matched against whole path segments, capture groups exposed to the script |
 | **What it can change** | Environment variables — exported vars captured from a bash subshell | Anything shell code can do; the hook's output is `eval`'d by your own shell |
 | **Leaving a directory** | Automatic: the previous environment is restored | Explicit: you write a `leave` block; nothing is auto-undone |
 | **Script language** | bash, always — even if your shell is fish or PowerShell | Your shell's own syntax |
-| **Trust step** | `direnv allow`, per `.envrc` | `envoke allow`, once per config file, showing a **diff** on re-approval |
+| **Trust step** | `direnv allow`, per `.envrc` | `envoke allow`, once per config file and covering the whole set by default, showing a **diff** on re-approval |
 | **Shells** | bash, zsh, fish, tcsh, elvish, pwsh, murex (+ export formats) | bash, zsh, fish, tcsh, PowerShell |
 | **Batteries** | Large stdlib: `layout python`, `use nix`, `PATH_add`, `dotenv`, … | None — you write plain shell |
 | **Runtime dependencies** | Needs bash available to evaluate `.envrc` | One static binary, no cgo, nothing else |
 
-## 1. The rules don't live in the directory
+## 1. The rules don't have to live in the directory
 
-This is the difference that brings most people here. direnv needs a file *in*
+This is the difference that brings most people here. direnv *needs* a file in
 the directory it acts on, which is a poor fit when:
 
 - the repository isn't yours, or your team doesn't want an `.envrc` committed;
@@ -66,10 +67,33 @@ enter ~/work/([^/]+)
     export AWS_PROFILE=work
 ```
 
-**The flip side, stated plainly:** a per-project `.envrc` travels with the
-repo. Your teammates get the same environment by cloning, with no setup step.
-A central config only ever configures *your* machine. If sharing the config
-with a team is the point, direnv is the better tool.
+**And when they should live in the repository, they can — but you opt in.** A
+config committed inside a project works, with patterns written relative to
+itself, and joins the set through a symlink you create:
+
+```sh
+ln -s ~/work/api/envoke.conf ~/.config/envoke/envokerc.d/api
+```
+
+```
+# ~/work/api/envoke.conf — committed with the repository
+enter .
+    export PROJECT_ROOT="$ENVOKE_DIR"
+
+enter ./services/([^/]+)
+    export SERVICE="$ENVOKE_MATCH_1"
+```
+
+That is the deliberate difference from direnv: envoke never reads a config
+because you walked into the directory holding it. The link is the decision.
+Such a config is also confined to its own directory tree — however its
+patterns are written, it cannot fire outside the project — and is approved
+separately from your central one.
+
+**The flip side, stated plainly:** direnv's per-project model is more than a
+file location. Its stdlib (`layout python`, `use nix`, `dotenv`) is what most
+`.envrc` files actually consist of, and envoke has no equivalent: you write
+the shell yourself.
 
 See [Configuration](configuration.md) for the full pattern syntax and the
 `ENVOKE_*` variables a matched block receives.
@@ -143,16 +167,21 @@ content, and both revoke trust the moment it changes.
 
 The differences are ergonomic:
 
-- **One approval, not one per directory.** envoke's unit of trust is the config
-  file, so adding a rule for a new project means re-approving the one file you
-  already own — not approving each new clone.
+- **One approval covers a whole tree.** envoke's unit of trust is the config
+  file, so a central rule for `~/work/([^/]+)` is approved once and applies to
+  every clone under it — including tomorrow's. And `envoke allow` with no
+  argument covers every config at once, however many files you split into.
 - **A diff on re-approval.** After the first `envoke allow`, later approvals
   show what changed since the version you trusted, instead of re-dumping the
   whole file for you to re-read.
+- **Nothing to approve that you didn't add.** direnv asks about any `.envrc`
+  you walk into. envoke only ever loads configs from your own config
+  directory, so an unapproved config is one you put there yourself.
 - **No cross-directory unloading.** In direnv, an untrusted `.envrc` in a
   subdirectory unloads the trusted parent environment as well — see the
   discussion in [direnv#1493](https://github.com/direnv/direnv/issues/1493).
-  With one central config there's no such interaction.
+  In envoke each config is independent: an untrusted one is reported and
+  skipped, and the trusted ones still run.
 
 envoke also warns when the config file is group- or other-writable: hash-based
 trust protects against silent modification, not against another local user
@@ -192,8 +221,14 @@ enter ~/Projects/myapp
 
 leave ~/Projects/myapp
     unset DATABASE_URL AWS_PROFILE
-    export PATH="${PATH#"$ENVOKE_DIR/bin:"}"
+    export PATH="$(printf '%s' "$PATH" | tr ':' '\n' \
+        | grep -vxF "$ENVOKE_DIR/bin" | paste -sd: -)"
 ```
+
+The `PATH` teardown looks heavier than a `${PATH#...}` prefix strip because
+that shorter form only works while the entry is still leftmost — see
+[Recipes](recipes.md#adding-a-projects-bin-to-path) for why removal by whole
+line is the version that survives something else being prepended.
 
 Then `envoke allow` to review and approve it — until you do, none of it runs.
 

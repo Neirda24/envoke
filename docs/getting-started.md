@@ -19,6 +19,22 @@ exact verification command.
 
 Add one of these to your shell's rc file, matching your shell:
 
+| Shell | File |
+|---|---|
+| bash | `~/.bashrc` |
+| zsh | `~/.zshrc` (**not** `~/.zshenv`) |
+| fish | `~/.config/fish/config.fish` |
+| tcsh | `~/.tcshrc` (**not** `~/.cshrc`) |
+| PowerShell | `$PROFILE` |
+
+The file matters. `~/.zshenv`, `~/.cshrc` and fish's `config.fish` are read by
+*non-interactive* shells too, so a hook in one of them is evaluated by every
+`zsh -c` or `tcsh -c` that changes directory. The hook guards against that
+itself — it installs only in an interactive shell, so nothing breaks either
+way — but zsh and tcsh each have an interactive-only file, and that is where
+the line belongs, which is what the two "not"s mark. fish has no such file and
+relies on the guard.
+
 ```sh
 # bash/zsh
 eval "$(envoke shell-init bash)"   # or zsh
@@ -66,7 +82,7 @@ to be worth shipping, so they get an explicit error instead.
 ### A note on Windows
 
 Windows binaries are published (and a Scoop manifest with them), and the
-PowerShell hook is generated the same way as the others. Two things are
+PowerShell hook is generated the same way as the others. A few things are
 worth knowing before you rely on it:
 
 - **Write patterns with `/`, not `\`.** Patterns are regexes, where `\` is
@@ -75,18 +91,24 @@ worth knowing before you rely on it:
   `C:/Users/you/Projects/([^/]+)` is the form that works. `ENVOKE_DIR` is
   still handed to your script in native `C:\...` form; the `ENVOKE_MATCH*`
   capture variables come from the normalized path.
-- **Matching is case-sensitive**, while Windows paths generally are not. If
-  that matters for a rule, write the pattern case-insensitively with
-  `(?i)`.
+- **Matching is case-sensitive**, while Windows paths generally are not — the
+  same mismatch macOS has, and not a Windows rule. See [Path
+  patterns](configuration.md#path-patterns) for what to do about it.
 - [`envoke exec`](non-interactive.md) runs blocks through `sh -c` and so
   needs a POSIX shell on `PATH` (Git Bash, WSL, MSYS2). The shell hook
   itself has no such requirement.
+- **Give [`envoke debug`](debugging.md) and `envoke exec` the directory you
+  came from.** Both work out `<to>` for themselves, but `<from>` defaults to
+  `$OLDPWD`, a POSIX shell convention PowerShell has no counterpart to, so the
+  no-argument form has nothing to infer and says so. One argument is `<from>`:
+  `envoke debug C:\work\api`. Spell it out — PowerShell passes `~` to a native
+  command literally, and envoke expands `~` in patterns only.
 
 Windows is tested on a real `windows-latest` CI runner, not just
-cross-compiled: the matching engine, config parsing and the trust store all
-run their full suites there. The end-to-end tests that drive bash/zsh/fish/
-tcsh still run on Linux and macOS only, since those shells aren't what a
-Windows user is running anyway. Please
+cross-compiled: the whole test suite runs there, the CLI itself included, and so
+does the PowerShell hook, driven through a real PowerShell. The end-to-end tests
+that drive bash/zsh/fish/tcsh still run on Linux and macOS only, since those
+shells aren't what a Windows user is running anyway. Please
 [open an issue](https://github.com/Neirda24/envoke/issues) if something
 behaves differently than documented here.
 
@@ -129,4 +151,38 @@ envoke: trusted /home/you/.envokerc
 envoke: to apply it to this shell without leaving the directory: eval "$(envoke reload)"
 ```
 
-`cd` into a matching directory and the `enter` block runs in your current shell; `cd` back out and `leave` runs. To apply a config you just approved without moving, run the `eval` line above — `envoke allow` cannot export into the shell that ran it. See [Debugging](debugging.md#applying-a-config-without-leaving-the-directory), which also covers `envoke disable`/`enable` for switching envoke off. For non-interactive setups (dotfiles bootstrap scripts, provisioning), pass `--yes`/`-y` to skip the confirmation prompt: `envoke allow --yes`. See [Trust Model](trust.md) for the full confirm/diff/`--yes` behavior, and [Debugging](debugging.md) for inspecting matches before trusting a config.
+`cd` into a matching directory and the `enter` block runs in your current shell; `cd` back out and `leave` runs.
+
+To apply a config you just approved without moving, run the `eval` line above — `envoke allow` cannot export into the shell that ran it. See [Debugging](debugging.md#applying-a-config-without-leaving-the-directory), which also covers `envoke disable`/`enable` for switching envoke off. For non-interactive setups (dotfiles bootstrap scripts, provisioning), pass `--yes`/`-y` to skip the confirmation prompt: `envoke allow --yes`. See [Trust Model](trust.md) for the full confirm/diff/`--yes` behavior, and [Debugging](debugging.md) for inspecting matches before trusting a config.
+
+
+### Splitting rules across files
+
+One file gets crowded. `envokerc.d` holds one config per project or concern,
+applied in relative path order — `10-` before `20-`:
+
+```
+~/.config/envoke/envokerc.d/
+├── 10-work
+└── 20-python
+```
+
+If a project's rules belong with the project, commit them there and symlink
+the file in — that link is what brings it into the set, and patterns in it can
+be written relative to the project:
+
+```sh
+ln -s ~/Projects/my-app/envoke.conf ~/.config/envoke/envokerc.d/my-app
+```
+
+```
+# ~/Projects/my-app/envoke.conf, committed with the repository
+enter .
+    source "$ENVOKE_DIR/venv/bin/activate"
+
+leave .
+    deactivate
+```
+
+Each file is approved separately, and one `envoke allow` covers them all. See
+[Configuration](configuration.md#the-envokercd-directory).
