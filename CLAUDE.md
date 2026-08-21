@@ -1,436 +1,201 @@
 # CLAUDE.md
 
-Guidance for working on `envoke` — see [README.md](README.md) for the
-user-facing pitch and [docs/](docs/) for the full user-facing documentation.
-This file is for contributors (human or AI) writing the code.
+How to work on `envoke` as an agent. This is **not** project documentation and
+must never become it:
+
+| Question | Where the answer lives |
+|---|---|
+| What envoke does, and how it's used | [README.md](README.md), [docs/](docs/) |
+| Why it's designed this way | [docs/design-notes.md](docs/design-notes.md) |
+| How to build, test and submit a change | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| What holds across the whole codebase | here |
+| Where a rule is enforced in *this* package, and what a refactor would break | that package's own `CLAUDE.md` |
+| The steps of a ritual that spans files, which no single file states | `.claude/skills/*/SKILL.md` |
+
+**The code is the truth; the docs are the intent.** Read the docs for what a
+thing is meant to do, then verify against the source. If this file and a docs
+page disagree, the docs page wins and this file needs fixing — never the
+reverse.
+
+**Don't restate documented behaviour.** Add only what a reader of the source
+needs and the docs have no reason to carry: which function enforces a rule,
+which failure it was written against, what a plausible-looking refactor would
+break.
+
+**Per-package detail lives next to the code.** Each package has its own
+`CLAUDE.md`, loaded only once a file in its directory is read — a session on
+the shell hooks shouldn't pay for eleven packages' notes. Read one before
+changing that package, and put new package-specific findings there rather than
+growing this file back.
+
+**Prefer the route to a fact over a copy of it.** Whatever a command or a doc
+comment already reports — `dagger functions -m .dagger` (names *and*
+descriptions, ~2s), the subcommands `envoke help` prints, a signature, a
+flag's default, what a package owns (its doc comment) — belongs in no
+agent-instruction file. Record how to find it and spend the space on what
+nothing reports. A copied list goes stale silently and is believed anyway.
+
+**Agent instructions are referenced only by other agent instructions.** They
+are the `CLAUDE.md` files and `.claude/skills/*/SKILL.md`; they have no
+stability promise and get split, renamed and rewritten, so no Go comment,
+README, `CONTRIBUTING.md`, workflow, `renovate.json` or script header may
+point at one. A comment needing a reason must **state** the reason; too long
+to state means it belongs in `docs/` or a commit message. Agent files may
+point at source, `docs/` and `CONTRIBUTING.md` freely, and at each other.
+
+What rots, and what the rule therefore forbids, is a pointer at *content*. A
+build filter that matches a filename is not one: if the file is renamed the
+pattern stops matching and nothing is left asserting otherwise. So the
+corollary — not an exception to the rule but the same rule pointed outward —
+is that agent instructions stay out of anything published. `mkdocs.yml`
+enforces that without naming a file: every `.md` under `docs/` must appear in
+the nav, and `mkdocs build --strict` fails otherwise, so a `CLAUDE.md`, a
+stray draft or a `*_handoff.md` dropped there breaks CI instead of quietly
+publishing at its own URL.
+
+**Local scratch notes** (`*_handoff.md`, `CLAUDE.local.md`) are never
+committed, never referenced from anything committed, and never added to
+`.gitignore` — keeping them out is the maintainer's own global ignore file's
+job, and this project's `.gitignore` is for build output. `git add -A` sweeps
+them in; stage deliberately. `.claude/.gitignore` is not a counter-example: what
+it excludes is named by the *tool*, not by a person — `settings.local.json` by a
+convention that already means "not shared", `worktrees/` by Claude Code creating
+it — so it states where the tool puts things rather than one person's habits. A
+file you chose the name of does not belong there.
 
 ## What this is
 
 `envoke` runs shell scripts when you `cd` into or out of a directory, matched
-by path pattern (`enter`/`leave` blocks in a config file). It's a Go rewrite
-of [ondir](https://github.com/alecthomas/ondir) — feature-complete by its
-own maintainer's account and still functional, but unmaintained for years;
-see [docs/design-notes.md](docs/design-notes.md) for the specific points
-this rewrite departs from it on. Static, dependency-free binary; no cgo.
+by path pattern (`enter`/`leave` blocks in a config file). A Go rewrite of
+[ondir](https://github.com/alecthomas/ondir), unmaintained for years;
+[docs/design-notes.md](docs/design-notes.md) has the points it departs from.
+Static, dependency-free binary; no cgo.
 
 ## Status
 
-Implemented and tested (`dagger check -m .dagger`): config parsing, path
-matching, `enter`/`leave` execution, shell hooks for
-bash/zsh/fish/tcsh/PowerShell, the `envoke allow` trust mechanism, `envoke
-debug` dry-run diagnostics, the `envoke disable`/`enable` off switch,
-`envoke reload`, and a Dagger-based CI pipeline (`.dagger/`) that
-also audits the GitHub Actions workflows themselves (zizmor, actions-up).
+**What ships is what `envoke help` lists**, and README's Status section is the
+prose version. Everything there is implemented, tested under `dagger check -m
+.dagger` and documented in `docs/` — a gap between the three is a bug to
+report, not a feature that was never finished. Packaging is live, not
+scaffolding ([.dagger notes](.dagger/CLAUDE.md) has the parts the config
+doesn't explain).
 
-Packaging is fully live and exercised against real tagged releases: GitHub
-Releases, the Homebrew tap, the Scoop bucket, `.deb`/`.rpm` (nfpm) packages,
-per-archive SBOMs, and tag-triggered release CI. Verified against v0.1.4 —
-`Neirda24/scoop-bucket` holds a `bucket/envoke.json` manifest for that tag,
-and the release carries both `.deb` and `.rpm` assets. The one-time manual
-setup (creating `scoop-bucket`, granting the tap GitHub App access to it)
-is done; nothing in Packaging below is pending any more.
+Build in the order the codebase already establishes — matching engine, shell
+integration, trust, packaging — rather than polishing a later capability
+before an earlier one is solid and tested.
 
-Build in the order the codebase already establishes — matching engine, then
-shell integration, then trust, then packaging — rather than adding polish
-to a later capability before an earlier one is solid and tested.
+## Design principles
 
-## Design principles (non-negotiable, see docs/design-notes.md)
+The principles live in [docs/design-notes.md](docs/design-notes.md) — read
+them there; that page is what CONTRIBUTING points contributors at, and it wins
+if this file drifts. What belongs here is only where each is enforced, so a
+refactor can't quietly step around one:
 
-- **RE2 matching only** — use Go's standard `regexp`. Never shell out to or
-  vendor a backtracking regex engine — those can take exponential time on
-  certain patterns, the failure mode RE2's linear-time guarantee exists to
-  rule out.
-- **Path-segment matching, not string-prefix matching** — a pattern must
-  match whole path segments. Never implement matching as a raw
-  `strings.HasPrefix`.
-- **Enter/leave are independent and explicit** — no automatic state
-  snapshot/restore on leave. Don't add "smart" auto-undo; if that's ever
-  wanted, it's a deliberate opt-in feature, not a default.
-- **Trust before execution** — any new or modified config must go through an
-  explicit `envoke allow` before its blocks run. Never auto-execute an
-  unapproved config, even in convenience-focused code paths.
-- **One binary generates all shell integration** — hook scripts for
-  bash/zsh/fish/tcsh/powershell are generated by the binary
-  (`envoke shell-init <shell>`), not maintained as separate hand-written
-  files per shell.
+| Principle | Enforced by |
+|---|---|
+| RE2 matching only | `internal/config`'s use of stdlib `regexp`. Never shell out to or vendor a backtracking engine. |
+| Path-segment matching | The `^(?:...)$` wrapper in `compilePattern`. Never a raw `strings.HasPrefix`. |
+| Enter/leave independent and explicit | `internal/envoke.Transition` runs leaves then enters and unwinds nothing on failure. No "smart" auto-undo; if ever wanted, opt-in, not default. |
+| Trust before execution | `configset.Decide`, called by `internal/envoke.Transition` and `cmd/envoke`'s `mayRun`. No other path may execute a block. |
+| Never discover a config the user doesn't own | `cmd/envoke`'s `locateConfigs` is the only thing that resolves *where* configs live, via `config.Locate`/`config.LocateDir`; `configset.Load` is handed those two paths and can reach nothing else. An earlier iteration walked the filesystem; [docs/design-notes.md](docs/design-notes.md) records what that cost, and it is not to be reintroduced without answering it. |
+| A config pointing out of the config directory is confined | `matcher.NewMatch` refuses any match outside `Config.Dir` for a `Local` config, whatever its patterns say — with symlinks resolved on both sides, since that config's `Dir` and pattern base are physical. |
+| One binary generates all shell integration | `internal/shellinit`, static strings per shell — never hand-maintained script files. |
+| A config feeding a trust decision is read exactly once | `config.LoadFile`/`LoadFragmentResolved` return the source bytes alongside the parsed config, `configset.Entry` carries them, and `cmd/envoke`'s review path takes its bytes from that entry rather than reading again. A second read is a TOCTOU hole, not a refactor. |
 
-## Architecture
+## Package map
 
-Package layout (`internal/`, not importable outside this module — no stable
-public API to commit to yet):
+`internal/` is not importable outside this module — no stable public API to
+commit to yet. Every package opens with a doc comment saying what it owns; the
+column below is only enough to route you there.
 
-- **`internal/config`** — `Parse`/`ParseFile`/`LoadFile` turn a config file
-  into `[]Block{Type, Pattern, RawPattern, Script, Line}` via a hand-rolled
-  line-oriented parser. **`LoadFile(path) (*Config, []byte, error)` is the
-  one to use whenever the same file also feeds a trust decision** — it reads
-  the file exactly once and returns the source bytes alongside the parsed
-  config, so `trust.IsTrusted`/`trust.Allow` hash the same bytes that get
-  parsed and executed. Two separate reads would let the file change in
-  between, validating one version while executing another; `cmd/envoke` has
-  no code path that reads a config twice, and adding one is a security
-  regression, not a refactor. Pattern compilation (`pattern.go`) expands a leading
-  `~` and `$VAR`/`${VAR}` as literal (`regexp.QuoteMeta`'d) substitutions,
-  then anchors the result as `^(?:...)$` — that anchoring is what makes
-  matching segment-based rather than prefix-based. Malformed config fails
-  with a positioned `*ParseError{Line, Msg}`, never silently — **including
-  an undefined `$VAR`**, which used to expand to `""` and produce a valid
-  pattern that could never match. `expandEnv` is hand-rolled rather than
-  `os.Expand` because patterns are regexes: `os.Expand` would eat `$?`,
-  `$*`, `$#` and `$0`-`$9` as shell special variables, so only `$` followed
-  by a real identifier is treated as a reference and every other `$` stays
-  the regex anchor it almost certainly is.
-  `UnsafePermissions(path)` (`permissions.go`) reports whether the config
-  file is group/other-writable (`0o022`), which `cmd/envoke` surfaces as a
-  non-fatal warning on `allow`/`shell-hook`/`debug` — content-hash trust
-  revocation only protects against *silent* modification, not a
-  multi-user machine where another local user could edit the file directly.
-- **`internal/matcher`** — `Transitions(from, to)` walks both paths'
-  ancestor chains via `filepath.Dir` to their common ancestor, returning
-  directories left (deepest-first) and entered (shallowest-first) — jumping
-  straight from `/a` to `/a/x/y/z` still fires `/a/x` and `/a/x/y`'s rules.
-  `Resolve(cfg, from, to)` runs every block's pattern against the relevant
-  directories and returns ordered `[]Match`. `Enters(cfg, dir)` answers a
-  different question for `envoke reload` — every enter block matching `dir`
-  or any ancestor, as if arriving from outside the filesystem. `Resolve`
-  cannot express it: it reports what *changed*, so `from == to` yields
-  nothing and passing the root as `from` still skips the root itself. Every `Match` is built by
-  `NewMatch`, which runs the pattern **once** and stores the submatches in
-  `Match.Groups` — `executor.matchVars` reads them from there rather than
-  re-running the regex, since this is the hot path of every `cd`. Patterns
-  are matched against `MatchPath(dir)` (`filepath.ToSlash`), not `dir`:
-  patterns are regexes and are therefore written with `/`, so on Windows
-  `filepath.Dir`'s backslashes could never match anything a user would
-  write. It must stay `filepath.ToSlash` and never a plain `ReplaceAll` —
-  `\` is legal in a Unix filename, and rewriting it there would corrupt
-  real directory names (guarded by `matchpath_unix_test.go`). `Match.Dir`
-  stays in native form since it's used as a working directory and exported
-  as `ENVOKE_DIR`.
-- **`internal/executor`** — two execution models sharing `matchVars` (the
-  `ENVOKE_DIR`/`ENVOKE_TYPE`/`ENVOKE_MATCH`/`ENVOKE_MATCH_N` a matched block
-  sees):
-  - `Run(ctx, match)` execs the script via `sh -c` as a **subprocess**
-    (`cmd.Dir` set to the matched directory, vars as env, inherited stdio).
-    Used by `internal/envoke.Transition` for non-interactive/one-off
-    execution — side effects like `export`/`source` don't escape this
-    subprocess, so this is not what the shell hook uses.
-  - `Render(shell, leaves, enters)` builds ENVOKE_*-var-assignment-prefixed
-    shell text for every match, meant to be `eval`'d/`source`d by the
-    *caller's own shell*. This is what `cmd/envoke shell-hook` and `reload`
-    use once a config is trusted — the only path where `export`/`source` in
-    a script actually affects the user's interactive shell. **Each block's
-    vars are unset again right after its script** (`shellProfile.unset`, one
-    spelling per dialect): capture groups are numbered per block, so without
-    the teardown a two-group block followed by a zero-group one left
-    `ENVOKE_MATCH_2` visible to a script that never captured anything, and
-    every var — all exported — outlived the `cd` and was inherited by every
-    process started later. This is what makes `Render` match `Run`'s
-    scoping; don't drop it for a "cleaner" output. `shell` selects a
-    `shellProfile` (posix, fish, tcsh, powershell — each with its own
-    quoting function to prevent injection via directory names or capture
-    groups); an unrecognized name falls back to POSIX, which is right for a
-    library and wrong for a CLI flag — hence `IsKnownShell`, which
-    `cmd/envoke` uses to reject `--shell fsh` before it feeds `export` to a
-    fish session. **`tcshQuote` is not
-    `posixQuote`**: csh does history expansion at the lexer, before quote
-    processing, so `!` is expanded even inside single quotes and must be
-    backslash-escaped — a directory named `foo!bar` otherwise aborted the
-    whole sourced block with "bar: Event not found.", setting no variables
-    and running no script. A literal newline can't be represented in a csh
-    single-quoted string at all, and is a documented unsupported case for
-    tcsh. All four profiles are covered by
-    `TestRender_QuotingRoundTripsThroughRealShells`, which round-trips a
-    table of hostile basenames through each real interpreter — extend that
-    table rather than writing a one-off test for the next quirk. Render can
-    only translate the ENVOKE_* plumbing — a script body still has to be
-    written in the calling shell's own syntax.
-- **`internal/envoke`** — `Transition(ctx, configPath, from, to)` is the
-  subprocess-based core loop behind `envoke exec`: load + trust-check,
-  resolve, run all leaves, then all enters via `executor.Run`, stopping at
-  the first failing block (no partial-transition unwind — see the
-  enter/leave independence principle). It takes a config **path**, not a
-  parsed `*config.Config`, on purpose: it is the only thing in the codebase
-  that spawns a shell from config, so the `trust.IsTrusted` gate lives
-  inside it where no caller can skip it (it returns `ErrUntrusted` having
-  run nothing). Don't "simplify" it back to accepting a parsed config.
-  Used for non-interactive automation (scripts/CI), not the shell hook or
-  `envoke debug` — side effects stay in the subprocess, which is what
-  `docs/non-interactive.md` exists to spell out.
-- **`internal/config.Locate()`** — resolves the config path: `$ENVOKERC`
-  (used verbatim, even if missing) → `~/.envokerc` if present →
-  `$XDG_CONFIG_HOME/envoke/config` (or `~/.config/envoke/config`) if present
-  → not found (normal state, not an error).
-- **`internal/state`** — envoke's on-disk runtime state. `DataHome()` is the
-  `$XDG_DATA_HOME`/`~/.local/share` resolution, owned here because
-  `internal/trust` needs it too (it used to duplicate the lookup).
-  `Disabled() (bool, Source, error)` / `Disable()` / `Enable()` back the off
-  switch: a marker file at `<data home>/envoke/disabled` for the persistent
-  half, `$ENVOKE_DISABLE` for the per-session half. **The env var decides on
-  its own, in both directions** — `=0` has to be able to turn envoke back on
-  in a shell where the flag is set, or the persistent switch would be
-  inescapable without deleting a file. Unset or empty defers to the flag;
-  any other value counts as disabled, so a typo errs toward *not* executing
-  scripts. `shell-hook` checks it first and stays completely silent (it runs
-  on every `cd`); `exec` and `reload` report it on stderr and still exit 0;
-  `debug` keeps working and reports it next to the trust status. Disabling
-  never touches trust records — being off is not withdrawing approval.
-- **`internal/trust`** — `Allow(path, content)` / `IsTrusted(path, content)`
-  / `PreviousContent(path) (content string, ok bool, err error)`. Trust is a
-  SHA-256 hash of the config file's *content*, recorded under
-  `$XDG_DATA_HOME/envoke/allow/<sha256(abs path)>` (or
-  `~/.local/share/...`) — one record per config path. Any edit changes the
-  hash and revokes trust until `Allow` runs again. **Both take the content
-  bytes, never a path to re-read** — that's what makes the TOCTOU
-  unexpressible (see `internal/config.LoadFile`); don't add a
-  path-only convenience wrapper, it would reopen the hole it was removed to
-  close. `Allow` also persists the approved content to a sibling
-  `<record>.content` file, written *before* the hash record so a torn write
-  fails closed, and read back by `PreviousContent` so `cmdAllow` can show a
-  diff instead of a full re-dump on re-approval — a pre-existing hash-only
-  record (no content file) is a normal state (`ok=false`), not corruption.
-  `shell-hook` calls `IsTrusted` before ever calling `executor.Render`;
-  `cmdAllow` combines `PreviousContent` *and* `IsTrusted` to decide
-  full-dump vs. diff vs. "nothing changed" (content equality alone would
-  wedge on a torn record). A record is three sibling files —
-  `<hash>` (the trust token), `.content` (for the diff) and `.path` (the
-  config's absolute path, since the record name is a one-way hash and
-  nothing else could answer "what have I trusted?"). Both siblings are
-  optional on read so upgrading never revokes anyone's trust; the hash file
-  is written **last** and every file is written atomically, so a torn write
-  fails closed. `List`/`Revoke`/`Prune` back `envoke list`/`revoke`/`prune`;
-  `Prune` deliberately leaves path-less legacy records alone rather than
-  guessing whether their config still exists.
-- **`internal/shellinit`** — `Generate(shell)` returns the literal hook
-  script for `"bash"`, `"zsh"`, `"fish"`, `"tcsh"`, or `"powershell"` (static
-  strings, no templating). `Completion(shell)` does the same for tab
-  completion, for bash/zsh/fish only — tcsh and PowerShell return an
-  explicit error rather than a half-working script. Its candidate list lives
-  in `subcommands`; `cmd/envoke`'s
-  `TestRun_CompletionCoversEverySubcommand` cross-checks it against
-  `envoke help`, so adding a subcommand without completing it fails the
-  build (it already caught `completion` forgetting itself). Every hook calls `envoke shell-hook --shell
-  <name>` so `executor.Render` picks the right dialect. None of the five
-  hooks redefine `cd` (`assertNeverRedefinesCd`). Two invariants hold across
-  all five, each with a cross-shell test that drives real interpreters:
-  a hook must never let a **directory name** reach a shell parser as code
-  (`TestGenerate_HooksNeverExecuteDirectoryNames` — this is what the tcsh
-  `eval` rework below is about), and a hook must be **transparent to the
-  shell's last-command status**
-  (`TestGenerate_HooksAreTransparentToLastCommandStatus`): bash/zsh/fish
-  save `$?`/`$status` on entry and `return` it, PowerShell saves and
-  restores `$LASTEXITCODE`. Skipping that turns every exit-code-aware prompt
-  into a liar. Per-shell gotchas worth knowing before touching this package:
-  - **bash** has no native "on cd" hook, so it polls via `PROMPT_COMMAND`
-    comparing `$PWD` against a var — that var **must be seeded at
-    hook-install time**, or the first `cd` after install compares the new
-    directory against itself and is silently missed.
-  - **zsh** uses the native `chpwd_functions` array; `$OLDPWD` is already
-    set by the shell, no seeding needed.
-  - **fish** uses `--on-variable PWD` and seeds its own baseline var (like
-    bash — fish's `$OLDPWD` isn't reliable enough to depend on). A bare
-    command substitution splits multi-line output into one list element per
-    line, so `string collect` (fish 3.4+) joins `envoke shell-hook`'s stdout
-    into one string before `eval`.
-  - **tcsh** claims the `cwdcmd` alias outright (not chained with a
-    pre-existing user `cwdcmd`, e.g. xterm title-setting — documented
-    limitation). tcsh has no `export`/`VAR=value` syntax and both plain and
-    quoted backquote substitution split on newlines, so the hook pipes
-    `envoke shell-hook`'s stdout straight into `source /dev/stdin`.
-    `cwdcmd`'s body runs through a restricted execution path that doesn't
-    honor `|`/`>` directly, so the whole thing is wrapped in `eval "..."` to
-    force a full re-parse (with `$owd`/`$cwd` single-quoted *inside* that
-    string so a directory with a space stays one argument). tcsh also has
-    no `command` builtin (unlike bash/zsh/fish) — use `\envoke` to bypass a
-    same-named user alias, not `command envoke`.
-  - **powershell** wraps the `prompt` function (saving and always calling
-    through to any previous definition, guarded against double-wrapping),
-    joining output via `Out-String` before `Invoke-Expression` — same
-    multi-line concern as fish's `string collect`.
-  - Generated shell code is tested against real interpreters, not just
-    string-matched: syntax checks (`<shell> -n -c`) plus behavioral tests
-    that drive a real subprocess with a stub `envoke` binary on `PATH` and
-    assert the side effect (`setenv`/`export`/`set`) actually persists in
-    the calling shell. `t.Skip`s locally if an interpreter isn't installed;
-    `.dagger`'s `test-shell-*` checks run all five for real in CI.
-- **`cmd/envoke`** — `run(args, stdout, stderr, stdin) int` is the testable
-  dispatcher `main()` wraps. Subcommands: `version` (also `--version`/`-V`);
-  `shell-init [<shell>]` (guesses from `$SHELL` via `detectShell` when
-  omitted, and errors rather than defaulting to bash for an unrecognised
-  one — a wrong guess writes a broken rc file whose breakage surfaces far
-  from its cause); `allow [--yes|-y] [path]` (refuses a
-  config that doesn't parse; full dump / diff / "unchanged" depending on
-  prior trust state; reads a `y`/`yes` confirmation from stdin unless
-  `--yes`); `shell-hook [--shell <name>] [--] <from> <to>` (checks trust
-  before ever calling `executor.Render`; an untrusted match is reported on
-  stderr only, with an `envoke allow` hint); `disable`/`enable` (both via
-  `cmdSwitch`, which also warns when `$ENVOKE_DISABLE` overrides what was
-  just asked for, so neither can appear to do nothing); `reload [--shell
-  <name>]` (renders `matcher.Enters` for `$PWD`, used as `eval "$(envoke
-  reload)"` — `allow` prints that line on success, since `allow` is a child
-  process and cannot export into the shell that ran it); `exec [<from>
-  <to>]` (subprocess execution via `internal/envoke`, for scripts/CI, under
-  a `signal.NotifyContext` so SIGINT/SIGTERM interrupts the block rather
-  than orphaning its `sh`); `debug [<from> <to>]` (same `matcher.Resolve` as
-  shell-hook, but always prints matches + trust status and never executes;
-  `printWorkingDirNote` flags that a matched block runs where the shell
-  landed, not in the directory it matched — true of the hook, not of
-  `exec`). `exec` and `debug` share
-  `transitionArgs`: both are human-typed, so both accept relative paths and
-  default to `$OLDPWD -> $PWD`. `shell-hook` does not — it only ever
-  receives generated arguments, and every hook passes `--` before them so a
-  directory named like a flag can't be parsed as one. `allow` and `revoke`
-  share `resolveConfigPath` (the given path, or the located config).
-  Terminal output goes through the local `fprintf`/`fprintln`/`fprint`
-  helpers rather than `_, _ = fmt.Fprintf(...)` at every call site — a
-  failed write to a terminal is not something a CLI can act on, and errcheck
-  is in golangci-lint's default set.
-- **`.dagger/`** — a separate Go module (own `go.mod`, `dagger/envoke`), not
-  a dependency of the main module. `main.go` defines checks (`// +check`
-  pragma, run via `dagger check -m .dagger`): `fmt`/`vet`/`build`/`test`
-  mirror the manual commands in CONTRIBUTING.md; `lint` runs golangci-lint;
-  `cross-build` compiles + vets every OS/arch `.goreleaser.yaml` ships
-  (linux/darwin/windows × amd64/arm64), which is also the only thing that
-  type-checks the GOOS-gated test files the Linux containers never load;
-  `test-shell-{bash,zsh,fish,tcsh,powershell}` each build a container with
-  exactly one shell installed and run `internal/shellinit`'s **and
-  `internal/executor`'s** suites in it (both emit shell code, both `t.Skip`
-  without the interpreter), so a check can't silently skip a shell for lack
-  of the interpreter. `zizmor`
-  and `actions-up` (also `+check`) audit `.github/workflows/*.yml`; both
-  take an optional `GhAuthToken *dagger.Secret` to raise their unauthenticated
-  GitHub API rate limit — omit it for a quick local run. `autofix` (deliberately
-  *not* a check — it mutates the tree) chains zizmor's `--fix=all` into
-  actions-up's `--yes` pass and returns the diff via `dagger.Changeset`,
-  applied with `... autofix export --path=.`. `snapshot`/`publish` wrap
-  goreleaser (see Packaging below). `.github/workflows/ci.yml` runs `dagger
-  check -m .dagger` on push/PR to `main` and daily; `dagger.gen.go`/
-  `internal/dagger`/`internal/telemetry` are generated and gitignored —
-  regenerate with `dagger develop -m .dagger` after changing `New`'s
-  signature, don't hand-edit. Consequence worth knowing: an IDE will report
-  *"Struct Envoke has methods on both value and pointer receivers"* on this
-  package. Every method in `main.go` takes `*Envoke`; the sole value
-  receiver is `func (r Envoke) MarshalJSON()` in the generated
-  `dagger.gen.go`. It is neither actionable (the file is regenerated and
-  untracked) nor a bug (dagger only ever holds a `*Envoke`). Suppress it
-  locally if it bothers you — there is nothing here to commit.
-
-## Packaging (`.goreleaser.yaml` + `.dagger`)
-
-`Snapshot` runs `goreleaser release --snapshot --clean` (cross-compiles for
-linux/darwin/windows × amd64/arm64, never touches GitHub — safe to run
-anytime; this is what exercises the `nfpms:` deb/rpm build and the `sboms:`
-syft step locally, since neither needs an external repo). `syft`, `nfpm` and
-`cosign` all ship inside the pinned goreleaser image already — verify before
-adding anything that assumes another tool is there. `Publish` runs `goreleaser release
---clean` against a pushed `v*` tag to cut a real GitHub Release (attaching
-the `.deb`/`.rpm` packages as release assets alongside the archives) and
-push the Homebrew cask (`homebrew_casks:`, not the deprecated `brews:` key)
-to `Neirda24/homebrew-tap` plus the Scoop manifest (`scoops:`) to
-`Neirda24/scoop-bucket`. Both pushes share one short-lived GitHub App
-installation token scoped to just those two repos (minted per-run in
-`release.yml`, not a long-lived cross-repo PAT) — the ambient per-job
-`GITHUB_TOKEN` only ever needs write access to `envoke` itself. Both target repos are
-provisioned and the App's installation already covers them, so a `Publish`
-run needs no manual setup. `release.footer` in
-`.goreleaser.yaml` appends install/upgrade instructions (Homebrew, Scoop,
-`.deb`/`.rpm`, manual download, `go install`) to every release's notes —
-update this template, not the README, if a new install method ships.
-`goreleaser` itself only ever runs inside the Dagger container, never
-installed on the dev machine.
+| Package | Routing | Notes |
+|---|---|---|
+| `internal/config` | parsing, locating, patterns, permissions | [notes](internal/config/CLAUDE.md) |
+| `internal/fsperm` | "writable by someone else", per platform | [notes](internal/fsperm/CLAUDE.md) |
+| `internal/matcher` | what a `cd` left and entered; which blocks match | [notes](internal/matcher/CLAUDE.md) |
+| `internal/configset` | *which* configs envoke acts on; the trust rule | [notes](internal/configset/CLAUDE.md) |
+| `internal/executor` | running a matched block: `Run`, `Render` | [notes](internal/executor/CLAUDE.md) |
+| `internal/envoke` | `Transition`, the core loop behind `envoke exec` | [notes](internal/envoke/CLAUDE.md) |
+| `internal/state` | data home; the disable/enable off switch | [notes](internal/state/CLAUDE.md) |
+| `internal/trust` | content-hash trust records | [notes](internal/trust/CLAUDE.md) |
+| `internal/shellinit` | hook and completion scripts, five shells | [notes](internal/shellinit/CLAUDE.md) |
+| `cmd/envoke` | dispatcher and all terminal output | [notes](cmd/envoke/CLAUDE.md) |
+| `.dagger/` | CI checks and packaging (separate Go module) | [notes](.dagger/CLAUDE.md) |
 
 ## Go conventions
 
-- **Comments carry what the code can't say, and nothing else.** csh
-  expanding `!` inside single quotes, bash 3.2 lacking `mapfile`, why the
-  hash record is written last — those belong in a comment. What the code
-  used to do, which bug a line came from, how long it took to find, and
-  which section of this file justifies it do not: that is what commit
-  messages and `docs/design-notes.md` are for. Narrated history bloats the
-  file, buries the invariant a reader needs, and drifts out of date — the
-  `killGrace` comment described a protection that had never existed.
+- **Verify only through `dagger call -m .dagger <check>`** — never the Go
+  toolchain on the host. Dagger runs the pinned images CI uses rather than
+  whatever is installed locally; that is the point of `.dagger`, and
+  `dagger functions -m .dagger` is where the check names live. A `SKIP` means
+  run it through Dagger, not that the case is covered.
+- **What `.claude/settings.json` covers, and where it stops** — it is a list of
+  command spellings, not a boundary; take it for a boundary and you stop
+  checking, which is the worse failure. It denies, by command
+  prefix, `go` (the whole command, not a list of verbs), `gofmt`,
+  `golangci-lint`, `govulncheck`, `goreleaser` and `gotestsum`, plus `publish`
+  and the two exports that write into the tree, `autofix export` and
+  `snapshot export`, in the argument spellings the file lists — which is not
+  every spelling either of them can be written in. The allow side is a prefix on
+  `dagger call -m .dagger` so a new check needs no edit here, and the narrower
+  allows are scoped to what they are for: `dagger functions` to this module,
+  since an unscoped one would run a third-party module unprompted, and
+  `git branch` to `--list`, since the rest of that list is read-only. What no
+  deny entry can do is bound that broad prefix. A prefix match sees neither
+  inside a flag value nor through a wrapper (a leading `VAR=value`, `env`,
+  `sh -c`), so a Dagger secret flag given `cmd://<any command>` runs that
+  command **on the host, unprompted** — the argv never contains the string a
+  deny entry would match — and `source with-new-file … export --path=.` writes
+  the tree through the same allow. So verifying only through Dagger holds
+  because you follow it, not because this file makes it hold. A bypass you find
+  belongs in the deny list; narrowing the allow is the maintainer's call, not a
+  session's.
+- Static, dependency-free binaries — no cgo, zero non-stdlib imports. Keep it
+  that way unless a real need appears.
+- **Comments carry what the code can't say, and nothing else** — csh expanding
+  `!` inside single quotes, bash 3.2 lacking `mapfile`, why the hash record is
+  written last. Not what the code used to do, which bug a line came from, or
+  which section of this file justifies it: that is what commit messages and
+  `docs/design-notes.md` are for. Narrated history buries the invariant a
+  reader needs and drifts out of date.
+- Table-driven tests via subtests (`Test<Func>_<Scenario>`), including a
+  regression test for each ondir bug fixed. `go test ./... -race` must pass.
+- **Windows and macOS are tested on real runners** — the `native` job in
+  `.github/workflows/ci.yml`, whose own comment states the matrix and which
+  tests skip themselves where — read it there rather than keeping a copy here.
+  Dagger's engine runs Linux containers and cannot;
+  [.dagger notes](.dagger/CLAUDE.md) records why Wine is not a substitute, and
+  that is settled. Every package's tests run on all three platforms, which is a
+  rule about fixtures, not a list of helpers: a path or a pattern is built
+  through the package's own helper (`tp`/`np` and their neighbours — that
+  package's notes say which spelling a *pattern* takes and which a *printed
+  path* takes) and never hardcoded Unix-style; a case that needs something a
+  platform lacks skips itself with a reason rather than being left out; and a
+  helper isolating `$HOME` sets **both** `HOME` and `USERPROFILE`, since
+  `os.UserHomeDir` reads a different one per platform.
+- **CLI framework: stdlib `flag`; config parser: hand-rolled.** Both
+  deliberate, both with a revisit condition — see
+  [cmd/envoke](cmd/envoke/CLAUDE.md) and
+  [internal/config](internal/config/CLAUDE.md).
 
-- **CLI framework: stdlib `flag`.** No subcommands existed to justify
-  `cobra`/`urfave-cli` when this was decided; revisit only if subcommand
-  parsing genuinely outgrows `flag`. Each subcommand builds its own set via
-  `newFlagSet` (`ContinueOnError`, output discarded, no default usage dump)
-  so `run` stays a plain function returning an exit code and the usage text
-  stays in envoke's own voice. Don't hand-roll argument scanning: the
-  previous version only recognised `--shell` in position 0, couldn't accept
-  a path named `-y`, and had no `--`. The one deliberate exception is
-  `cmdAllow` picking `--yes`/`-y` back out of the positionals, because
-  `envoke allow <path> --yes` shipped as documented behaviour and stdlib
-  `flag` stops at the first positional.
-- **Config parser: hand-rolled, not a grammar library.** The grammar is a
-  simple line-oriented format — a hand-rolled scanner keeps positioned error
-  messages simple. Revisit only if the grammar grows real nesting/expressions.
-- Table-driven tests via subtests (`Test<Func>_<Scenario>` naming), including
-  a regression test for each ondir bug fixed (see docs/design-notes.md).
-  `go test ./... -race` must pass.
-- **`internal/config` has fuzz targets** (`fuzz_test.go`): `FuzzParse`,
-  `FuzzParseBytesMatchesParse` and `FuzzCompilePattern`. The parser is
-  hand-rolled by choice and consumes a whole file of unstructured text that
-  decides what shell code runs, which is what native fuzzing is for. Their
-  seed corpora run as ordinary tests under `dagger call -m .dagger test`;
-  `dagger call -m .dagger fuzz [--fuzz-time=5m]` actually fuzzes (not a
-  `+check` — a fixed-duration run per target would tax every CI run for a
-  low hit rate). Adding a target means adding it to `fuzzTargets` in
-  `.dagger/main.go` too; it is listed explicitly so the omission is visible.
-- **Windows and macOS are tested on real runners, not in Dagger.** Dagger's
-  engine runs Linux containers — it cannot run a Windows container at all,
-  and Wine is not a workable substitute (Wine 8 lacks the
-  `bcryptprimitives.dll` modern Go requires; Wine 10 needs x86 segmentation
-  that Apple Silicon's emulation doesn't provide, so it isn't even
-  reproducible locally — both verified, don't re-litigate it). The `native`
-  job in `.github/workflows/ci.yml` runs `go test` on `macos-latest`
-  (`./...`) and `windows-latest` (`./internal/...`). Windows is scoped to
-  `internal/` because `cmd/envoke`'s fixtures use Unix-style absolute paths
-  (`"/a"`), which `filepath.IsAbs` rejects there; widening it means porting
-  those fixtures, and should be verified on a real Windows box.
-  Platform-specific test conventions: `tp`/`np` in `internal/matcher` for
-  volume-prefixed paths, `requirePOSIXShell` where a test needs `sh -c`,
-  `requirePOSIXHarness` where a test drives an interpreter through a
-  `#!/bin/sh` stub, and `isolateEnv` setting **both** `HOME` and
-  `USERPROFILE` (`os.UserHomeDir` reads a different one per platform).
-- **The generated bash scripts must work on bash 3.2**, which is still
-  `/bin/bash` on every Mac. `mapfile` is 4.0+ and silently produces nothing
-  there, so the completion uses a `while IFS= read -r` loop instead. The
-  macOS CI runner is what actually exercises this.
-- **Never run `go build`/`go test`/`go vet`/`gofmt`/`golangci-lint` directly
-  on the host.** Always verify through `dagger call -m .dagger <check>`
-  (`fmt`/`vet`/`build`/`test`/`lint`/`test-shell-*`) — this runs on the
-  pinned images CI uses, not whatever's installed locally, which is the
-  whole point of `.dagger`. This also applies to `.dagger`'s own code (own
-  `go.mod`; verify via `docker run` against the pinned Go image —
-  `scripts/test-shellinit-all-shells.sh` is one such rerunnable one-off, for
-  running the full `internal/shellinit` suite with every interpreter
-  installed at once). If a test run shows a `SKIP`, that's a signal to run
-  it through Dagger/Docker, not something to wave off.
-- Static, dependency-free binaries — no cgo, zero non-stdlib imports.
-  Keep it that way unless a real need appears.
-- **Trust store location: `$XDG_DATA_HOME` (state), not `$XDG_CONFIG_HOME`
-  (config).** Trust records are runtime state, not user config, so they
-  follow XDG's separate data-home convention.
+## Editing CONTRIBUTING.md
 
-## Documentation site
+`docs/contributing.md` embeds it verbatim via `pymdownx.snippets`, so
+**`CONTRIBUTING.md` names repository files in prose and never links to them**:
+a relative link breaks once rendered under `docs/`'s own path, and an absolute
+`github.com/...` URL pins to `main`, so a tagged release's page would send
+readers to a newer document than the one they're reading. In-page anchors
+(`#how-to-help`) and genuinely external links are fine.
 
-A user-facing docs site (`mkdocs.yml` + `docs/`, MkDocs Material) is
-separate from this file and the README — README stays the GitHub-landing
-pitch, this file stays contributor-facing, `docs/` is the structured site.
-`docs/contributing.md` embeds `CONTRIBUTING.md` verbatim via
-`pymdownx.snippets` rather than duplicating it — cross-links inside
-`CONTRIBUTING.md` use absolute `github.com/Neirda24/envoke/...` URLs since a
-relative link wouldn't resolve once rendered under `docs/`'s own path.
-
-- Preview locally: `pip install -r docs/requirements.txt && mkdocs serve`,
-  or without installing Python: `dagger -m ./.dagger call docs up --ports
-  8000:8000`.
-- `.github/workflows/docs.yml` builds and deploys to GitHub Pages on push to
-  `main` (paths-filtered to `docs/`, `mkdocs.yml`, `CONTRIBUTING.md`).
+`.github/workflows/docs.yml` builds with `mkdocs build --strict` on push to
+`main`, behind a paths filter the workflow itself states — a change outside it
+does not deploy, so a strict-build failure is one CI reaches only when the
+filter matches. `dagger call -m .dagger docs-build` runs the same strict build
+on any change.
 
 ## Don't
 
-- Don't add a feature before the capability it depends on actually works
-  and is tested (e.g. don't polish packaging before the trust mechanism is
-  solid).
+- Don't add a feature before the capability it depends on works and is tested
+  (e.g. don't polish packaging before trust is solid).
 - Don't add implicit/automatic leave behavior — re-read the "enter/leave are
-  independent" principle before adding anything that feels like convenience
-  state management.
+  independent" principle first.

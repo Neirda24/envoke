@@ -1,0 +1,9 @@
+# Scoped here rather than in the project's .gitignore, which is for build
+# output. These are per-developer, not project policy.
+
+# The permissions one contributor grants themselves; settings.json is the
+# shared half and is checked in.
+settings.local.json
+
+# Working trees Claude Code creates for isolated runs.
+worktrees/
