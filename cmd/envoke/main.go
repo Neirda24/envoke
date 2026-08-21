@@ -329,10 +329,6 @@ func cmdShellHook(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	code := reportLoadFailures(stderr, entries)
-	// On the hot path too: a writable store lets someone forge an approval
-	// outright, the one warning that has to reach a user who never runs
-	// anything but `cd`.
-	warnUnsafeStore(stderr)
 
 	leaves, enters, err := matcher.Resolve(configset.Configs(entries), from, to)
 	if err != nil {
@@ -342,6 +338,14 @@ func cmdShellHook(args []string, stdout, stderr io.Writer) int {
 	if len(leaves)+len(enters) == 0 {
 		return code
 	}
+
+	// On the hot path too, not only in the typed commands: a writable store
+	// lets someone forge an approval outright, which is the one warning that
+	// has to reach a user who never runs anything but `cd`. Below the
+	// early-out, because a forged approval can only take effect where a block
+	// would run, and every `cd` that matches nothing would otherwise stat the
+	// store's ancestors for a warning about nothing.
+	warnUnsafeStore(stderr)
 
 	kept, _ := runnable(stderr, entries, fmt.Sprintf("for %s -> %s", from, to), leaves, enters)
 	fprint(stdout, raw(executor.Render(*shell, kept[0], kept[1])))
@@ -371,6 +375,29 @@ func locateConfigs() (globalPath, fragmentDir string, err error) {
 		fragmentDir = dir
 	}
 	return globalPath, fragmentDir, nil
+}
+
+// emptySetReason says why envoke has nothing to act on, for the commands a
+// human typed and is waiting on an answer from.
+//
+// "You have no envokerc.d directory" and "you have one and every file in it was
+// skipped" are the same empty set and want opposite next moves — create the
+// directory, or look at what is in it — so a message that only ever claims the
+// first sends half its readers looking in the wrong place. Reached only when
+// the set is empty, which is why it can afford to locate a second time rather
+// than widen what loadConfigSet returns.
+func emptySetReason() string {
+	_, dir, err := locateConfigs()
+	if err != nil || dir == "" {
+		return "no central config, and no " + config.DirName + " directory"
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return "no central config, and no directory at " + dir
+	}
+	// The set being empty with the directory present means nothing in it
+	// counted as a fragment, and the skip rules are the only way that happens
+	// short of it being empty (see config.Fragments).
+	return "no central config, and " + dir + " holds no config files -- names starting with \".\" or ending in \"~\", and links to directories, are skipped"
 }
 
 // loadConfigSet locates and loads everything envoke acts on.
@@ -464,36 +491,16 @@ func mayRun(stderr io.Writer, e configset.Entry, matched int, context string) bo
 	return false
 }
 
-// resolveConfigPath turns a subcommand's leftover positional arguments into
-// the config path to act on: the one given, or the located config when none
-// is.
-func resolveConfigPath(positional []string, cmd, usage string, stderr io.Writer) (path string, code int, ok bool) {
-	switch len(positional) {
-	case 0:
-		p, found, err := config.Locate()
-		if err != nil {
-			fprintln(stderr, "envoke:", err)
-			return "", 1, false
-		}
-		if !found {
-			fprintf(stderr, "envoke: no config found (looked for %s); pass a path explicitly: envoke %s <path>\n", p, cmd)
-			return "", 1, false
-		}
-		return p, 0, true
-	case 1:
-		return positional[0], 0, true
-	default:
-		fprintln(stderr, "usage:", usage)
-		return "", 2, false
-	}
-}
-
 // cmdAllow trusts a config's current content, so shell-hook will run blocks
 // matched against it until it is edited again.
 //
 // With no path it covers the whole set, because that is the unit a user
 // thinks in: splitting rules across files is an organisational choice, not a
-// decision to approve them one at a time. A path targets exactly that file.
+// decision to approve them one at a time.
+//
+// A path targets exactly that file — the file, though, not the spelling: any
+// name reaching a config the set already holds approves it under the set's own
+// name for it, because that is the name the hook looks up.
 //
 // Review output depends on whether there is a prior approval to compare
 // against: a full block dump for a first-time trust, a +/- diff when the file
@@ -520,13 +527,13 @@ func cmdAllow(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 		positional = append(positional, a)
 	}
 
-	paths, code, ok := allowTargets(positional, stderr)
+	paths, derived, code, ok := configTargets(positional, "allow", allowUsage, stderr)
 	if !ok {
 		return code
 	}
 	warnUnsafeStore(stderr)
 
-	pending, failed := reviewForApproval(stdout, stderr, paths)
+	pending, failed := reviewForApproval(stdout, stderr, paths, derived)
 	if len(pending) == 0 {
 		if failed {
 			return 1
@@ -569,44 +576,103 @@ type candidate struct {
 	content []byte
 }
 
-// allowTargets resolves what `envoke allow` should act on: the given path, or
-// every config envoke would load when none is given.
-func allowTargets(positional []string, stderr io.Writer) (paths []string, code int, ok bool) {
+// configTargets resolves what `envoke allow` or `envoke revoke` should act on:
+// the given path, or every config envoke would load when none is given.
+//
+// Shared by the two so they cannot drift on what "no path" means: a set that one
+// command approves has to be a set the other can withdraw, or the whole-set
+// default has no inverse.
+//
+// derived says which of the two happened, because "this file is not there" is
+// not the same report in both. A derived path is one envoke chose, and a central
+// config that hasn't been written yet is a state the hot path already treats as
+// ordinary; a path the user typed and that isn't there is a typo.
+func configTargets(positional []string, cmd, usage string, stderr io.Writer) (paths []string, derived bool, code int, ok bool) {
 	switch len(positional) {
 	case 1:
-		return positional, 0, true
+		return positional, false, 0, true
 	case 0:
 		paths, err := configPaths()
 		if err != nil {
 			fprintln(stderr, "envoke:", err)
-			return nil, 1, false
+			return nil, true, 1, false
 		}
 		if len(paths) == 0 {
-			fprintf(stderr, "envoke: no config found; pass a path explicitly: envoke allow <path>\n")
-			return nil, 1, false
+			fprintf(stderr, "envoke: no config found; pass a path explicitly: envoke %s <path>\n", cmd)
+			return nil, true, 1, false
 		}
-		return paths, 0, true
+		return paths, true, 0, true
 	default:
-		fprintln(stderr, "usage:", allowUsage)
-		return nil, 2, false
+		fprintln(stderr, "usage:", usage)
+		return nil, false, 2, false
 	}
 }
 
 // reviewForApproval prints what each path would have envoke run and returns
-// the ones still needing approval. A path that couldn't be read or parsed is
-// skipped rather than aborting the others — with a set of fragments the broken
-// one may not be the one being approved — and sets failed.
-func reviewForApproval(stdout, stderr io.Writer, paths []string) (pending []candidate, failed bool) {
-	for _, path := range paths {
+// the ones still needing approval. failed reports that some path couldn't be
+// read or parsed — that one is skipped rather than aborting the others, since
+// with a set of fragments the broken one may not be the one being approved.
+//
+// Each path is reviewed the way the set will actually load it, which for a
+// fragment means through the symlink: the file that gets parsed, the directory
+// its "./" patterns resolve against, and the bound its blocks are held to are
+// all properties of the target rather than of the link. Approving content whose
+// displayed meaning differs from its effective one approves nothing.
+func reviewForApproval(stdout, stderr io.Writer, paths []string, derived bool) (pending []candidate, failed bool) {
+	// The set is the only thing that can answer "is this config confined, and
+	// to what": that decision needs the config directory's resolved root, which
+	// no single file carries. Its entries also hold the bytes configset has
+	// already read, so a path in the set is not read a second time here.
+	entries, err := loadConfigSet()
+	if err != nil {
+		fprintln(stderr, "envoke:", err)
+		return nil, true
+	}
+
+	reviewed := make(map[string]bool, len(paths))
+	for _, target := range paths {
+		// Whichever branch supplies it, one read feeds the parse, the review
+		// and the trust record alike.
+		e, inSet := entryFor(entries, target)
+		if !inSet {
+			// A config the set does not hold: a path named explicitly, or one
+			// the set's dedup dropped. Nothing will ever load it as a fragment,
+			// so this is the matching loader, and it reads once as well.
+			cfg, content, loadErr := config.LoadFile(target)
+			e = configset.Entry{Path: target, Config: cfg, Content: content, Err: loadErr}
+		}
+		// Nothing below names the argument again. The entry's own path is the
+		// file the set loaded and the name the hook will look up, so it is the
+		// one the review has to describe and the one the record has to be keyed
+		// on; approving under any other spelling records trust nothing reads.
+		path := e.Path
+		if reviewed[path] {
+			// Two names for one file — configPaths lists both where the set's
+			// dedup kept one entry — would otherwise dump the same blocks twice
+			// under one confirmation.
+			continue
+		}
+		reviewed[path] = true
+
 		warnUnsafeConfigAndDir(stderr, path)
 
-		// One read feeds the parse, the review and the trust record alike.
-		cfg, current, err := config.LoadFile(path)
-		if err != nil {
-			fprintln(stderr, "envoke:", err)
+		if e.Err != nil {
+			if derived && !e.Fragment && errors.Is(e.Err, fs.ErrNotExist) {
+				// reportLoadFailures makes the same exemption for the same
+				// reason: $ENVOKERC is honoured verbatim, so a central config
+				// nobody has written yet is an ordinary state rather than a
+				// failure, and the whole-set form did not name that file. It has
+				// to stay a success too, because a dotfiles bootstrap runs
+				// `envoke allow --yes` under set -e and the fragments it does
+				// hold approve cleanly. A path typed by hand keeps failing.
+				fprintf(stdout, "envoke: %s does not exist yet -- nothing to review\n", path)
+				continue
+			}
+			fprintln(stderr, "envoke:", e.Err)
 			failed = true
 			continue
 		}
+		current := e.Content
 
 		previous, hadPrevious, err := trust.PreviousContent(path)
 		if err != nil {
@@ -634,11 +700,162 @@ func reviewForApproval(stdout, stderr io.Writer, paths []string) (pending []cand
 			printDiff(stdout, path, previous, string(current))
 		} else {
 			fprintf(stdout, "envoke: about to trust %s -- review each block below before confirming:\n\n", path)
-			printBlocksForReview(stdout, cfg.Blocks)
+			printBlocksForReview(stdout, e.Config.Blocks)
+		}
+		if printConfigBound(stdout, "  note: ", e) {
+			fprintln(stdout)
 		}
 		pending = append(pending, candidate{path: path, content: current})
 	}
 	return pending, failed
+}
+
+// entryFor finds the loaded entry for a path, so a config `envoke allow` was
+// pointed at is reviewed as the set will load it — content, parse base and
+// confinement alike — rather than as a standalone file, and so its approval is
+// recorded under the name the hook will look up.
+//
+// Matched on the file, not on the spelling. The set reaches a fragment through
+// the resolved config directory (config.Fragments resolves before walking it),
+// while a user reaches it by whatever spelling their home layout gives them —
+// and in the ordinary dotfiles layout, which is also what tab completion hands
+// them, those are two different strings for one file.
+//
+// Two passes, spelling before inode. A textual match is an identity match as
+// well, so the second pass only ever answers for a target the first did not, and
+// where one file is in the set under two names — a hard-linked fragment; the
+// dedup's key is a resolved path and cannot collapse those — the target's own
+// name in the set wins over another name's inode, which is the name the hook
+// looks up for that entry. What the order is for is cost: the whole-set form
+// feeds this configPaths' names, which are the entries' own, so every target
+// settles above and nothing is stat'd at all, where testing both per candidate
+// stats both sides of every earlier entry for every target — n(n-1) syscalls
+// across a set, for an answer string equality already had.
+func entryFor(entries []configset.Entry, path string) (configset.Entry, bool) {
+	for _, e := range entries {
+		if sameName(path, e.Path) {
+			return e, true
+		}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return configset.Entry{}, false
+	}
+	for _, e := range entries {
+		if sameFileAs(info, e.Path) {
+			return e, true
+		}
+	}
+	return configset.Entry{}, false
+}
+
+// sameName reports whether two paths are one string once made absolute.
+//
+// It is the only test that can answer for a file that isn't there — `envoke
+// allow` on an $ENVOKERC nobody has written yet is an ordinary state, and two
+// spellings of a file that does not exist cannot be told apart by anything
+// stronger — which is why both scans below exhaust it before statting.
+func sameName(a, b string) bool {
+	absA, errA := filepath.Abs(a)
+	absB, errB := filepath.Abs(b)
+	return errA == nil && errB == nil && absA == absB
+}
+
+// sameFileAs reports whether path is the file info describes — the file, not the
+// spelling, and it needs no assumption about which symlinks either side
+// followed. A path that cannot be stat'd is not a match: a file nothing can read
+// is not evidence about which file was meant.
+func sameFileAs(info os.FileInfo, path string) bool {
+	other, err := os.Stat(path)
+	return err == nil && os.SameFile(info, other)
+}
+
+// setSpelling is the name the config set reaches path's file by — the name its
+// trust record is keyed on — given the set's names in configPaths order. A path
+// none of them names comes back unchanged, so a record for a config outside the
+// set, which is what pointing $ENVOKERC somewhere else leaves behind, stays
+// revocable by the name it was approved under.
+//
+// Order matters: it is configPaths' order, which is the set's, so a file two
+// names reach resolves to whichever of them configset.Load's dedup kept. Textual
+// before physical for the reason entryFor is, and the target is stat'd once: a
+// name nothing in the set spells and nothing on disk answers for — `envoke
+// revoke` on a record left by a config since deleted — comes back from that one
+// syscall rather than from two per name in the set.
+//
+// Only the names are needed, so nothing here reads a config. Withdrawing a
+// record is a decision about a path, not about content.
+func setSpelling(known []string, path string) string {
+	for _, p := range known {
+		if sameName(path, p) {
+			return p
+		}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return path
+	}
+	for _, p := range known {
+		if sameFileAs(info, p) {
+			return p
+		}
+	}
+	return path
+}
+
+// printConfigBound reports the two things that decide whether a config's blocks
+// can fire at all and that no other output carries: the file a symlinked config
+// leads to, and — for a confined one — the directory matcher.NewMatch keeps
+// every one of its blocks inside, whatever their patterns say. Without it a
+// project fragment whose pattern points out of its own tree is approved, lists
+// as trusted, shows as loaded, and then never fires.
+//
+// Only the commands a human is reading call this. It costs a readlink per
+// config to report something the hook could not act on anyway, which is the
+// same reason warnUnsafeConfigAndDir is kept off that path.
+//
+// lead prefixes every line: debug indents these under a config's status line,
+// where the nesting says what they describe, while allow's review has nothing
+// to nest under and needs each line marked as a note rather than read as one
+// more block of the config being approved.
+//
+// noted says whether anything was printed, for a caller that follows it with a
+// blank line.
+func printConfigBound(w io.Writer, lead string, e configset.Entry) (noted bool) {
+	if target, ok := linkTarget(e.Path); ok {
+		fprintf(w, "%ssymlink to %s\n", lead, target)
+		noted = true
+	}
+	if e.Config == nil || !e.Config.Local {
+		return noted
+	}
+	fprintf(w, "%sconfined to %s -- its blocks cannot match outside that directory, whatever their patterns say\n",
+		lead, e.Config.Dir)
+	if e.Config.DirUnresolved {
+		fprintf(w, "%sits symlink could not be followed, so that bound is the link's own directory\n", lead)
+	}
+	return true
+}
+
+// linkTarget is the file a config symlink leads to, every link in the chain
+// followed: that is the file config.LoadFragmentResolved parses and the
+// directory a confined config is bounded to, so reporting the link's own text
+// would name neither. ok is false for a config that is not a symlink.
+//
+// The text is the fallback for a chain that can't be followed, since it is then
+// all there is to report — the state Config.DirUnresolved describes.
+func linkTarget(path string) (string, bool) {
+	text, err := os.Readlink(path)
+	if err != nil {
+		return "", false
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved, true
+	}
+	if !filepath.IsAbs(text) {
+		text = filepath.Join(filepath.Dir(path), text)
+	}
+	return text, true
 }
 
 // configPaths lists every config file envoke would load, in set order,
@@ -847,28 +1064,78 @@ const revokeUsage = "envoke revoke [path]"
 // cmdRevoke withdraws trust for a config. Without it the only ways back are
 // editing the config, which revokes trust as a side effect, or deleting a
 // sha256-named file out of the data home by hand.
+//
+// With no path it covers the whole set, for the same reason `envoke allow`
+// does and because that is what makes the two inverses: a set approved by one
+// command has to be withdrawable by one command. A path targets exactly that
+// file, whether or not it is in the set.
+//
+// It names every file it acted on and exits 0 whether it removed three records
+// or none: the end state asked for is "none of these is trusted", and a config
+// that was never approved already satisfies it. Deliberately unlike `reload`,
+// which exits non-zero when it was refused, because there doing nothing means
+// the blocks the user typed for never ran.
+//
+// A record left behind by a config that has since left the set is not this
+// command's: `list` reconciles the set against the store, and `prune` drops the
+// records whose config file no longer exists. Nothing here widens revoke into
+// either.
 func cmdRevoke(args []string, stdout, stderr io.Writer) int {
 	flags := newFlagSet("revoke")
 	if ok, code := parseFlags(flags, args, revokeUsage, stderr); !ok {
 		return code
 	}
 
-	path, code, ok := resolveConfigPath(flags.Args(), "revoke", revokeUsage, stderr)
+	paths, _, code, ok := configTargets(flags.Args(), "revoke", revokeUsage, stderr)
 	if !ok {
 		return code
 	}
 
-	found, err := trust.Revoke(path)
-	if err != nil {
-		fprintln(stderr, "envoke:", err)
-		return 1
+	// The set's own names, so a target can be matched to the file it is rather
+	// than to the string it was typed as. Listed once for the whole loop, and the
+	// error dropped: no names means every target stays spelled as given, which is
+	// what a path outside the set gets anyway — and revoking one record must not
+	// become impossible because something else in $ENVOKERC_D is broken.
+	known, _ := configPaths()
+
+	done := make(map[string]bool, len(paths))
+	for _, target := range paths {
+		// The record `allow` wrote is keyed on the set's spelling, so that is
+		// what has to be removed however the user reached the file.
+		path := setSpelling(known, target)
+		if done[path] {
+			// Two names for one file, which is what the set's dedup collapses:
+			// reporting it twice would print a revocation and a "was not trusted"
+			// for the same file.
+			continue
+		}
+		done[path] = true
+
+		// Both spellings, where the user's differs from the set's. Trust is keyed
+		// on the path text, so a file approved before this command resolved
+		// identity has a record under whatever was typed then — inert, but still a
+		// plaintext copy of the config in the store, and no other command can name
+		// it. The end state asked for is that this file is not trusted.
+		keys := []string{path}
+		if target != path {
+			keys = append(keys, target)
+		}
+
+		found := false
+		for _, key := range keys {
+			removed, err := trust.Revoke(key)
+			if err != nil {
+				fprintln(stderr, "envoke:", err)
+				return 1
+			}
+			found = found || removed
+		}
+		if !found {
+			fprintf(stdout, "envoke: %s was not trusted -- nothing to revoke\n", path)
+			continue
+		}
+		fprintf(stdout, "envoke: revoked trust for %s\n", path)
 	}
-	if !found {
-		// Not an error: the requested end state already holds.
-		fprintf(stdout, "envoke: %s was not trusted -- nothing to revoke\n", path)
-		return 0
-	}
-	fprintf(stdout, "envoke: revoked trust for %s\n", path)
 	return 0
 }
 
@@ -1167,20 +1434,38 @@ func enabledWord(disabled bool) string {
 	return "on"
 }
 
-// transitionArgs resolves the <from> <to> pair shared by exec and debug. Both
-// are typed by a human, unlike shell-hook, so both accept relative paths and
-// default to the shell's own last transition.
-func transitionArgs(args []string) (from, to string, err error) {
+// transitionArgs resolves the <from> <to> pair shared by exec and debug.
+// Both are typed by a human, unlike shell-hook which only ever receives
+// generated arguments, so both accept relative paths and infer what they can.
+//
+// The two halves are not equally inferable, which is why <to> may be omitted
+// on its own: envoke can always work out where you are, and can only be told
+// where you came from. OLDPWD is a POSIX shell convention that PowerShell has
+// no counterpart to (its hook tracks the previous directory in a shell
+// variable of its own), so the no-argument form is a POSIX convenience and
+// `envoke <cmd> <from>` is the form that works in every shell.
+//
+// cmd names the caller so the error can print a command a user can retype;
+// the two callers are the only place the name is known.
+func transitionArgs(cmd string, args []string) (from, to string, err error) {
+	var inferTo bool
 	switch len(args) {
 	case 0:
-		from, to = os.Getenv("OLDPWD"), os.Getenv("PWD")
-		if from == "" || to == "" {
-			return "", "", errors.New("$OLDPWD/$PWD are not both set, so there's no transition to infer -- pass <from> and <to>")
+		from, inferTo = os.Getenv("OLDPWD"), true
+		if from == "" {
+			return "", "", fmt.Errorf("this shell doesn't export OLDPWD (PowerShell never does), so there's no previous directory to infer -- name the one you came from: envoke %s <from>", cmd)
 		}
+	case 1:
+		from, inferTo = args[0], true
 	case 2:
 		from, to = args[0], args[1]
 	default:
-		return "", "", fmt.Errorf("expected either no arguments or exactly two, got %d", len(args))
+		return "", "", fmt.Errorf("expected at most two arguments, got %d", len(args))
+	}
+	if inferTo {
+		if to, err = currentDir(); err != nil {
+			return "", "", err
+		}
 	}
 
 	if from, err = filepath.Abs(from); err != nil {
@@ -1192,7 +1477,7 @@ func transitionArgs(args []string) (from, to string, err error) {
 	return from, to, nil
 }
 
-const execUsage = "envoke exec [<from> <to>]  (defaults to $OLDPWD -> $PWD)"
+const execUsage = "envoke exec [<from> [<to>]]  (<to> defaults to the current directory, <from> to $OLDPWD)"
 
 // cmdExec runs the matching blocks for non-interactive callers — scripts,
 // Makefiles, CI — with no interactive shell to hook into.
@@ -1209,11 +1494,24 @@ func cmdExec(args []string, stderr io.Writer) int {
 	if ok, code := parseFlags(flags, args, execUsage, stderr); !ok {
 		return code
 	}
-	from, to, err := transitionArgs(flags.Args())
+	from, to, err := transitionArgs("exec", flags.Args())
 	if err != nil {
 		fprintln(stderr, "envoke:", err)
 		fprintln(stderr, "usage:", execUsage)
 		return 2
+	}
+
+	// One argument names <from> and leaves <to> inferred, which can be read as
+	// "run the blocks for this directory" -- the opposite direction, and here
+	// that means running the named directory's leave blocks. debug leads with
+	// the pair it resolved, so the misreading corrects itself there; this is
+	// that line for exec. Scoped to this form alone: the two-argument form
+	// states the pair already, and the no-argument form is what scripts use,
+	// which must keep printing nothing. On stderr, which is also the only
+	// stream exec is given -- its stdout belongs to the blocks it runs, and a
+	// caller capturing them must not find a diagnostic mixed in.
+	if len(flags.Args()) == 1 {
+		fprintf(stderr, "envoke exec: %s -> %s\n", from, to)
 	}
 
 	// Unlike shell-hook, out loud: exec is called deliberately, and silently
@@ -1251,7 +1549,7 @@ func cmdExec(args []string, stderr io.Writer) int {
 			fprintln(stderr, "envoke:", line)
 		}
 		if errors.Is(err, envoke.ErrNoConfig) {
-			fprintf(stderr, "envoke: no central config, and no %s directory\n", config.DirName)
+			fprintf(stderr, "envoke: %s\n", emptySetReason())
 		}
 		if errors.Is(err, envoke.ErrUntrusted) {
 			fprintln(stderr, "envoke: approve a config with `envoke allow` before it will run here")
@@ -1268,14 +1566,14 @@ func cmdExec(args []string, stderr io.Writer) int {
 // transition, without running them and regardless of trust. It notes whether
 // each config is trusted, since that decides whether shell-hook would actually
 // run what is listed.
-const debugUsage = "envoke debug [<from> <to>]  (defaults to $OLDPWD -> $PWD)"
+const debugUsage = "envoke debug [<from> [<to>]]  (<to> defaults to the current directory, <from> to $OLDPWD)"
 
 func cmdDebug(args []string, stdout, stderr io.Writer) int {
 	flags := newFlagSet("debug")
 	if ok, code := parseFlags(flags, args, debugUsage, stderr); !ok {
 		return code
 	}
-	from, to, err := transitionArgs(flags.Args())
+	from, to, err := transitionArgs("debug", flags.Args())
 	if err != nil {
 		fprintln(stderr, "envoke:", err)
 		fprintln(stderr, "usage:", debugUsage)
@@ -1288,7 +1586,7 @@ func cmdDebug(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if len(entries) == 0 {
-		fprintf(stderr, "envoke: no config found (no central config, and no %s directory)\n", config.DirName)
+		fprintf(stderr, "envoke: no config found (%s)\n", emptySetReason())
 		return 1
 	}
 	code := reportLoadFailures(stderr, entries)
@@ -1309,6 +1607,7 @@ func cmdDebug(args []string, stdout, stderr io.Writer) int {
 	fprintf(stdout, "envoke debug: %s -> %s\n", from, to)
 	for _, e := range entries {
 		fprintf(stdout, "  config %s (%s)\n", e.Path, debugStatus(e))
+		printConfigBound(stdout, "    ", e)
 	}
 
 	// debug never executes anything, so being switched off doesn't stop it --
@@ -1424,20 +1723,23 @@ func usage(w io.Writer) {
 
 Usage:
   envoke version                                     print version, commit, build date, and Go/OS/arch info, then exit
+  envoke help                                        print this usage text and exit
   envoke shell-init [<shell>]                        print shell hook code to eval/source (bash|zsh|fish|tcsh|powershell; guessed from $SHELL if omitted)
   envoke completion [<shell>]                        print a tab-completion script (bash|zsh|fish; guessed from $SHELL if omitted)
   envoke allow [--yes|-y] [path]                     trust a config after reviewing and confirming it (default: every config envoke would load; --yes/-y skips the y/N prompt)
-  envoke revoke [path]                               withdraw trust for a config (default: the located config)
-  envoke list                                        list every trusted config and whether its current content still matches
+  envoke revoke [path]                               withdraw trust for a config (default: every config envoke would load)
+  envoke list                                        reconcile the configs envoke would load with the trust store: each one's status, then any records left over
   envoke prune                                       drop trust records whose config no longer exists
   envoke disable                                     stop running blocks, in every shell, until enable
   envoke enable                                      undo disable (set ENVOKE_DISABLE=1 or =0 to override either one for a single shell)
   envoke reload [--shell <name>]                     re-apply the enter blocks for the current directory: eval "$(envoke reload)"
-  envoke exec [<from> <to>]                          run the blocks matching a directory change, each in its own subprocess (for scripts/CI, not your interactive shell)
-  envoke debug [<from> <to>]                         print which blocks would fire for a directory change, without running them
+  envoke exec [<from> [<to>]]                        run the blocks matching a directory change, each in its own subprocess (for scripts/CI, not your interactive shell)
+  envoke debug [<from> [<to>]]                       print which blocks would fire for a directory change, without running them
   envoke shell-hook [--shell <name>] <from> <to>     run blocks matching a directory change (internal, called by the shell hook; <from>/<to> may also come from $ENVOKE_FROM/$ENVOKE_TO)
 
-exec and debug default to $OLDPWD -> $PWD, and accept relative paths.
+exec and debug accept relative paths. <to> defaults to the directory you are
+in; <from> defaults to $OLDPWD, which only POSIX shells set -- in PowerShell,
+name the directory you came from: envoke debug <from>
 
 Blocks come from your central config ($ENVOKERC, ~/.envokerc or
 $XDG_CONFIG_HOME/envoke/config) plus every file in the envokerc.d directory
