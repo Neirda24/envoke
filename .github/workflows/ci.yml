@@ -20,19 +20,19 @@ jobs:
           persist-credentials: false
       - uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
         with:
-          version: "0.21.7"
+          version: "v0.21.8"
           module: .dagger
           check: "true"
       - uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
         with:
-          version: "0.21.7"
+          version: "v0.21.8"
           module: .dagger
           call: --gh-auth-token=env://GITHUB_TOKEN zizmor
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
         with:
-          version: "0.21.7"
+          version: "v0.21.8"
           module: .dagger
           call: --gh-auth-token=env://GITHUB_TOKEN actions-up
         env:
