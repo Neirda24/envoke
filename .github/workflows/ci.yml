@@ -45,31 +45,25 @@ jobs:
   # provide, so it isn't even reproducible on a maintainer's machine).
   #
   # So the platforms envoke publishes binaries for get tested on real runners
-  # instead. This is the only thing in CI that proves the Windows path
-  # handling actually works rather than merely compiles, and the only place
-  # macOS's bash 3.2 -- still /bin/bash on every Mac -- ever runs the
-  # generated scripts.
+  # instead. Both run the whole suite. This is the only thing in CI that proves
+  # the Windows path handling actually works rather than merely compiles, the
+  # only place PowerShell's hook runs on the platform its hook point belongs
+  # to, and the only place macOS's bash 3.2 -- still /bin/bash on every Mac --
+  # ever runs the generated scripts.
+  #
+  # A test that cannot mean anything on one of them skips itself and says why:
+  # Windows has no POSIX interpreter for four of the five hook drivers
+  # (requirePOSIXHarness), no permission bits for internal/fsperm to report on
+  # (requirePermissionBits), and no absolute path that can look like a flag.
+  # Reading the SKIP lines in a green Windows log is how that list stays
+  # honest.
   native:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # macOS runs the whole suite: it is POSIX, ships bash/zsh/tcsh, and
-          # its bash 3.2 is the oldest interpreter any user realistically has.
-          - os: macos-latest
-            packages: ./...
-          # Windows runs ./internal/... . cmd/envoke's fixtures are built on
-          # Unix-style absolute paths ("/a"), which filepath.IsAbs rejects on
-          # Windows, so including it would fail for reasons that have nothing
-          # to do with envoke's behaviour. Every package that contains
-          # platform-dependent logic -- matcher's path normalization, config's
-          # ~/$VAR expansion and Locate, trust's store paths -- is covered
-          # here; widening this to ./... means porting those fixtures, which
-          # is worth doing separately and verifying on a real Windows box.
-          - os: windows-latest
-            packages: ./internal/...
+        os: [macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -81,5 +75,5 @@ jobs:
       # interpreter skip themselves when it is absent (requireInterpreter,
       # requirePOSIXShell) rather than failing, so a missing shell shows up
       # as a SKIP in the log instead of a red build.
-      - run: go test ${{ matrix.packages }} -race
+      - run: go test ./... -race
         shell: bash

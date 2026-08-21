@@ -18,8 +18,19 @@ import (
 
 const (
 	// renovate: datasource=docker
-	goImage          = "golang:1.27-bookworm@sha256:484ef6066fa69acb059fdfeda7ba2b8f7391f2ef6abc6f9b8411e669ebd56466"
+	goImage = "golang:1.27-bookworm@sha256:484ef6066fa69acb059fdfeda7ba2b8f7391f2ef6abc6f9b8411e669ebd56466"
+	// renovate.json has one regex manager per constant here, matching on the
+	// constant's name plus the module path spelled out in full. Renaming
+	// either, or splitting the version off into a value of its own, stops
+	// the manager matching and freezes that pin with nothing reporting it.
 	golangciLintPath = "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1"
+	govulncheckPath  = "golang.org/x/vuln/cmd/govulncheck@v1.7.0"
+	// goBuildCachePath/goModCachePath are where goBase mounts its
+	// persistent caches, and are set as GOCACHE/GOMODCACHE there rather
+	// than left to the image's HOME/GOPATH defaults: a mount that isn't
+	// where the toolchain actually looks caches nothing and says nothing.
+	goBuildCachePath = "/root/.cache/go-build"
+	goModCachePath   = "/go/pkg/mod"
 	// renovate: datasource=docker
 	goreleaserImage = "goreleaser/goreleaser:v2.17.1@sha256:1098a0be4da1780f9616a85f4c5050447b53e3e74804d8017ec1e2bbb1fb697a"
 	// renovate: datasource=docker
@@ -42,7 +53,15 @@ type Envoke struct {
 }
 
 func New(
+	// The repository root. Everything below is excluded because it is not an
+	// input to any check, and the source directory's digest is what every
+	// check's cache key is built from: without this, editing a local scratch
+	// note or making a commit re-executes all of them. Keep this list to
+	// things no check reads — .github and docs are read by yaml-lint and
+	// docs-build respectively, so neither may be added.
+	//
 	// +defaultPath="/"
+	// +ignore=[".git", ".idea", "review", "*_handoff.md", "CLAUDE.local.md"]
 	source *dagger.Directory,
 	// +optional
 	ghAuthToken *dagger.Secret,
@@ -52,9 +71,29 @@ func New(
 
 // goBase is a bare Go toolchain container, before the source tree is
 // mounted, so package-install layers cache independently of source edits.
+//
+// The build and module caches are persistent volumes because the source
+// mount invalidates every exec below it: without them each check recompiles
+// the standard library from scratch, and Test instruments it for -race, on
+// every invocation.
+//
+// Sharing is SHARED (the default, stated to make the choice reviewable):
+// `dagger check` runs the checks concurrently, so several containers hold
+// these volumes at once, and the `go` command is built for exactly that —
+// build-cache entries are content-addressed and land by rename, and the
+// module cache serializes its own downloads through lock files. LOCKED would
+// queue every Go check behind one mount and cost more than it buys.
 func (m *Envoke) goBase() *dagger.Container {
 	// CGO must stay enabled: go test -race requires cgo.
-	return dag.Container().From(goImage)
+	return dag.Container().From(goImage).
+		WithEnvVariable("GOCACHE", goBuildCachePath).
+		WithEnvVariable("GOMODCACHE", goModCachePath).
+		WithMountedCache(goBuildCachePath, dag.CacheVolume("go-build"), dagger.ContainerWithMountedCacheOpts{
+			Sharing: dagger.CacheSharingModeShared,
+		}).
+		WithMountedCache(goModCachePath, dag.CacheVolume("go-mod"), dagger.ContainerWithMountedCacheOpts{
+			Sharing: dagger.CacheSharingModeShared,
+		})
 }
 
 func (m *Envoke) withSource(c *dagger.Container) *dagger.Container {
@@ -76,6 +115,28 @@ func (m *Envoke) powershellBase() *dagger.Container {
 		WithExec([]string{"dpkg", "-i", "/tmp/packages-microsoft-prod.deb"}).
 		WithExec([]string{"apt-get", "update"}).
 		WithExec([]string{"apt-get", "install", "-y", "powershell"})
+}
+
+// golangciLintBase installs golangci-lint on top of goBase, before the
+// source tree is mounted, so the install only reruns when golangciLintPath's
+// pin changes — downstream of withSource it would rebuild the whole linter
+// from source on every source edit, which is the check's dominant cost.
+func (m *Envoke) golangciLintBase() *dagger.Container {
+	return m.goBase().
+		// golangci-lint's own go.mod may require a newer Go than this
+		// module's; let the toolchain fetch itself rather than pinning
+		// the base image to whatever golangci-lint currently needs. The
+		// fetched toolchain lands in the module cache, so it is a
+		// one-time download rather than a per-run one.
+		WithEnvVariable("GOTOOLCHAIN", "auto").
+		WithExec([]string{"go", "install", golangciLintPath})
+}
+
+// govulncheckBase installs govulncheck on top of goBase, upstream of the
+// source mount for the same reason as golangciLintBase.
+func (m *Envoke) govulncheckBase() *dagger.Container {
+	return m.goBase().
+		WithExec([]string{"go", "install", govulncheckPath})
 }
 
 // goreleaserBase is a goreleaser container, before the source tree is
@@ -255,13 +316,29 @@ func (m *Envoke) Fuzz(
 //
 // +check
 func (m *Envoke) Lint(ctx context.Context) error {
-	_, err := m.withSource(m.goBase()).
-		// golangci-lint's own go.mod may require a newer Go than this
-		// module's; let the toolchain fetch itself rather than pinning
-		// the base image to whatever golangci-lint currently needs.
-		WithEnvVariable("GOTOOLCHAIN", "auto").
-		WithExec([]string{"go", "install", golangciLintPath}).
+	_, err := m.withSource(m.golangciLintBase()).
 		WithExec([]string{"golangci-lint", "run", "./..."}).
+		Sync(ctx)
+	return err
+}
+
+// Vuln runs govulncheck against the main module.
+//
+// envoke has no non-stdlib imports, which does not mean there is nothing to
+// scan — it means the standard library *is* the dependency, and govulncheck
+// is the tool that knows which of its functions a given Go release has an
+// advisory against. It reports only vulnerabilities on a code path this
+// binary actually reaches, so a finding here is a reason to bump the
+// toolchain rather than a note to file.
+//
+// Deliberately only ./... : .dagger is a separate module whose dependencies
+// come from the Dagger SDK's codegen and are not independently upgradable
+// (see renovate.json), and it never ships to a user.
+//
+// +check
+func (m *Envoke) Vuln(ctx context.Context) error {
+	_, err := m.withSource(m.govulncheckBase()).
+		WithExec([]string{"govulncheck", "./..."}).
 		Sync(ctx)
 	return err
 }
@@ -304,8 +381,8 @@ func (m *Envoke) actionsUpBase() *dagger.Container {
 // Zizmor lints GitHub Actions workflows for common security issues
 // (unpinned actions, excessive permissions, credential persistence, etc.)
 // via https://github.com/zizmorcore/zizmor. Deliberately not a +check: the
-// `check` CLI verb never forwards constructor flags (confirmed — see
-// CLAUDE.md), so a token-authenticated run only works via `dagger call
+// `check` CLI verb never forwards constructor flags, so a
+// token-authenticated run only works via `dagger call
 // zizmor --gh-auth-token=...`; keeping it out of `+check` means CI's
 // unauthenticated `dagger check` run never needs to know about it either.
 func (m *Envoke) Zizmor(ctx context.Context) error {
@@ -462,8 +539,9 @@ func (m *Envoke) Snapshot(ctx context.Context) (*dagger.Directory, error) {
 // Neirda24/homebrew-tap and the scoops push to Neirda24/scoop-bucket
 // (.goreleaser.yaml's homebrew_casks.repository.token and
 // scoops.repository.token overrides) — deliberately a separate,
-// narrower-scoped credential from githubToken (see security_audit.md's
-// Finding 6): a short-lived GitHub App installation token scoped to just
+// narrower-scoped credential from githubToken, so a compromise of the
+// release job cannot reach beyond those two repositories: a short-lived
+// GitHub App installation token scoped to just
 // those two repos, minted per run by release.yml's create-github-app-token
 // step, rather than the old long-lived PAT with write access to both envoke
 // and homebrew-tap.
@@ -475,6 +553,26 @@ func (m *Envoke) Publish(ctx context.Context, githubToken *dagger.Secret, action
 		WithSecretVariable("HOMEBREW_TAP_GITHUB_TOKEN", homebrewTapToken).
 		WithExec([]string{"goreleaser", "release", "--clean"}).
 		Stdout(ctx)
+}
+
+// DocsBuild builds the docs site the way the deploy does, and fails on
+// anything MkDocs would otherwise only mention.
+//
+// --strict is what does the work: mkdocs.yml raises
+// validation.nav.omitted_files to a warning, and a page under docs/ that no
+// nav entry lists would otherwise be built and published at its own URL with
+// the run still green. A broken internal link is the same shape of problem.
+//
+// This exists as a check because the deploy workflow is the only other place
+// the strict build runs, and it runs on push to main behind a paths filter --
+// so until here, a contributor had no way to find out before merging.
+//
+// +check
+func (m *Envoke) DocsBuild(ctx context.Context) error {
+	_, err := m.withSource(m.docsBase()).
+		WithExec([]string{"mkdocs", "build", "--strict"}).
+		Sync(ctx)
+	return err
 }
 
 // Docs starts a live-reloading mkdocs dev server for the docs/ site, bound

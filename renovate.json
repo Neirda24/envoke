@@ -40,8 +40,12 @@
     },
     {
       "customType": "regex",
-      "description": "Dagger CLI version passed to dagger-for-github (kept in sync with .dagger/dagger.json's engineVersion by hand — see CLAUDE.md)",
-      "managerFilePatterns": [".github/workflows/ci.yml", ".github/workflows/release.yml"],
+      "description": "Dagger CLI version passed to dagger-for-github. Grouped with .dagger/dagger.json's engineVersion by the dagger/dagger packageRule above, so both sides move in one PR; every workflow that passes `version:` has to be listed here or it is left behind on a bump.",
+      "managerFilePatterns": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/release.yml",
+        ".github/workflows/actions-autofix.yml"
+      ],
       "matchStrings": [
         "dagger/dagger-for-github@[a-f0-9]+ # v[0-9.]+\\s*\\n\\s*with:\\s*\\n\\s*version:\\s*\"(?<currentValue>[^\"]+)\""
       ],
@@ -66,6 +70,16 @@
       ],
       "datasourceTemplate": "go",
       "depNameTemplate": "github.com/golangci/golangci-lint/v2"
+    },
+    {
+      "customType": "regex",
+      "description": "govulncheck version installed via `go install` in .dagger/main.go",
+      "managerFilePatterns": [".dagger/main.go"],
+      "matchStrings": [
+        "govulncheckPath\\s*=\\s*\"golang.org/x/vuln/cmd/govulncheck@(?<currentValue>v[0-9][a-zA-Z0-9.-]*)\""
+      ],
+      "datasourceTemplate": "go",
+      "depNameTemplate": "golang.org/x/vuln"
     },
     {
       "customType": "regex",

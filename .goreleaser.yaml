@@ -142,9 +142,9 @@ homebrew_casks:
       # separate, narrower credential with write access to homebrew-tap
       # (and, since this same token is reused below for scoops.repository,
       # scoop-bucket) specifically: a short-lived GitHub App installation
-      # token minted per run (see .dagger/main.go's Publish and
-      # security_audit.md's Finding 6 for why this replaced a long-lived
-      # cross-repo PAT).
+      # token minted per run, which replaced a long-lived cross-repo PAT so
+      # that a compromise of the release job cannot reach beyond these two
+      # repositories (see .dagger/main.go's Publish).
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     directory: Casks
     homepage: "https://github.com/Neirda24/envoke"

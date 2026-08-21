@@ -2,6 +2,6 @@
 #
 # internal/shellinit/shellinit.go embeds shell hook scripts as raw string
 # literals with real newlines — CRLF here would inject \r into scripts
-# eval'd/sourced by bash/zsh/fish/tcsh/powershell (see CLAUDE.md's notes on
-# fish's `string collect` and tcsh's `source /dev/stdin` handling).
+# eval'd/sourced by bash/zsh/fish/tcsh/powershell, where fish joins them with
+# `string collect` and tcsh pipes them through `source /dev/stdin`.
 * text=auto eol=lf

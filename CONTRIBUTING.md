@@ -1,16 +1,14 @@
 # Contributing to envoke
 
 Thanks for your interest in contributing. `envoke` is early-stage — see the
-README's [Status](https://github.com/Neirda24/envoke/blob/main/README.md#status)
-section for what's implemented and tested.
+`README.md`'s Status section for what's implemented and tested.
 
 ## Before you start
 
-- Read the [README](https://github.com/Neirda24/envoke/blob/main/README.md)
-  for the pitch and [docs/design-notes.md](https://github.com/Neirda24/envoke/blob/main/docs/design-notes.md)
-  for the non-negotiable design principles (RE2-only matching, path-segment
-  matching, no implicit enter/leave undo, trust-before-execution) and the
-  specific points this project departs from ondir on.
+- Read `README.md` for the pitch and `docs/design-notes.md` for the
+  non-negotiable design principles and the specific points this project
+  departs from ondir on. That page is the authoritative list of them, and a
+  change that steps around one needs to make its case in an issue first.
 - Proposing something that doesn't exist yet is exactly what issues are
   for — see [How to help](#how-to-help) below. The thing to watch for is
   *implementing* out of the codebase's own build order (matching engine,
@@ -18,10 +16,9 @@ section for what's implemented and tested.
   build depends on a piece that isn't solid yet, say so in the issue and
   it'll get sequenced, rather than starting a PR that's blocked on
   something else landing first.
-- If you're diving into the code itself, [CLAUDE.md](https://github.com/Neirda24/envoke/blob/main/CLAUDE.md)
-  has the full package-by-package architecture map — it's written for
-  whoever (human or AI) is editing this codebase locally, not required
-  reading just to open a PR.
+- If you're diving into the code itself, every package under `internal/`
+  opens with a doc comment saying what it owns and why it exists — start
+  there rather than with any one file.
 
 ## How to help
 
@@ -46,7 +43,7 @@ directly on your machine** — this project verifies everything through
 [Dagger](https://dagger.io) instead, so every check runs on the same pinned
 container images CI uses, not whatever happens to be installed locally
 (this is what caught real shell-hook bugs that only reproduced on Linux, not
-macOS — see CLAUDE.md's `internal/shellinit` notes).
+macOS).
 
 Requires the [`dagger` CLI](https://docs.dagger.io/getting-started/installation)
 and a container runtime (Docker or similar).
@@ -55,15 +52,16 @@ Pick the command that matches what you changed:
 
 | You changed... | Run this |
 |---|---|
-| Go code anywhere in `internal/`/`cmd/` | `dagger check -m .dagger` (runs everything below) |
-| Just want a quick loop while iterating | `dagger call -m .dagger fmt`, `vet`, `build`, or `test` individually |
+| Go code anywhere in `internal/`/`cmd/` | `dagger check -m .dagger` (runs the check set — which is not every row below: `fuzz`, `snapshot`, `zizmor` and `actions-up` are deliberately not checks) |
+| Just want a quick loop while iterating | `dagger call -m .dagger fmt`, `vet`, `build`, or `test` individually — the Go build and module caches live in persistent Dagger cache volumes, so only the first run after an image pull pays for compiling the standard library |
 | `internal/shellinit` (hook generation) or `internal/executor` (ENVOKE_* rendering) | `dagger call -m .dagger test-shell-bash` (swap in `zsh`/`fish`/`tcsh`/`powershell`) — each spins up a container with only that one interpreter installed and runs both packages, so nothing silently skips for lack of a binary |
 | `internal/config` (the parser or pattern compilation) | `dagger call -m .dagger fuzz` — a short burst per fuzz target. Give it longer when the change is substantial: `dagger call -m .dagger fuzz --fuzz-time=5m`. The seed corpus runs as ordinary tests under `test` regardless |
+| Bumping the Go toolchain, or before a release | `dagger call -m .dagger vuln` — govulncheck against the standard library, which is this module's only dependency. It reports only advisories on a code path envoke actually reaches, so a finding is a reason to bump, not a note to file |
 | Anything that has to keep building for Windows/macOS | `dagger call -m .dagger cross-build` — compiles and vets all six published OS/arch pairs, and is the only thing that type-checks GOOS-gated files like `internal/matcher/matchpath_windows_test.go` |
 | `.goreleaser.yaml` | `dagger call -m .dagger snapshot` — runs the whole release pipeline (cross-compile, archives, `.deb`/`.rpm`, SBOMs, checksums) without touching GitHub |
 | `.github/workflows/*.yml` | `dagger -m .dagger call zizmor` and `dagger -m .dagger call actions-up` (see below) |
 | `.github/ISSUE_TEMPLATE/`, `.github/DISCUSSION_TEMPLATE/`, or any other YAML under `.github/` | `dagger call -m .dagger yaml-lint` (also runs as part of the full `dagger check -m .dagger`) |
-| `docs/` or `mkdocs.yml` | `mkdocs serve` or `dagger -m ./.dagger call docs up --ports 8000:8000` (see [Previewing documentation](#previewing-documentation-changes)) |
+| `docs/` or `mkdocs.yml` | `docs-build` — the same strict build the docs deploy runs, and the only thing that catches a page missing from the nav. To read the change instead of just validating it: `mkdocs serve`, or `dagger -m ./.dagger call docs up --ports 8000:8000` (see [Previewing documentation](#previewing-documentation-changes)) |
 | `.dagger/main.go` itself | No dedicated check yet — build it manually (`docker run` against the pinned Go image, or `dagger develop -m .dagger` to confirm it still generates) |
 
 Before opening a PR, run the full suite:
@@ -72,11 +70,47 @@ Before opening a PR, run the full suite:
 dagger check -m .dagger
 ```
 
-This mirrors `gofmt -l .`, `go vet ./...`, `go build ./...`,
-`go test ./... -race`, and `golangci-lint`, plus the five `test-shell-*`
-checks. `.github/workflows/ci.yml` runs the exact same command on every
-push/PR to `main` and on a daily schedule — a clean local run just gets you
-the same feedback sooner.
+That runs every function the Dagger module marks as a check — among them the
+`gofmt -l .`, `go vet ./...`, `go build ./...` and `go test ./... -race`
+equivalents, plus `golangci-lint`. Rather than keep a list here that drifts,
+ask the module: `dagger functions -m .dagger` prints its whole surface, with
+descriptions, in a couple of seconds.
+
+`.github/workflows/ci.yml` runs the exact same command on every push/PR to
+`main` and on a daily schedule — a clean local run gets you the same feedback
+sooner for everything except the two platforms below.
+
+### What only CI can check
+
+Dagger's engine runs Linux containers. A Windows container isn't merely
+unconfigured, it's impossible, and Wine is not a substitute (this was tested:
+the Wine versions that run on Apple Silicon lack a DLL modern Go requires).
+So the `native` job in `.github/workflows/ci.yml` runs the real suite —
+`go test ./... -race`, the whole tree — on GitHub's own `macos-latest` and
+`windows-latest` runners instead. Both run everything, and each covers what
+nothing else can: macOS is where the generated hook scripts meet bash 3.2,
+still `/bin/bash` on every Mac, and Windows is the only thing that proves the
+path handling *works* rather than merely compiles, as well as the only place
+PowerShell's hook runs on the platform its hook point belongs to.
+
+A test that cannot mean anything on one of those platforms skips itself and
+says why — Windows has no POSIX interpreter for most of the hook drivers and no
+permission bits for the "writable by someone else" warnings to fire on. So a
+`SKIP` in a green log is expected rather than a gap, and reading those lines is
+how the list of what a platform can't express stays honest. The `test-shell-*`
+checks are what stop a shell from passing by skipping.
+
+`dagger call -m .dagger cross-build` is what keeps both platforms *compiling*
+from a Linux container, and is worth running before you push anything touching
+path handling or a build-tagged file — but it is compile-level only and cannot
+see a behavior difference.
+
+When `native` goes red, no Dagger command will reproduce it. Read the failing
+platform's log; if you have that platform to hand, the runner's own command
+(`go test ./... -race`) is the only local reproduction that exists, and it is
+the one place the "always through Dagger" rule above has to give, because no
+container can cover it. Otherwise add the regression test in a build-tagged
+file, confirm `cross-build` still type-checks it, and let CI report.
 
 ### Keeping GitHub Actions workflows secure and current
 
@@ -124,6 +158,20 @@ Or, without installing Python, via the same Dagger CLI as above:
 ```sh
 dagger -m ./.dagger call docs up --ports 8000:8000
 ```
+
+Reading the page is not the same as validating it, and only one of the two
+catches an unlisted page. Run the strict build before you push:
+
+```sh
+dagger call -m .dagger docs-build
+```
+
+Every `.md` file under `docs/` has to appear in `mkdocs.yml`'s nav, and this is
+what fails when one doesn't. The dev server and the Dagger `docs` service both
+render happily either way, and the deploy workflow — which runs the strict
+build on `main` — is where the omission would otherwise surface, after merge.
+`docs-build` is part of `dagger check -m .dagger`, so CI catches it on a pull
+request too.
 
 ## Code conventions
 
@@ -181,10 +229,10 @@ Open a GitHub issue with:
 - The `from`/`to` paths involved.
 - Expected vs. actual behavior.
 
-Security vulnerabilities should go through [SECURITY.md](https://github.com/Neirda24/envoke/blob/main/SECURITY.md)
-instead of a public issue.
+Security vulnerabilities should go through `SECURITY.md` instead of a public
+issue.
 
 ## License
 
 By contributing, you agree that your contributions will be licensed under
-the project's [MIT License](LICENSE).
+the project's MIT License, in `LICENSE`.
