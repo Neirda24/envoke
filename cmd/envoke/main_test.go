@@ -1922,8 +1922,26 @@ func fragmentDir(t *testing.T) string {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
+	dir = resolvedPath(t, dir)
 	t.Setenv("ENVOKERC_D", dir)
 	return dir
+}
+
+// resolvedPath is the spelling envoke reports for a file reached through the
+// fragment walk, which resolves the config directory before walking it. A test
+// comparing its own $TMPDIR-derived path against that output passes only where
+// $TMPDIR happens not to be a symlink: on macOS it is one (/var ->
+// /private/var), on GitHub's macOS runner included.
+//
+// The central config is deliberately not put through this: config.Locate hands
+// back ~/.envokerc as spelled, so envoke reports the unresolved path there.
+func resolvedPath(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%s): %v", path, err)
+	}
+	return resolved
 }
 
 func writeFragment(t *testing.T, dir, name, body string) string {

@@ -18,6 +18,21 @@ func isolateStore(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 }
 
+// resolvedTempDir is t.TempDir() with symlinks resolved. The fragment walk
+// resolves its root before walking, so an unresolved fixture path can never
+// match what Load reports back: macOS hands out /var/..., a symlink to
+// /private/var, and a Windows runner's %TMP% is normally the 8.3 short form
+// (C:\Users\RUNNER~1). Any test comparing a path it built against one Load
+// returned has to start from the resolved spelling.
+func resolvedTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	return dir
+}
+
 func writeFile(t *testing.T, path, content string) string {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -38,7 +53,7 @@ func paths(entries []Entry) []string {
 }
 
 func TestLoad_CentralConfigFirstThenFragmentsInOrder(t *testing.T) {
-	root := t.TempDir()
+	root := resolvedTempDir(t)
 	central := writeFile(t, filepath.Join(root, "envokerc"), "enter /a\n\techo central\n")
 	dir := filepath.Join(root, "envokerc.d")
 	second := writeFile(t, filepath.Join(dir, "20-second"), "enter /b\n\techo second\n")
@@ -80,7 +95,7 @@ func TestLoad_NoFragmentDirectoryIsFine(t *testing.T) {
 // symlinked fragment, the file that breaks may have been rewritten by someone
 // else's commit.
 func TestLoad_BrokenFragmentIsIsolated(t *testing.T) {
-	dir := t.TempDir()
+	dir := resolvedTempDir(t)
 	broken := writeFile(t, filepath.Join(dir, "10-broken"), "this is not a block\n")
 	good := writeFile(t, filepath.Join(dir, "20-good"), "enter /a\n\techo fine\n")
 
@@ -290,7 +305,7 @@ func TestByConfig(t *testing.T) {
 // A fragment that isn't a symlink still gets relative patterns, resolved
 // against the config directory it sits in.
 func TestLoad_RelativePatternInAPlainFragment(t *testing.T) {
-	dir := t.TempDir()
+	dir := resolvedTempDir(t)
 	writeFile(t, filepath.Join(dir, "10-mine"), "enter ./sub\n\techo hi\n")
 
 	entries := Load("", dir)
