@@ -1,8 +1,7 @@
 // Package trust implements envoke's config trust store: a config file must
 // be explicitly approved with Allow before shell-hook will act on it, and
 // any change to the file's content — even whitespace — revokes that trust
-// until Allow runs again. This is what CLAUDE.md's trust-before-execution
-// principle requires: envoke must never auto-execute a new or modified
+// until Allow runs again: envoke must never auto-execute a new or modified
 // config.
 //
 // A record is three sibling files under the store directory, all named
@@ -33,6 +32,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Neirda24/envoke/internal/fsperm"
 	"github.com/Neirda24/envoke/internal/state"
 )
 
@@ -319,30 +319,68 @@ func hashContent(content []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// UnsafeStorePermissions reports whether the trust store directory is
-// writable by group or other. That matters more than the config's own
-// permissions: anyone who can write here can drop in a record making any
-// config read as trusted, forging an approval that was never given.
+// UnsafeStorePermissions reports whether the trust store, or any directory
+// between it and the data home, is writable by group or other, and names the
+// one that is. That matters more than a config's own permissions: anyone who
+// can write here can drop in a record making any config read as trusted,
+// forging an approval that was never given.
+//
+// The ancestors are checked for the same reason config.UnsafeDirPermissions
+// exists — whoever can write a directory can rename what is in it away and
+// put their own there, so a `0700` store inside a `0777` parent is a `0777`
+// store. The walk stops at the data home: below it is envoke's own territory,
+// and above it a writable directory means your entire home is writable, which
+// is not a fact about envoke.
 //
 // Checked rather than enforced because os.MkdirAll only applies its mode to
-// directories it creates, so a pre-existing store keeps whatever mode it
-// had and Allow's 0o700 is not the guarantee it looks like.
+// directories it creates, so a pre-existing tree keeps whatever mode it had
+// and Allow's 0o700 is not the guarantee it looks like.
 //
-// A store that doesn't exist yet is safe, not an error.
+// A directory that doesn't exist yet is safe, not an error.
 func UnsafeStorePermissions() (unsafe bool, mode os.FileMode, path string, err error) {
-	dir, err := storeDir()
+	chain, err := storeChain()
 	if err != nil {
 		return false, 0, "", err
 	}
-	info, err := os.Stat(dir)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return false, 0, dir, nil
+
+	for _, dir := range chain {
+		unsafe, mode, err := fsperm.Unsafe(dir)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return false, 0, dir, fmt.Errorf("trust: %w", err)
 		}
-		return false, 0, dir, fmt.Errorf("trust: %w", err)
+		if unsafe {
+			return true, mode, dir, nil
+		}
 	}
-	perm := info.Mode().Perm()
-	return perm&0o022 != 0, perm, dir, nil
+	return false, 0, chain[0], nil
+}
+
+// storeChain lists the store directory and each ancestor up to and including
+// the data home, innermost first. Derived rather than spelled out so moving
+// the store deeper cannot leave a level unchecked.
+func storeChain() ([]string, error) {
+	dir, err := storeDir()
+	if err != nil {
+		return nil, err
+	}
+	base, err := state.DataHome()
+	if err != nil {
+		return nil, err
+	}
+	// $XDG_DATA_HOME is used as given, so it may carry a trailing separator
+	// that would never compare equal to a walked-up path.
+	base = filepath.Clean(base)
+
+	var chain []string
+	for p := dir; ; p = filepath.Dir(p) {
+		chain = append(chain, p)
+		if p == base || filepath.Dir(p) == p {
+			return chain, nil
+		}
+	}
 }
 
 // storeDir is envoke's data home plus "envoke/allow" — see state.DataHome

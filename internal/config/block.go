@@ -31,7 +31,7 @@ type Block struct {
 
 	// Pattern is the compiled, anchored form of RawPattern: matching is
 	// always a full match against a directory path, never a prefix or
-	// substring match (see expandPattern).
+	// substring match (see compilePattern).
 	Pattern *regexp.Regexp
 
 	// RawPattern is the pattern text as written in the config, before ~/env
@@ -50,5 +50,36 @@ type Block struct {
 // significant — blocks fire in declaration order when multiple blocks match
 // the same directory.
 type Config struct {
+	// Path is the file this was parsed from, absolute, or "" when it was
+	// parsed straight from a reader.
+	Path string
+
+	// Dir is the directory Path lives in. It is the base a `./`-relative
+	// pattern resolves against, and — for a Local config — the subtree
+	// outside which none of its blocks may match.
+	Dir string
+
+	// DirUnresolved reports that Dir could not be traced back to where the
+	// file physically is: the resolution LoadFragmentResolved was handed was
+	// empty, so the base fell back to the link's own directory, while the
+	// read through it succeeded.
+	//
+	// It exists so the confinement decision can fail closed. Without it, a
+	// fragment whose link could not be resolved looked exactly like a file
+	// that really lives in envokerc.d — which is the one shape that is *not*
+	// confined.
+	DirUnresolved bool
+
+	// Local confines this config's blocks to Dir's subtree: nothing in it can
+	// match a directory outside the tree it belongs to, however its patterns
+	// are written.
+	//
+	// Set for a fragment that is a symlink out of envokerc.d into a project,
+	// because that file's content changes with the project — a `git pull` can
+	// rewrite it, and while trust still gates every change, a config that
+	// travels with a repository has no business matching /etc. Configs that
+	// really live in your own config directory are not confined.
+	Local bool
+
 	Blocks []Block
 }

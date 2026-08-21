@@ -2,6 +2,10 @@ package config
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -13,7 +17,7 @@ func TestParse_ReadmeExample(t *testing.T) {
 leave ~/Projects/([^/]+)
     deactivate
 `
-	cfg, err := Parse(strings.NewReader(src))
+	cfg, err := Parse(strings.NewReader(src), "")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -53,7 +57,7 @@ func TestParse_MultiLineScriptWithBlankLine(t *testing.T) {
 
     echo two
 `
-	cfg, err := Parse(strings.NewReader(src))
+	cfg, err := Parse(strings.NewReader(src), "")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -69,7 +73,7 @@ func TestParse_ScriptIndentationPreservedRelativeToBlock(t *testing.T) {
         echo "$f"
     done
 `
-	cfg, err := Parse(strings.NewReader(src))
+	cfg, err := Parse(strings.NewReader(src), "")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -88,7 +92,7 @@ enter /a
 leave /a
     echo bye
 `
-	cfg, err := Parse(strings.NewReader(src))
+	cfg, err := Parse(strings.NewReader(src), "")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -98,28 +102,95 @@ leave /a
 }
 
 func TestParse_MissingPatternIsError(t *testing.T) {
-	_, err := Parse(strings.NewReader("enter\n    echo hi\n"))
+	_, err := Parse(strings.NewReader("enter\n    echo hi\n"), "")
 	assertParseErrorLine(t, err, 1)
 }
 
 func TestParse_UnknownHeaderIsError(t *testing.T) {
-	_, err := Parse(strings.NewReader("frobnicate /a\n    echo hi\n"))
+	_, err := Parse(strings.NewReader("frobnicate /a\n    echo hi\n"), "")
 	assertParseErrorLine(t, err, 1)
 }
 
 func TestParse_EmptyBodyIsError(t *testing.T) {
-	_, err := Parse(strings.NewReader("enter /a\nleave /a\n    echo hi\n"))
+	_, err := Parse(strings.NewReader("enter /a\nleave /a\n    echo hi\n"), "")
 	assertParseErrorLine(t, err, 1)
 }
 
 func TestParse_IndentedLineOutsideBlockIsError(t *testing.T) {
-	_, err := Parse(strings.NewReader("    echo hi\n"))
+	_, err := Parse(strings.NewReader("    echo hi\n"), "")
 	assertParseErrorLine(t, err, 1)
 }
 
 func TestParse_InvalidPatternIsError(t *testing.T) {
-	_, err := Parse(strings.NewReader("enter (unclosed\n    echo hi\n"))
+	_, err := Parse(strings.NewReader("enter (unclosed\n    echo hi\n"), "")
 	assertParseErrorLine(t, err, 1)
+}
+
+// Every config in the set is read whole into memory on every directory change,
+// before any trust decision. The bound is what stops a fragment symlinked out of
+// a project -- whose content is whatever that project's last commit says -- from
+// deciding how much memory that costs, and it applies to the central config for
+// the same reason: $ENVOKERC is honoured verbatim.
+func TestLoadFile_RefusesAConfigOverTheSizeBound(t *testing.T) {
+	// A kibibyte per line reaches the bound in a thousand lines rather than a
+	// million: what is under test is the bound on the file, not on a line.
+	const perLine = 1024
+	atBound := strings.Repeat(strings.Repeat("#", perLine-1)+"\n", maxConfigBytes/perLine)
+
+	t.Run("exactly at the bound loads", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config")
+		writeFile(t, path, atBound)
+
+		cfg, content, err := LoadFile(path)
+		if err != nil {
+			t.Fatalf("LoadFile: %v", err)
+		}
+		if len(content) != maxConfigBytes {
+			t.Errorf("read %d bytes, want the whole %d", len(content), maxConfigBytes)
+		}
+		if len(cfg.Blocks) != 0 {
+			t.Errorf("a file of comments should yield no blocks, got %d", len(cfg.Blocks))
+		}
+	})
+
+	t.Run("one byte over is refused", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config")
+		writeFile(t, path, atBound+"#")
+
+		_, content, err := LoadFile(path)
+		if err == nil {
+			t.Fatal("expected a config past the size bound to be refused")
+		}
+		if !strings.Contains(err.Error(), fmt.Sprintf("larger than %d bytes", maxConfigBytes)) {
+			t.Errorf("error %q should name the bound it hit", err)
+		}
+		// Never a truncated read: half a config is half of the scripts that
+		// were meant to run, and hashing half of one would trust the wrong
+		// thing.
+		if content != nil {
+			t.Errorf("got %d bytes alongside the error, want none", len(content))
+		}
+	})
+
+	// The case the bound exists for. Bounding the read rather than a size taken
+	// from a stat is what catches it: a character device stats as zero bytes and
+	// then never reaches EOF.
+	t.Run("a file whose end never comes is refused", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("no /dev/zero on Windows")
+		}
+		if _, err := os.Stat("/dev/zero"); err != nil {
+			t.Skipf("/dev/zero unavailable: %v", err)
+		}
+
+		_, _, err := LoadFile("/dev/zero")
+		if err == nil {
+			t.Fatal("expected an endless read to be refused")
+		}
+		if !strings.Contains(err.Error(), fmt.Sprintf("larger than %d bytes", maxConfigBytes)) {
+			t.Errorf("error %q should name the bound it hit", err)
+		}
+	})
 }
 
 func assertParseErrorLine(t *testing.T, err error, wantLine int) {
@@ -142,7 +213,7 @@ func assertParseErrorLine(t *testing.T, err error, wantLine int) {
 // it.
 func TestParse_CommentPlacement(t *testing.T) {
 	t.Run("indented comment stays in the script", func(t *testing.T) {
-		cfg, err := Parse(strings.NewReader("enter /a\n    echo one\n    # a shell comment\n    echo two\n"))
+		cfg, err := Parse(strings.NewReader("enter /a\n    echo one\n    # a shell comment\n    echo two\n"), "")
 		if err != nil {
 			t.Fatalf("Parse: %v", err)
 		}
@@ -155,7 +226,7 @@ func TestParse_CommentPlacement(t *testing.T) {
 	})
 
 	t.Run("unindented comment ends the block", func(t *testing.T) {
-		cfg, err := Parse(strings.NewReader("enter /a\n    echo one\n# not part of it\n"))
+		cfg, err := Parse(strings.NewReader("enter /a\n    echo one\n# not part of it\n"), "")
 		if err != nil {
 			t.Fatalf("Parse: %v", err)
 		}
@@ -165,7 +236,7 @@ func TestParse_CommentPlacement(t *testing.T) {
 	})
 
 	t.Run("a body resumed after one is a positioned error", func(t *testing.T) {
-		_, err := Parse(strings.NewReader("enter /a\n    echo one\n# ends the block\n    echo orphan\n"))
+		_, err := Parse(strings.NewReader("enter /a\n    echo one\n# ends the block\n    echo orphan\n"), "")
 		var perr *ParseError
 		if !errors.As(err, &perr) {
 			t.Fatalf("expected a *ParseError, got %v", err)

@@ -41,7 +41,7 @@ func TestNewMatch_WindowsPathMatchesSlashPattern(t *testing.T) {
 	const dir = `C:\Users\you\Projects\envoke`
 	b := config.Block{Type: config.Enter, Pattern: regexp.MustCompile(`^C:/Users/you/Projects/([^/]+)$`)}
 
-	m, ok := NewMatch(b, dir)
+	m, ok := NewMatch(&config.Config{}, b, dir)
 	if !ok {
 		t.Fatalf("expected a slash-written pattern to match the native path %q", dir)
 	}
