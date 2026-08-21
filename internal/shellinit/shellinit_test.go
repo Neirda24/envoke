@@ -83,6 +83,29 @@ func TestGenerate_PowershellWrapsPromptNotCdOverride(t *testing.T) {
 	assertNeverRedefinesCd(t, script)
 }
 
+// TestGenerate_PowershellHookUsesFilesystemProviderPaths is the string-level
+// half of two properties: the provider gate (fire only for a filesystem
+// location) and the accessor (send .ProviderPath, the resolved filesystem
+// path, never .Path, which is the PowerShell spelling — see powershellHook).
+//
+// The behavioural half below drives a real pwsh and now runs on Windows too,
+// where HKLM:, Cert: and UNC paths actually occur; this stays because a string
+// check fails wherever pwsh is merely absent.
+func TestGenerate_PowershellHookUsesFilesystemProviderPaths(t *testing.T) {
+	script, err := Generate("powershell")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	for _, want := range []string{"Provider.Name", "'FileSystem'", "ProviderPath"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("expected powershell hook to report only real filesystem paths (%q missing), got:\n%s", want, script)
+		}
+	}
+	if strings.Contains(script, ".Path") {
+		t.Errorf("powershell hook must send .ProviderPath, not the drive-qualified .Path, got:\n%s", script)
+	}
+}
+
 func assertNeverRedefinesCd(t *testing.T, script string) {
 	t.Helper()
 	// Regression: ondir's zsh integration overrode `cd` directly. Guard
@@ -151,20 +174,60 @@ func TestGenerate_PowershellScriptIsSyntacticallyValid(t *testing.T) {
 }
 
 // requirePOSIXHarness skips tests whose *harness* is Unix-specific, as
-// opposed to tests whose subject is. Everything below that drives a real
-// interpreter does so with a stub `envoke` that is a `#!/bin/sh` script on
-// PATH — Windows has no shebang handling, so it would find the file and
-// refuse to run it, failing for a reason that says nothing about envoke.
+// opposed to tests whose subject is: bash, zsh, fish and tcsh are not
+// interpreters Windows has, and their drivers quote paths the way a POSIX
+// shell reads them.
 //
-// Windows does run the string-level and syntax checks, and the packages
-// where platform behaviour actually differs (internal/matcher's path
-// normalization, internal/config, internal/trust) are fully exercised there
-// — see the `native` job in .github/workflows/ci.yml.
+// PowerShell's drivers are not among them — pwsh is native on Windows, and
+// installStub hands it an `envoke` that platform can execute — so they run
+// everywhere and requireHarness is what a cross-shell table calls.
 func requirePOSIXHarness(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
-		t.Skip("this test drives an interpreter through a #!/bin/sh stub, which Windows cannot execute")
+		t.Skip("this test drives a POSIX interpreter, which Windows does not have")
 	}
+}
+
+// requireHarness is requirePOSIXHarness for one entry of a cross-shell table:
+// every shell but PowerShell needs a POSIX harness, and skipping the whole
+// table on Windows would take the one shell whose hook point is a Windows
+// concept down with the four that cannot run there.
+func requireHarness(t *testing.T, shell string) {
+	t.Helper()
+	if shell != "powershell" {
+		requirePOSIXHarness(t)
+	}
+}
+
+// providerDrive names a PowerShell drive that is *not* backed by the
+// filesystem, for the tests that assert the hook stays silent off it.
+//
+// HKLM: is the provider that prompted the gate, and only exists on Windows.
+// Env: is the one that exists everywhere, including the Linux pwsh the
+// drivers run against in .dagger's test-shell-powershell — so each platform
+// is asked with the drive it actually has. The gate itself is not
+// platform-specific.
+func providerDrive() string {
+	if runtime.GOOS == "windows" {
+		return "HKLM:"
+	}
+	return "Env:"
+}
+
+// hookDir is t.TempDir() spelled the way the shell will report it back.
+//
+// A test comparing what the hook printed against a path it built itself needs
+// one spelling throughout, and %TMP% on a Windows runner is often the 8.3
+// short form (`RUNNER~1`); filepath.EvalSymlinks canonicalises that away, and
+// resolves any symlink on the way, which is the same problem under a macOS
+// $TMPDIR.
+func hookDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	return dir
 }
 
 func requireInterpreter(t *testing.T, name string) {
@@ -213,7 +276,7 @@ func TestGenerate_BashHookFiresOnFirstCd(t *testing.T) {
 		"cd " + shellQuote(targetDir) + "\n" +
 		`eval "$PROMPT_COMMAND"` + "\n"
 
-	cmd := exec.Command("bash", "--noprofile", "--norc", "-c", driver)
+	cmd := exec.Command("bash", "--noprofile", "--norc", "-i", "-c", driver)
 	cmd.Env = append(os.Environ(), "PATH="+stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("driver script failed: %v\n%s", err, out)
@@ -249,7 +312,8 @@ func TestGenerate_TcshHookFiresOnCd(t *testing.T) {
 	startDir := t.TempDir()
 	targetDir := t.TempDir()
 
-	driver := "cd " + startDir + "\n" +
+	driver := "set prompt = '% '\n" +
+		"cd " + startDir + "\n" +
 		script + "\n" +
 		"cd " + targetDir + "\n"
 
@@ -304,7 +368,11 @@ func TestGenerate_TcshHookSetenvPersistsInCallingShell(t *testing.T) {
 		t.Fatalf("Mkdir targetDir: %v", err)
 	}
 
-	driver := "cd " + shellQuote(startDir) + "\n" +
+	// `set prompt` is what makes this tcsh look interactive, which the hook
+	// now requires before installing itself -- exactly as a real .tcshrc
+	// would.
+	driver := "set prompt = '% '\n" +
+		"cd " + shellQuote(startDir) + "\n" +
 		script + "\n" +
 		"cd " + shellQuote(targetDir) + "\n" +
 		`echo "MARKER=$ENVOKE_TEST_MARKER"` + "\n"
@@ -351,7 +419,7 @@ func TestGenerate_ZshHookSetenvPersistsInCallingShell(t *testing.T) {
 		"cd " + shellQuote(targetDir) + "\n" +
 		`echo "MARKER=$ENVOKE_TEST_MARKER"` + "\n"
 
-	cmd := exec.Command("zsh", "--no-rcs", "-c", driver)
+	cmd := exec.Command("zsh", "--no-rcs", "-i", "-c", driver)
 	cmd.Env = append(os.Environ(), "PATH="+stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -394,7 +462,7 @@ func TestGenerate_FishHookSetenvPersistsInCallingShell(t *testing.T) {
 		t.Fatalf("WriteFile driver: %v", err)
 	}
 
-	cmd := exec.Command("fish", "--no-config", driverPath)
+	cmd := exec.Command("fish", "--no-config", "-i", driverPath)
 	cmd.Env = append(os.Environ(), "PATH="+stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -412,12 +480,12 @@ func TestGenerate_FishHookSetenvPersistsInCallingShell(t *testing.T) {
 // "on cd" event at all — it piggybacks on the `prompt` function, which an
 // interactive shell calls before every prompt redraw. There's no REPL here,
 // so the driver calls `prompt` explicitly right after Set-Location to
-// simulate that redraw. Its return value is discarded via `$null = prompt`
-// rather than `prompt | Out-Null`: piping swallowed output during manual
-// verification (see security_audit.md, Finding 1), so the final assertion
-// uses a separate, unpiped Write-Output instead.
+// simulate that redraw. Its return value — the prompt string the host would
+// have drawn — is discarded with `$null = prompt` so it cannot be mistaken
+// for the marker this greps for, and the marker is written afterwards by a
+// separate, unpiped Write-Output: whatever swallows the redraw's output must
+// not be able to swallow the assertion's.
 func TestGenerate_PowershellHookSetenvPersistsInCallingShell(t *testing.T) {
-	requirePOSIXHarness(t)
 	requireInterpreter(t, "pwsh")
 	script, err := Generate("powershell")
 	if err != nil {
@@ -447,6 +515,161 @@ func TestGenerate_PowershellHookSetenvPersistsInCallingShell(t *testing.T) {
 	}
 }
 
+// psThenPrompt runs command and then calls the wrapped prompt, the way an
+// interactive host redraws after every command. PowerShell has no cd event, so
+// calling `prompt` explicitly is the only way to fire the hook in a driver with
+// no REPL. The return value is discarded with `$null =` rather than a pipe (see
+// TestGenerate_PowershellHookSetenvPersistsInCallingShell).
+func psThenPrompt(command string) string {
+	return command + "\n$null = prompt\n"
+}
+
+// TestGenerate_PowershellHookIgnoresNonFilesystemProviders asserts the hook
+// stays silent for a location that isn't a filesystem path. PowerShell drives
+// are provider-backed, so `Set-Location Env:` (or HKLM:, Cert:, Function:) is
+// an ordinary thing to do and makes the current location something like
+// `Env:\`, which is not a filesystem path at all — an ungated hook hands it to
+// `envoke shell-hook`, which rejects it on stderr from inside `prompt`, once
+// on the way in and once on the way out.
+//
+// Which drive stands in for "not the filesystem" is providerDrive's call:
+// HKLM: on Windows, where this actually bites, and Env: elsewhere, since that
+// is the one a Linux pwsh has. The provider gate itself is not
+// platform-specific.
+//
+// The three cases are one property each: an ordinary cd still fires (a gate
+// that never opens would pass the other two), the excursion itself fires
+// nothing, and returning to the filesystem reports the transition from the
+// last *filesystem* directory — which is what proves the previous-directory
+// state survived the excursion instead of being overwritten with `HKLM:\`.
+func TestGenerate_PowershellHookIgnoresNonFilesystemProviders(t *testing.T) {
+	requireInterpreter(t, "pwsh")
+	script, err := Generate("powershell")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	drive := providerDrive()
+	for _, tc := range []struct {
+		name string
+		// steps is the driver text following hook installation, which happens
+		// with the shell sitting in the start directory.
+		steps func(target string) string
+		// wantTransition says the stub must have been called exactly once,
+		// reporting start -> target; false means never called at all.
+		wantTransition bool
+	}{
+		{
+			name:           "filesystem cd",
+			steps:          func(target string) string { return psThenPrompt("Set-Location -LiteralPath " + psQuote(target)) },
+			wantTransition: true,
+		},
+		{
+			name:           "into a provider drive",
+			steps:          func(string) string { return psThenPrompt("Set-Location " + drive) },
+			wantTransition: false,
+		},
+		{
+			// Push/Pop-Location is how one visits a provider drive and comes
+			// back, and it keeps the return step off the provider: how
+			// PowerShell resolves a `/`-rooted path while a non-filesystem
+			// drive is current is PowerShell's business, not this hook's, and
+			// the property under test is only that the excursion left
+			// $_envokePrevPwd alone — a hook that stored `HKLM:\` would report
+			// that as `from` here instead of the start directory.
+			name: "back out of a provider drive",
+			steps: func(target string) string {
+				return psThenPrompt("Push-Location "+drive) + "Pop-Location\n" +
+					psThenPrompt("Set-Location -LiteralPath "+psQuote(target))
+			},
+			wantTransition: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubDir := t.TempDir()
+			logPath := filepath.Join(stubDir, "calls.log")
+			writeEnvokeStub(t, stubDir, logPath)
+
+			start, target := hookDir(t), hookDir(t)
+			driver := "Set-Location -LiteralPath " + psQuote(start) + "\n" +
+				script + "\n" + tc.steps(target)
+
+			out, err := runDriver(t, stubDir, exec.Command("pwsh", "-NoProfile", "-Command", driver))
+			if err != nil {
+				t.Fatalf("driver script failed: %v\n%s", err, out)
+			}
+
+			got, readErr := os.ReadFile(logPath)
+			if !tc.wantTransition {
+				if readErr == nil {
+					t.Errorf("hook fired for a non-filesystem location, reporting %q\noutput:\n%s", got, out)
+				}
+				return
+			}
+			if readErr != nil {
+				t.Fatalf("envoke stub was never called (log file missing): %v\noutput:\n%s", readErr, out)
+			}
+			if want := start + " " + target + "\n"; string(got) != want {
+				t.Errorf("transition reported as %q, want %q\noutput:\n%s", got, want, out)
+			}
+		})
+	}
+}
+
+// TestGenerate_PowershellHookReportsThePathBehindAPSDrive asserts the hook
+// reports the resolved filesystem path, not the drive-qualified spelling
+// PowerShell displays. `New-PSDrive -PSProvider FileSystem` is how people give
+// a long path a short name, and inside such a drive the location is
+// `envoketest:/sub` while the real directory is elsewhere: the provider gate
+// opens (it is the FileSystem provider), so it is the accessor that has to be
+// right. A drive name of more than one letter is not an absolute path and
+// `shell-hook` rejects it on stderr; a one-letter name is worse, being
+// absolute and matching a config's patterns against a directory that does not
+// exist. .ProviderPath is the same string for an ordinary location and the
+// resolved one here, which is why the assertion is on the path itself rather
+// than on the stub merely having run.
+//
+// The prompt is called once, after both moves: `Set-Location envoketest:` sits
+// at the drive root, and whether PowerShell spells a root with a trailing
+// separator is its business, not something this test should encode.
+func TestGenerate_PowershellHookReportsThePathBehindAPSDrive(t *testing.T) {
+	requireInterpreter(t, "pwsh")
+	script, err := Generate("powershell")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	stubDir := t.TempDir()
+	logPath := filepath.Join(stubDir, "calls.log")
+	writeEnvokeStub(t, stubDir, logPath)
+
+	start := hookDir(t)
+	root := hookDir(t)
+	target := filepath.Join(root, "sub")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatalf("Mkdir target: %v", err)
+	}
+
+	driver := "Set-Location -LiteralPath " + psQuote(start) + "\n" +
+		script + "\n" +
+		"$null = New-PSDrive -Name envoketest -PSProvider FileSystem -Root " + psQuote(root) + "\n" +
+		"Set-Location envoketest:\n" +
+		psThenPrompt("Set-Location sub")
+
+	out, err := runDriver(t, stubDir, exec.Command("pwsh", "-NoProfile", "-Command", driver))
+	if err != nil {
+		t.Fatalf("driver script failed: %v\n%s", err, out)
+	}
+
+	got, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("envoke stub was never called (log file missing): %v\noutput:\n%s", err, out)
+	}
+	if want := start + " " + target + "\n"; string(got) != want {
+		t.Errorf("hook reported %q, want %q — the drive-qualified spelling (envoketest:/sub) is not a path envoke can match or even accept\noutput:\n%s", got, want, out)
+	}
+}
+
 func writeEnvokeSetenvStub(t *testing.T, dir, name, value string) {
 	t.Helper()
 	stub := "#!/bin/sh\n" +
@@ -457,24 +680,29 @@ func writeEnvokeSetenvStub(t *testing.T, dir, name, value string) {
 	}
 }
 
+// stubSpec is what the stand-in `envoke` on PATH does when a hook invokes it.
+// Exactly one field is set by each of the three writers below; installStub
+// turns it into whatever the platform running the test can execute — a
+// `#!/bin/sh` script, or a native binary on Windows, which has no shebang
+// handling. The fields are exported because the Windows stub reads them back
+// out of a JSON file.
+type stubSpec struct {
+	// LogPath, when set, is a file the stub appends "<from> <to>\n" to for
+	// every `shell-hook` invocation.
+	LogPath string
+	// Emit, when set, is one line the stub prints verbatim on stdout for
+	// every `shell-hook` invocation.
+	Emit string
+	// ExitCode, when non-zero, is the status the stub exits with having done
+	// and printed nothing at all.
+	ExitCode int
+}
+
 // writeEnvokeStubEmitting writes an `envoke` stub whose `shell-hook`
-// subcommand prints exactly line (verbatim, one line) to stdout. It uses a
-// quoted heredoc (`<<'ENVOKE_EOF'`) rather than a plain `echo "..."`, so line
-// can safely contain shell metacharacters meaningful to *other* shells —
-// notably PowerShell's `$env:NAME = 'value'`, whose leading `$` would
-// otherwise be expanded by the /bin/sh stub script itself before it ever
-// reaches stdout.
+// subcommand prints exactly line (verbatim, one line) to stdout.
 func writeEnvokeStubEmitting(t *testing.T, dir, line string) {
 	t.Helper()
-	stub := "#!/bin/sh\n" +
-		`if [ "$1" = "shell-hook" ]; then cat <<'ENVOKE_EOF'` + "\n" +
-		line + "\n" +
-		"ENVOKE_EOF\n" +
-		"fi\n"
-	path := filepath.Join(dir, "envoke")
-	if err := os.WriteFile(path, []byte(stub), 0o755); err != nil {
-		t.Fatalf("WriteFile stub: %v", err)
-	}
+	installStub(t, dir, stubSpec{Emit: line})
 }
 
 // writeEnvokeSetenvStubZsh emits POSIX `export NAME=VALUE` syntax — the zsh
@@ -508,24 +736,15 @@ func psQuote(s string) string {
 }
 
 // writeEnvokeStub writes an `envoke` stub whose `shell-hook` subcommand
-// appends the from/to directories it was given to logPath. It mirrors the
-// real cmdShellHook's argument handling, including the ENVOKE_FROM/
-// ENVOKE_TO environment fallback the tcsh hook relies on (see
-// internal/shellinit's tcshHook comment) — so a hook that stops passing the
-// directories at all fails the assertion rather than silently logging an
-// empty line.
+// appends the from/to directories it was given to logPath. Both
+// implementations of installStub mirror the real cmdShellHook's argument
+// handling, including the ENVOKE_FROM/ENVOKE_TO environment fallback the tcsh
+// hook relies on (see internal/shellinit's tcshHook comment) — so a hook that
+// stops passing the directories at all fails the assertion rather than
+// silently logging an empty line.
 func writeEnvokeStub(t *testing.T, dir, logPath string) {
 	t.Helper()
-	stub := "#!/bin/sh\n" +
-		`if [ "$1" = "shell-hook" ]; then` + "\n" +
-		`  shift; if [ "$1" = "--shell" ]; then shift 2; fi; if [ "$1" = "--" ]; then shift; fi` + "\n" +
-		`  if [ "$#" -eq 0 ]; then set -- "$ENVOKE_FROM" "$ENVOKE_TO"; fi` + "\n" +
-		`  echo "$1 $2" >> ` + shellQuote(logPath) + "\n" +
-		"fi\n"
-	path := filepath.Join(dir, "envoke")
-	if err := os.WriteFile(path, []byte(stub), 0o755); err != nil {
-		t.Fatalf("WriteFile stub: %v", err)
-	}
+	installStub(t, dir, stubSpec{LogPath: logPath})
 }
 
 func shellQuote(s string) string {
@@ -570,18 +789,18 @@ func hookShells() []hookShell {
 			// explicitly.
 			driver := "cd " + shellQuote(start) + "\n" + script + "\n" +
 				"cd " + shellQuote(target) + "\n" + `eval "$PROMPT_COMMAND"` + "\n"
-			return runDriver(t, stubDir, exec.Command("bash", "--noprofile", "--norc", "-c", driver))
+			return runDriver(t, stubDir, exec.Command("bash", "--noprofile", "--norc", "-i", "-c", driver))
 		}},
 		{shell: "zsh", interpreter: "zsh", run: func(t *testing.T, script, start, target, stubDir string) (string, error) {
 			driver := "cd " + shellQuote(start) + "\n" + script + "\n" + "cd " + shellQuote(target) + "\n"
-			return runDriver(t, stubDir, exec.Command("zsh", "--no-rcs", "-c", driver))
+			return runDriver(t, stubDir, exec.Command("zsh", "--no-rcs", "-i", "-c", driver))
 		}},
 		{shell: "fish", interpreter: "fish", run: func(t *testing.T, script, start, target, stubDir string) (string, error) {
 			driver := "cd " + fishQuote(start) + "\n" + script + "\n" + "cd " + fishQuote(target) + "\n"
-			return runDriver(t, stubDir, exec.Command("fish", "--no-config", writeDriver(t, "driver.fish", driver)))
+			return runDriver(t, stubDir, exec.Command("fish", "--no-config", "-i", writeDriver(t, "driver.fish", driver)))
 		}},
 		{shell: "tcsh", interpreter: "tcsh", run: func(t *testing.T, script, start, target, stubDir string) (string, error) {
-			driver := "cd " + tcshQuote(start) + "\n" + script + "\n" + "cd " + tcshQuote(target) + "\n"
+			driver := "set prompt = '% '\n" + "cd " + tcshQuote(start) + "\n" + script + "\n" + "cd " + tcshQuote(target) + "\n"
 			return runDriver(t, stubDir, exec.Command("tcsh", "-f", writeDriver(t, "driver.csh", driver)))
 		}},
 		{shell: "powershell", interpreter: "pwsh", run: func(t *testing.T, script, start, target, stubDir string) (string, error) {
@@ -599,10 +818,7 @@ func hookShells() []hookShell {
 // happened to succeed.
 func writeFailingEnvokeStub(t *testing.T, dir string) {
 	t.Helper()
-	stub := "#!/bin/sh\nexit 3\n"
-	if err := os.WriteFile(filepath.Join(dir, "envoke"), []byte(stub), 0o755); err != nil {
-		t.Fatalf("WriteFile stub: %v", err)
-	}
+	installStub(t, dir, stubSpec{ExitCode: 3})
 }
 
 // TestGenerate_HooksAreTransparentToLastCommandStatus asserts that
@@ -622,7 +838,6 @@ func writeFailingEnvokeStub(t *testing.T, dir string) {
 // Each case deliberately uses a stub that exits non-zero, so the assertion
 // fails if the hook's own result leaks through.
 func TestGenerate_HooksAreTransparentToLastCommandStatus(t *testing.T) {
-	requirePOSIXHarness(t)
 	cases := []struct {
 		shell       string
 		interpreter string
@@ -642,7 +857,7 @@ func TestGenerate_HooksAreTransparentToLastCommandStatus(t *testing.T) {
 					"cd " + shellQuote(target) + "\n" +
 					"(exit 42)\n" +
 					`eval "$PROMPT_COMMAND"` + "\n"
-				return runDriver(t, stubDir, exec.Command("bash", "--noprofile", "--norc", "-c", driver))
+				return runDriver(t, stubDir, exec.Command("bash", "--noprofile", "--norc", "-i", "-c", driver))
 			},
 		},
 		{
@@ -652,7 +867,7 @@ func TestGenerate_HooksAreTransparentToLastCommandStatus(t *testing.T) {
 				// perfectly good `cd` report failure.
 				driver := "cd " + shellQuote(start) + "\n" + script + "\n" +
 					"cd " + shellQuote(target) + "\n" + `echo "STATUS=$?"` + "\n"
-				return runDriver(t, stubDir, exec.Command("zsh", "--no-rcs", "-c", driver))
+				return runDriver(t, stubDir, exec.Command("zsh", "--no-rcs", "-i", "-c", driver))
 			},
 		},
 		{
@@ -660,13 +875,13 @@ func TestGenerate_HooksAreTransparentToLastCommandStatus(t *testing.T) {
 			run: func(t *testing.T, script, start, target, stubDir string) (string, error) {
 				driver := "cd " + fishQuote(start) + "\n" + script + "\n" +
 					"cd " + fishQuote(target) + "\n" + `echo "STATUS=$status"` + "\n"
-				return runDriver(t, stubDir, exec.Command("fish", "--no-config", writeDriver(t, "driver.fish", driver)))
+				return runDriver(t, stubDir, exec.Command("fish", "--no-config", "-i", writeDriver(t, "driver.fish", driver)))
 			},
 		},
 		{
 			shell: "tcsh", interpreter: "tcsh", want: "STATUS=0",
 			run: func(t *testing.T, script, start, target, stubDir string) (string, error) {
-				driver := "cd " + tcshQuote(start) + "\n" + script + "\n" +
+				driver := "set prompt = '% '\n" + "cd " + tcshQuote(start) + "\n" + script + "\n" +
 					"cd " + tcshQuote(target) + "\n" + `echo "STATUS=$status"` + "\n"
 				return runDriver(t, stubDir, exec.Command("tcsh", "-f", writeDriver(t, "driver.csh", driver)))
 			},
@@ -688,6 +903,7 @@ func TestGenerate_HooksAreTransparentToLastCommandStatus(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.shell, func(t *testing.T) {
+			requireHarness(t, tc.shell)
 			requireInterpreter(t, tc.interpreter)
 			script, err := Generate(tc.shell)
 			if err != nil {
@@ -748,7 +964,16 @@ var pwnSentinels = []string{"pwn-sq", "pwn-dollar", "pwn-backtick", "pwn-pipe"}
 // that the hook still reported the transition correctly, so a hook that
 // "passes" by not firing at all is caught too.
 func TestGenerate_HooksNeverExecuteDirectoryNames(t *testing.T) {
-	requirePOSIXHarness(t)
+	// Not requirePOSIXHarness: what stops this on Windows is nastyDirName
+	// itself, PowerShell's driver included. `"` and `|` are illegal in a
+	// filename there, so the directory cannot be created, and every payload
+	// inside it invokes `touch`, which Windows has no equivalent of — so the
+	// sentinels would fail to appear even if the name were executed. A Windows
+	// version needs a different name and a different payload per shell; it is
+	// not this test with a flag flipped.
+	if runtime.GOOS == "windows" {
+		t.Skip("nastyDirName cannot exist on Windows (`\"` and `|` are illegal in a filename) and its payloads call touch")
+	}
 	for _, hs := range hookShells() {
 		t.Run(hs.shell, func(t *testing.T) {
 			requireInterpreter(t, hs.interpreter)
@@ -863,6 +1088,11 @@ func TestCompletion_BashActuallyCompletes(t *testing.T) {
 				"_envoke_complete\n" +
 				`printf '%s\n' "${COMPREPLY[@]}"` + "\n"
 
+			// Non-interactive on purpose, unlike the hook drivers: the
+			// completion script carries no interactivity guard, and bash -i
+			// without a tty prints job-control warnings containing the word
+			// "bash" — which is exactly what one of these cases asserts is
+			// absent from the candidate list.
 			out, err := exec.Command("bash", "--noprofile", "--norc", "-c", driver).CombinedOutput()
 			if err != nil {
 				t.Fatalf("driver failed: %v\n%s", err, out)
@@ -872,6 +1102,134 @@ func TestCompletion_BashActuallyCompletes(t *testing.T) {
 			}
 			if tc.notWant != "" && strings.Contains(string(out), tc.notWant) {
 				t.Errorf("did not expect %q among the candidates, got:\n%s", tc.notWant, out)
+			}
+		})
+	}
+}
+
+// rcContinuedSentinel is printed by whatever follows the hook text, so a hook
+// that ends the shell evaluating it is distinguishable from one that merely
+// installs nothing.
+const rcContinuedSentinel = "ENVOKE-RC-CONTINUED"
+
+// TestGenerate_HooksDoNotInstallInNonInteractiveShells is the regression test
+// for the case that made this guard necessary: `.cshrc` is read by
+// non-interactive tcsh and `.zshenv` by non-interactive zsh, so a hook
+// installed in either fires for every `tcsh -c` or `zsh -c` that changes
+// directory — running enter/leave blocks for a script that never asked for
+// them. envoke is a tool for a person moving around; `envoke exec` is the
+// deliberate non-interactive entry point.
+//
+// The drivers here are the same ones the behavioural tests use, minus the
+// flag that makes the shell interactive. Nothing should reach the stub — and
+// the driver must still run to its end, which is what rcContinuedSentinel
+// checks: on its own, "the stub was never reached" is also true of a guard
+// that aborts the shell installing it, so both assertions are needed to tell
+// declining to install from taking the caller down.
+//
+// PowerShell is absent on purpose: its hook point is the `prompt` function,
+// which only an interactive host ever calls, so there is nothing to guard and
+// nothing to assert here (see powershellHook).
+func TestGenerate_HooksDoNotInstallInNonInteractiveShells(t *testing.T) {
+	requirePOSIXHarness(t)
+
+	// echo is spelled the same in all four shells, so the sentinel line is
+	// appended to every driver verbatim.
+	sentinelEcho := "echo " + rcContinuedSentinel + "\n"
+
+	for _, tc := range []struct {
+		shell       string
+		interpreter string
+		run         func(t *testing.T, script, start, target, stubDir string) (string, error)
+	}{
+		{shell: "bash", interpreter: "bash", run: func(t *testing.T, script, start, target, stubDir string) (string, error) {
+			driver := "cd " + shellQuote(start) + "\n" + script + "\n" +
+				"cd " + shellQuote(target) + "\n" + `eval "${PROMPT_COMMAND:-:}"` + "\n" + sentinelEcho
+			return runDriver(t, stubDir, exec.Command("bash", "--noprofile", "--norc", "-c", driver))
+		}},
+		{shell: "zsh", interpreter: "zsh", run: func(t *testing.T, script, start, target, stubDir string) (string, error) {
+			driver := "cd " + shellQuote(start) + "\n" + script + "\n" + "cd " + shellQuote(target) + "\n" + sentinelEcho
+			return runDriver(t, stubDir, exec.Command("zsh", "--no-rcs", "-c", driver))
+		}},
+		{shell: "fish", interpreter: "fish", run: func(t *testing.T, script, start, target, stubDir string) (string, error) {
+			driver := "cd " + fishQuote(start) + "\n" + script + "\n" + "cd " + fishQuote(target) + "\n" + sentinelEcho
+			return runDriver(t, stubDir, exec.Command("fish", "--no-config", writeDriver(t, "driver.fish", driver)))
+		}},
+		{shell: "tcsh", interpreter: "tcsh", run: func(t *testing.T, script, start, target, stubDir string) (string, error) {
+			// No `set prompt`: this is what a non-interactive tcsh looks like.
+			driver := "cd " + tcshQuote(start) + "\n" + script + "\n" + "cd " + tcshQuote(target) + "\n" + sentinelEcho
+			return runDriver(t, stubDir, exec.Command("tcsh", "-f", writeDriver(t, "driver.csh", driver)))
+		}},
+	} {
+		t.Run(tc.shell, func(t *testing.T) {
+			requireInterpreter(t, tc.interpreter)
+			script, err := Generate(tc.shell)
+			if err != nil {
+				t.Fatalf("Generate: %v", err)
+			}
+
+			stubDir := t.TempDir()
+			logPath := filepath.Join(stubDir, "calls.log")
+			writeEnvokeStub(t, stubDir, logPath)
+
+			out, err := tc.run(t, script, t.TempDir(), t.TempDir(), stubDir)
+			if err != nil {
+				t.Fatalf("driver script failed: %v\n%s", err, out)
+			}
+
+			if !strings.Contains(out, rcContinuedSentinel) {
+				t.Errorf("the hook aborted the non-interactive shell instead of declining to install: %q never printed, output:\n%s", rcContinuedSentinel, out)
+			}
+
+			if _, err := os.Stat(logPath); err == nil {
+				got, _ := os.ReadFile(logPath)
+				t.Errorf("the hook installed itself in a non-interactive shell and fired: %q", got)
+			}
+		})
+	}
+}
+
+// TestGenerate_BashHookNeverAbortsTheRcFileThatSourcesIt installs the hook the
+// way the docs tell users to — `eval "$(envoke shell-init bash)"` from a
+// sourced rc file — and asserts the rc file's later lines still run.
+//
+// This is the sourced counterpart of the guard assertion above, and a
+// different failure: `return` inside `eval` inside a sourced file pops the
+// sourced file's own frame, so it succeeds and takes the rest of the user's
+// `.bashrc` with it, silently and with status 0. Non-interactive bash does
+// read `.bashrc` — `BASH_ENV`, and a shell started by a remote shell daemon —
+// so both interactivity states are driven.
+func TestGenerate_BashHookNeverAbortsTheRcFileThatSourcesIt(t *testing.T) {
+	requirePOSIXHarness(t)
+	requireInterpreter(t, "bash")
+	script, err := Generate("bash")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	// The hook text goes through `eval` from a *file* the shell sources, as in
+	// real usage; `$(cat ...)` stands in for the real `envoke shell-init bash`.
+	scriptPath := writeDriver(t, "shell-init.bash", script)
+	rcPath := writeDriver(t, "bashrc", `eval "$(cat `+shellQuote(scriptPath)+`)"`+"\n"+
+		"echo "+rcContinuedSentinel+"\n")
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "non-interactive", args: []string{"--noprofile", "--norc", "-c", ". " + shellQuote(rcPath)}},
+		{name: "interactive", args: []string{"--noprofile", "--norc", "-i", "-c", ". " + shellQuote(rcPath)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubDir := t.TempDir()
+			writeEnvokeStub(t, stubDir, filepath.Join(stubDir, "calls.log"))
+
+			out, err := runDriver(t, stubDir, exec.Command("bash", tc.args...))
+			if err != nil {
+				t.Fatalf("driver script failed: %v\n%s", err, out)
+			}
+			if !strings.Contains(out, rcContinuedSentinel) {
+				t.Errorf("sourcing the hook cut the rc file short: %q never printed, output:\n%s", rcContinuedSentinel, out)
 			}
 		})
 	}
