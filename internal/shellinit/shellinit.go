@@ -27,21 +27,16 @@ func Generate(shell string) (string, error) {
 // bashHook polls PWD from PROMPT_COMMAND, since bash has no native "on cd"
 // hook. It appends rather than redefining cd.
 //
-// Nothing is installed in a non-interactive shell. envoke exists to react to
-// a person moving around; a script that cds has not asked for that, and the
-// rc file a hook lives in is not always read only by interactive shells —
-// `.cshrc` and `.zshenv` are read by every shell, and bash reads `.bashrc`
-// for a shell named by `BASH_ENV` and for one started by a remote shell
-// daemon (`ssh host 'cmd'`). Guarding at install time rather than at fire
-// time means such a shell ends up with no hook at all, which is both cheaper
-// and easier to reason about. `envoke exec` is the deliberate,
+// Nothing is installed in a non-interactive shell: the rc file a hook lives
+// in is not read only by interactive ones — bash reads `.bashrc` for a shell
+// named by `BASH_ENV` and for `ssh host 'cmd'`, and `.zshenv`/`.cshrc` are
+// read by every shell of their kind. `envoke exec` is the deliberate
 // non-interactive entry point and is unaffected.
 //
-// The guard wraps the installation instead of returning early because this
-// text is evaluated inside the caller's rc file, so aborting it aborts the rc
-// file: `return` inside `eval` inside a sourced file pops the sourced file's
-// own frame, skipping every later line of the user's `.bashrc` with status 0,
-// and in a script that is executed rather than sourced `exit` ends the script
+// The guard wraps the installation rather than returning early because this
+// text is evaluated inside the caller's rc file: `return` inside `eval` inside
+// a sourced file pops the sourced file's own frame, skipping every later line
+// of the user's `.bashrc` with status 0, and `exit` ends an executed script
 // outright.
 //
 // The baseline is seeded at install time, not lazily on the first call: a
@@ -76,10 +71,9 @@ esac
 // zshHook uses zsh's native chpwd_functions array. No baseline to seed —
 // zsh maintains $OLDPWD itself.
 //
-// Guarded on interactivity like bash's (see bashHook), and zsh is the shell
-// where it matters most after tcsh: `.zshrc` is interactive-only, but
-// `.zshenv` is read by every zsh including `zsh -c`, and nothing stops a user
-// putting the hook there.
+// Guarded on interactivity like bash's (see bashHook): `.zshrc` is
+// interactive-only, but `.zshenv` is read by every zsh including `zsh -c`,
+// and nothing stops a user putting the hook there.
 //
 // The status save/restore is the mirror of bash's concern (see bashHook):
 // chpwd_functions run as part of the cd, so a hook returning its own status
@@ -101,9 +95,8 @@ fi
 // inconsistent across versions, so this tracks the previous directory
 // itself and seeds it at install time, like bash.
 //
-// The interactivity guard matters here: fish reads config.fish for
-// non-interactive shells too, so without it every `fish -c` that cds would
-// run enter/leave blocks.
+// fish reads config.fish for non-interactive shells too, so without the guard
+// every `fish -c` that cds would run enter/leave blocks.
 //
 // `string collect` (fish 3.4+) is required: a bare command substitution
 // splits output into one list element per line, which would turn a
@@ -129,9 +122,9 @@ end
 // tcshHook uses tcsh's cwdcmd alias, csh's equivalent of chpwd_functions.
 // tcsh maintains $owd/$cwd itself, so there is no baseline to seed.
 //
-// `$?prompt` is csh's interactivity test, and this is the shell the guard was
-// written for: `.cshrc` is read by non-interactive tcsh — verified — so a
-// hook installed there fires for every `tcsh -c` that changes directory.
+// `$?prompt` is csh's interactivity test. `.cshrc` is read by non-interactive
+// tcsh — verified — so an unguarded hook fires for every `tcsh -c` that
+// changes directory.
 //
 // Four tcsh quirks, each verified against a real tcsh — don't undo one
 // without re-testing end to end:
@@ -170,13 +163,14 @@ endif
 `
 
 // powershellHook wraps the prompt function, PowerShell's idiomatic
-// customization point. It is the one hook with no interactivity guard, and
-// deliberately: `prompt` is only ever called by an interactive host, so the
-// hook point is already the guard. Adding a check would be a check on
-// something else — [Environment]::UserInteractive is true for any process
-// with a desktop — and would read as protection it isn't. The previous prompt is saved and always called
-// through to, so this composes with anything installed before it;
+// customization point. The previous prompt is saved and always called through
+// to, so this composes with anything installed before it;
 // $_envokeHookInstalled prevents double-wrapping on a re-source.
+//
+// The one hook with no interactivity guard, deliberately: `prompt` is only
+// ever called by an interactive host, so the hook point is the guard.
+// [Environment]::UserInteractive is true for any process with a desktop and
+// would read as protection it isn't.
 //
 // Out-String joins the possibly-multi-line stdout before
 // Invoke-Expression — the same concern as fish's `string collect`.
@@ -186,32 +180,22 @@ endif
 // so a prompt reading `$?` rather than $LASTEXITCODE still sees this hook's
 // own result.
 //
-// A PowerShell location is not necessarily a filesystem path: providers
-// expose drives such as HKLM:, Cert:, Env:, Function: and Variable:, and
-// `Set-Location HKLM:` makes the current location `HKLM:\SOFTWARE`. That is
-// not an absolute path, so `envoke shell-hook` rejects it and prints the
-// rejection on stderr — from inside `prompt`, interleaved with the user's
-// prompt, twice per round trip. Hence the FileSystem test, which is also
-// cheaper than the process it avoids.
+// A PowerShell location need not be a filesystem path: `Set-Location HKLM:`
+// makes it `HKLM:\SOFTWARE`, which `envoke shell-hook` rejects as
+// non-absolute — from inside `prompt`, twice per round trip. Hence the
+// FileSystem test.
 //
-// The provider decides *whether* to fire; ProviderPath decides *what path* to
-// send, and those are separate questions. Under the FileSystem provider
-// .Path is still the PowerShell spelling of the location: drive-qualified for
-// a user-created PSDrive (`Repos:\proj`, for `New-PSDrive -Name Repos -Root
-// C:\src`) and provider-qualified for a UNC location
-// (`Microsoft.PowerShell.Core\FileSystem::\\host\share`) — neither absolute,
-// and a one-letter PSDrive name is worse than an error, being absolute but
-// pointing somewhere that does not exist. .ProviderPath is the filesystem
-// path itself with the drive mapping resolved, which is what a config's
-// patterns are written against.
+// ProviderPath, not .Path, because under the FileSystem provider .Path is
+// still the PowerShell spelling: drive-qualified for a user-created PSDrive
+// (`Repos:\proj`) and provider-qualified for UNC
+// (`Microsoft.PowerShell.Core\FileSystem::\\host\share`). Neither is
+// absolute, and a one-letter PSDrive name is worse than an error — absolute,
+// and pointing somewhere that does not exist.
 //
-// $_envokePrevPwd is deliberately left alone while the location is off the
-// filesystem, rather than updated: coming back to a filesystem path then
-// reports the transition from the last filesystem directory — the one whose
-// leave blocks are owed — instead of passing a provider path as `from`. For
-// the same reason the install-time seed only takes a filesystem location,
-// and an unseeded (empty) value suppresses the call rather than being sent
-// as `from`.
+// $_envokePrevPwd is left alone while the location is off the filesystem, so
+// coming back reports the transition from the last filesystem directory — the
+// one whose leave blocks are owed — instead of passing a provider path as
+// `from`. An unseeded value suppresses the call for the same reason.
 const powershellHook = `if (-not $global:_envokeHookInstalled) {
   $global:_envokeHookInstalled = $true
   $global:_envokePrevPwd = $null
@@ -258,11 +242,9 @@ func Completion(shell string) (string, error) {
 }
 
 // subcommands is the checklist that keeps the three completion scripts
-// complete. No generated script reads it: each hardcodes its own list in its own
-// syntax (bash's -W word list, zsh's _envoke_cmds, one fish `complete -a` line
-// per command), and TestCompletion_ListsEverySubcommand asserts every name here
-// appears in all three. Adding a name here alone completes the command in no
-// shell.
+// complete. No generated script reads it — each hardcodes its own list in its
+// own syntax — and TestCompletion_ListsEverySubcommand asserts every name here
+// appears in all three. Adding a name here alone completes it in no shell.
 var subcommands = []string{
 	"allow", "completion", "debug", "disable", "enable", "exec", "help",
 	"list", "prune", "reload", "revoke", "shell-hook", "shell-init",
