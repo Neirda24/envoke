@@ -1,11 +1,9 @@
 // Dagger CI pipeline for envoke.
 //
-// Mirrors the four commands from CONTRIBUTING.md's "Verifying your change"
-// (gofmt, go vet, go build, go test -race), adds golangci-lint, and runs the
-// shellinit and executor end-to-end tests against a real interpreter for
-// each of the five supported shells (bash, zsh, fish, tcsh, powershell) so
-// none of them are silently skipped for lack of the binary, as they are in
-// a plain local `go test` run.
+// Mirrors CONTRIBUTING.md's "Verifying your change", adds golangci-lint, and
+// runs the shellinit and executor end-to-end tests against a real interpreter
+// for each of the five supported shells — which a plain local `go test`
+// silently skips for lack of the binary.
 package main
 
 import (
@@ -25,10 +23,9 @@ const (
 	// the manager matching and freezes that pin with nothing reporting it.
 	golangciLintPath = "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1"
 	govulncheckPath  = "golang.org/x/vuln/cmd/govulncheck@v1.7.0"
-	// goBuildCachePath/goModCachePath are where goBase mounts its
-	// persistent caches, and are set as GOCACHE/GOMODCACHE there rather
-	// than left to the image's HOME/GOPATH defaults: a mount that isn't
-	// where the toolchain actually looks caches nothing and says nothing.
+	// Set as GOCACHE/GOMODCACHE in goBase rather than left to the image's
+	// defaults: a mount that isn't where the toolchain looks caches nothing
+	// and says nothing.
 	goBuildCachePath = "/root/.cache/go-build"
 	goModCachePath   = "/go/pkg/mod"
 	// renovate: datasource=docker
@@ -53,12 +50,9 @@ type Envoke struct {
 }
 
 func New(
-	// The repository root. Everything below is excluded because it is not an
-	// input to any check, and the source directory's digest is what every
-	// check's cache key is built from: without this, editing a local scratch
-	// note or making a commit re-executes all of them. Keep this list to
-	// things no check reads — .github and docs are read by yaml-lint and
-	// docs-build respectively, so neither may be added.
+	// The repository root. The source digest is every check's cache key, so
+	// anything no check reads is excluded. Keep it that way: .github and docs
+	// are read by yaml-lint and docs-build, so neither may be added.
 	//
 	// +defaultPath="/"
 	// +ignore=[".git", ".idea", "review", "*_handoff.md", "CLAUDE.local.md"]
@@ -72,17 +66,15 @@ func New(
 // goBase is a bare Go toolchain container, before the source tree is
 // mounted, so package-install layers cache independently of source edits.
 //
-// The build and module caches are persistent volumes because the source
-// mount invalidates every exec below it: without them each check recompiles
-// the standard library from scratch, and Test instruments it for -race, on
-// every invocation.
+// The caches are persistent volumes because the source mount invalidates
+// every exec below it: without them each check recompiles the standard
+// library, and Test instruments it for -race, on every invocation.
 //
-// Sharing is SHARED (the default, stated to make the choice reviewable):
-// `dagger check` runs the checks concurrently, so several containers hold
-// these volumes at once, and the `go` command is built for exactly that —
-// build-cache entries are content-addressed and land by rename, and the
-// module cache serializes its own downloads through lock files. LOCKED would
-// queue every Go check behind one mount and cost more than it buys.
+// SHARED is the default, stated to make the choice reviewable: `dagger check`
+// runs concurrently and the `go` command is built for that — build-cache
+// entries are content-addressed and land by rename, and the module cache
+// serializes downloads through lock files. LOCKED would queue every Go check
+// behind one mount.
 func (m *Envoke) goBase() *dagger.Container {
 	// CGO must stay enabled: go test -race requires cgo.
 	return dag.Container().From(goImage).
@@ -117,17 +109,15 @@ func (m *Envoke) powershellBase() *dagger.Container {
 		WithExec([]string{"apt-get", "install", "-y", "powershell"})
 }
 
-// golangciLintBase installs golangci-lint on top of goBase, before the
-// source tree is mounted, so the install only reruns when golangciLintPath's
-// pin changes — downstream of withSource it would rebuild the whole linter
-// from source on every source edit, which is the check's dominant cost.
+// golangciLintBase installs golangci-lint on top of goBase, before the source
+// tree is mounted: downstream of withSource it would rebuild the whole linter
+// on every source edit, which is the check's dominant cost.
 func (m *Envoke) golangciLintBase() *dagger.Container {
 	return m.goBase().
 		// golangci-lint's own go.mod may require a newer Go than this
-		// module's; let the toolchain fetch itself rather than pinning
-		// the base image to whatever golangci-lint currently needs. The
-		// fetched toolchain lands in the module cache, so it is a
-		// one-time download rather than a per-run one.
+		// module's; let the toolchain fetch itself rather than pinning the
+		// base image to whatever golangci-lint currently needs. It lands in
+		// the module cache, so it downloads once.
 		WithEnvVariable("GOTOOLCHAIN", "auto").
 		WithExec([]string{"go", "install", golangciLintPath})
 }
@@ -163,20 +153,11 @@ func (m *Envoke) yamllintBase() *dagger.Container {
 		WithExec([]string{"pip", "install", "--no-cache-dir", "yamllint==" + yamllintVersion})
 }
 
-// shellTest runs the two packages whose tests drive a real interpreter end
-// to end rather than string-matching generated text, inside the given
-// container:
-//
-//   - internal/shellinit generates the hook scripts, and asserts per-shell
-//     behaviour (a cd is reported, a setenv persists, a directory name is
-//     never executed, $? is preserved).
-//   - internal/executor generates the ENVOKE_* assignments those hooks
-//     eval, and asserts every dialect's quoting round-trips a directory
-//     name byte-for-byte.
-//
-// Both are useless without the interpreter installed — they t.Skip locally
-// — which is exactly why each TestShell* check below builds a container
-// with one shell in it and runs them for real.
+// shellTest runs the two packages whose tests drive a real interpreter end to
+// end rather than string-matching generated text: internal/shellinit for the
+// hook scripts, internal/executor for the ENVOKE_* assignments those hooks
+// eval. Both t.Skip without the interpreter installed, which is why each
+// TestShell* check below builds a container with one shell in it.
 func (m *Envoke) shellTest(ctx context.Context, c *dagger.Container) error {
 	_, err := m.withSource(c).
 		WithExec([]string{"go", "test", "./internal/shellinit/...", "./internal/executor/...", "-race", "-v"}).
@@ -220,16 +201,12 @@ func (m *Envoke) Build(ctx context.Context) error {
 	return err
 }
 
-// CrossBuild compiles and vets every OS/arch .goreleaser.yaml publishes,
-// so a platform that ships as a release artifact can't silently stop
-// building. It also type-checks the GOOS-specific test files (via `go vet`,
-// which loads them) that the Linux test containers never see — notably
-// internal/matcher's Windows path-separator tests.
+// CrossBuild compiles and vets every OS/arch .goreleaser.yaml publishes, so a
+// platform that ships as a release artifact can't silently stop building. `go
+// vet` also loads the GOOS-specific test files the Linux containers never see.
 //
-// This is a compile-level guarantee only, and stays useful even alongside
-// the `native` job in .github/workflows/ci.yml (which runs the real tests on
-// windows-latest and macos-latest): this catches a broken cross-compile in
-// the local `dagger check` loop, before a push, and covers the arm64 targets
+// Compile-level only, and still worth having beside ci.yml's `native` job: it
+// catches a broken cross-compile before a push, and covers the arm64 targets
 // no runner exercises.
 //
 // +check
@@ -277,19 +254,15 @@ var fuzzTargets = []struct{ pkg, name string }{
 	{"./internal/config", "FuzzCompilePattern"},
 }
 
-// Fuzz runs each fuzz target for a short burst. It is deliberately a
-// time-boxed smoke run, not a soak: the point in CI is to catch a target
-// that has started failing outright (or stopped compiling), while the seed
-// corpus already runs as ordinary tests under Test on every commit. Real
-// fuzzing is something to do locally with a longer -fuzztime when touching
-// the parser.
+// Fuzz runs each fuzz target for a short burst: a smoke run to catch a target
+// that has started failing or stopped compiling, not a soak. The seed corpus
+// already runs under Test on every commit; real fuzzing is a longer -fuzztime
+// locally when touching the parser.
 //
-// Not a +check — a fixed-duration run per target would add minutes to every
-// CI run for a low hit rate on a parser this small. Run it deliberately:
+// Not a +check — a fixed-duration run per target would add minutes to every CI
+// run for a low hit rate. Run it deliberately:
 //
 //	dagger call -m .dagger fuzz
-//
-// +optional fuzzTime, default 20s per target.
 func (m *Envoke) Fuzz(
 	ctx context.Context,
 	// +optional
@@ -324,16 +297,13 @@ func (m *Envoke) Lint(ctx context.Context) error {
 
 // Vuln runs govulncheck against the main module.
 //
-// envoke has no non-stdlib imports, which does not mean there is nothing to
-// scan — it means the standard library *is* the dependency, and govulncheck
-// is the tool that knows which of its functions a given Go release has an
-// advisory against. It reports only vulnerabilities on a code path this
-// binary actually reaches, so a finding here is a reason to bump the
-// toolchain rather than a note to file.
+// Having no non-stdlib imports does not mean there is nothing to scan: the
+// standard library is the dependency, and govulncheck knows which of its
+// functions a given Go release has an advisory against, on a path this binary
+// actually reaches. A finding here is a reason to bump the toolchain.
 //
-// Deliberately only ./... : .dagger is a separate module whose dependencies
-// come from the Dagger SDK's codegen and are not independently upgradable
-// (see renovate.json), and it never ships to a user.
+// Only ./... : .dagger is a separate module whose dependencies come from the
+// SDK's codegen, are not independently upgradable, and never ship.
 //
 // +check
 func (m *Envoke) Vuln(ctx context.Context) error {
@@ -343,11 +313,10 @@ func (m *Envoke) Vuln(ctx context.Context) error {
 	return err
 }
 
-// YamlLint checks the syntax of every YAML file under .github — workflows,
-// issue forms, discussion templates, the issue-template config — with the
-// relaxed profile (style warnings like line length don't fail the check;
-// real mistakes like a bad indent or a duplicate key do). Catches a broken
-// issue-form field before it silently breaks GitHub's "New issue" picker.
+// YamlLint checks the syntax of every YAML file under .github with the
+// relaxed profile: a bad indent or a duplicate key fails, line length doesn't.
+// Catches a broken issue-form field before it breaks GitHub's "New issue"
+// picker.
 //
 // +check
 func (m *Envoke) YamlLint(ctx context.Context) error {
@@ -428,19 +397,15 @@ func (m *Envoke) ActionsUp(ctx context.Context) error {
 	return fmt.Errorf("%d GitHub Actions reference(s) need updates:\n\n%s", report.Summary.TotalUpdates, verbose)
 }
 
-// Autofix applies every automatic fix zizmor and actions-up know how to
-// make: zizmor's own `--fix=all` first, then actions-up's pinning/update
-// pass against the zizmor-fixed tree, returning the combined diff. Apply it
-// locally with:
+// Autofix applies every automatic fix zizmor and actions-up know how to make:
+// zizmor's `--fix=all` first, then actions-up against the fixed tree,
+// returning the combined diff. Apply it with:
 //
 //	dagger -m .dagger call autofix export --path=.
 //
-// then re-run the Zizmor/ActionsUp checks to confirm only genuinely
-// unfixable issues (if any) remain: `zizmor --fix=all` exits non-zero
-// whenever findings remain after fixing (e.g. ones needing the riskier
-// `--fix=unsafe`, which this deliberately doesn't pass), even though the
-// safe fixes were applied successfully — so this step must tolerate any
-// exit code rather than the default success-only expectation.
+// ReturnTypeAny because `zizmor --fix=all` exits non-zero whenever findings
+// remain after fixing — ones needing the riskier `--fix=unsafe`, which this
+// deliberately doesn't pass — even though the safe fixes did apply.
 func (m *Envoke) Autofix(ctx context.Context) (*dagger.Changeset, error) {
 	zizmorFixed := m.withSource(m.zizmorBase()).
 		WithExec([]string{"zizmor", ".", "--cache-dir=/zizmor-cache", "--fix=all"}, dagger.ContainerWithExecOpts{
@@ -498,15 +463,12 @@ func (m *Envoke) TestShellPowershell(ctx context.Context) error {
 	return m.shellTest(ctx, m.powershellBase())
 }
 
-// Snapshot runs the full goreleaser pipeline (cross-compile, archive,
-// checksum) for every OS/arch in .goreleaser.yaml, but `--snapshot` implies
-// `--skip=announce,publish,validate` so nothing leaves this container.
-// `sign` is skipped explicitly too, on top of that: unlike the others,
-// --snapshot does NOT skip it automatically (confirmed by running this
-// function before this fix existed — it hung for the OIDC device-flow's
-// full 5-minute timeout, then failed, since cosign's keyless signing needs
-// a real GitHub Actions OIDC token that a local/snapshot run never has).
-// Returns the dist/ directory for local inspection.
+// Snapshot runs the full goreleaser pipeline for every OS/arch in
+// .goreleaser.yaml and returns dist/ for local inspection. `--snapshot`
+// implies `--skip=announce,publish,validate`, so nothing leaves the
+// container; `sign` is skipped explicitly because --snapshot does not skip it
+// and cosign's keyless signing then hangs for the OIDC device flow's full
+// timeout waiting for a GitHub Actions token a local run never has.
 func (m *Envoke) Snapshot(ctx context.Context) (*dagger.Directory, error) {
 	dist := m.withSource(m.goreleaserBase()).
 		WithExec([]string{"goreleaser", "release", "--snapshot", "--clean", "--skip=sign"}).
@@ -524,27 +486,16 @@ func (m *Envoke) Snapshot(ctx context.Context) (*dagger.Directory, error) {
 // ambient per-run GITHUB_TOKEN covers this) — a tag must be checked out in
 // Source, goreleaser release refuses to run otherwise.
 //
-// actionsIDTokenRequestURL/actionsIDTokenRequestToken are GitHub Actions'
-// OIDC token-minting endpoint and its bearer credential
-// (ACTIONS_ID_TOKEN_REQUEST_URL/ACTIONS_ID_TOKEN_REQUEST_TOKEN) — the
-// runner injects both automatically into every step's process environment
-// once the job has `permissions: id-token: write`, but a Dagger container
-// is isolated from that ambient environment by design, so they have to be
-// forwarded explicitly for cosign's GitHub Actions ambient-credential
-// detection to find them and mint a Fulcio certificate. Threaded the same
-// way as githubToken (see release.yml's `call: publish
-// --github-token=... --actions-idtoken-request-url=env://... `).
+// actionsIDTokenRequestURL/actionsIDTokenRequestToken are GitHub Actions' OIDC
+// endpoint and its bearer credential. The runner injects both into every
+// step's environment once the job has `permissions: id-token: write`, but a
+// Dagger container is isolated from that ambient environment, so cosign only
+// finds them if they are forwarded explicitly.
 //
-// homebrewTapToken authenticates the homebrew_casks push to
-// Neirda24/homebrew-tap and the scoops push to Neirda24/scoop-bucket
-// (.goreleaser.yaml's homebrew_casks.repository.token and
-// scoops.repository.token overrides) — deliberately a separate,
-// narrower-scoped credential from githubToken, so a compromise of the
-// release job cannot reach beyond those two repositories: a short-lived
-// GitHub App installation token scoped to just
-// those two repos, minted per run by release.yml's create-github-app-token
-// step, rather than the old long-lived PAT with write access to both envoke
-// and homebrew-tap.
+// homebrewTapToken authenticates the homebrew_casks and scoops pushes — a
+// short-lived GitHub App installation token scoped to those two repositories
+// alone, minted per run by release.yml, so a compromise of the release job
+// cannot reach beyond them.
 func (m *Envoke) Publish(ctx context.Context, githubToken *dagger.Secret, actionsIDTokenRequestURL *dagger.Secret, actionsIDTokenRequestToken *dagger.Secret, homebrewTapToken *dagger.Secret) (string, error) {
 	return m.withSource(m.goreleaserBase()).
 		WithSecretVariable("GITHUB_TOKEN", githubToken).
@@ -558,14 +509,12 @@ func (m *Envoke) Publish(ctx context.Context, githubToken *dagger.Secret, action
 // DocsBuild builds the docs site the way the deploy does, and fails on
 // anything MkDocs would otherwise only mention.
 //
-// --strict is what does the work: mkdocs.yml raises
-// validation.nav.omitted_files to a warning, and a page under docs/ that no
-// nav entry lists would otherwise be built and published at its own URL with
-// the run still green. A broken internal link is the same shape of problem.
+// --strict does the work: mkdocs.yml raises validation.nav.omitted_files to a
+// warning, so a page no nav entry lists would otherwise publish at its own URL
+// with the run still green. A broken internal link is the same shape.
 //
-// This exists as a check because the deploy workflow is the only other place
-// the strict build runs, and it runs on push to main behind a paths filter --
-// so until here, a contributor had no way to find out before merging.
+// A check because the deploy workflow is the only other place the strict build
+// runs, and it runs on push to main behind a paths filter.
 //
 // +check
 func (m *Envoke) DocsBuild(ctx context.Context) error {
