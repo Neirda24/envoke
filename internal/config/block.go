@@ -59,26 +59,19 @@ type Config struct {
 	// outside which none of its blocks may match.
 	Dir string
 
-	// DirUnresolved reports that Dir could not be traced back to where the
-	// file physically is: the resolution LoadFragmentResolved was handed was
-	// empty, so the base fell back to the link's own directory, while the
-	// read through it succeeded.
-	//
-	// It exists so the confinement decision can fail closed. Without it, a
-	// fragment whose link could not be resolved looked exactly like a file
-	// that really lives in envokerc.d — which is the one shape that is *not*
-	// confined.
+	// DirUnresolved reports that Dir fell back to the link's own directory
+	// because LoadFragmentResolved was handed no resolution, while the read
+	// through the link succeeded. It exists so the confinement decision can
+	// fail closed: without it such a fragment looks exactly like a file that
+	// really lives in envokerc.d, the one shape that is *not* confined.
 	DirUnresolved bool
 
-	// Local confines this config's blocks to Dir's subtree: nothing in it can
-	// match a directory outside the tree it belongs to, however its patterns
-	// are written.
-	//
-	// Set for a fragment that is a symlink out of envokerc.d into a project,
-	// because that file's content changes with the project — a `git pull` can
-	// rewrite it, and while trust still gates every change, a config that
-	// travels with a repository has no business matching /etc. Configs that
-	// really live in your own config directory are not confined.
+	// Local confines this config's blocks to Dir's subtree, however its
+	// patterns are written. Set for a fragment symlinked out of envokerc.d
+	// into a project: that file's content is whatever the project's last
+	// commit says, and a config that travels with a repository has no
+	// business matching /etc. Configs that really live in your own config
+	// directory are not confined.
 	Local bool
 
 	Blocks []Block

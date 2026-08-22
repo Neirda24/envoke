@@ -25,37 +25,25 @@ func (e *ParseError) Error() string {
 // content, returning the parsed config alongside the bytes it was parsed
 // from.
 //
-// Handing the content back is the whole point of this existing next to
-// ParseFile. A caller that also makes a trust decision must hash *these*
-// bytes rather than read the file again: two reads open a window in which
-// the file can change, so the content executed is not the content
-// validated. On a group-writable config — what UnsafePermissions warns
-// about — that window is a real privilege boundary.
+// Handing the content back is why this exists next to ParseFile. A caller
+// that also makes a trust decision must hash *these* bytes: two reads open a
+// window in which the file can change, so the content executed is not the
+// content validated.
 func LoadFile(path string) (*Config, []byte, error) {
 	return load(path, path)
 }
 
-// loadFragment is LoadFile for a file in the envokerc.d directory, with one
-// difference that matters: it resolves symlinks before deciding what "./"
-// means.
+// loadFragment is LoadFile for a file in the envokerc.d directory, resolving
+// symlinks before deciding what "./" means.
 //
-// A fragment is often a symlink to a config committed inside a project
-// (`ln -s ~/work/api/envoke.conf ~/.config/envoke/envokerc.d/api`). A relative
-// pattern in that file describes the project, not the config directory the
-// link happens to sit in, so the base has to be the *target's* directory.
-// Resolving the link is also what lets the caller tell a project's config
-// apart from one that really lives in envokerc.d, which is what decides
-// whether it gets confined (see Config.Local).
+// A fragment is often a symlink to a config committed inside a project. A
+// relative pattern in that file describes the project, not the config
+// directory the link sits in, so the base has to be the *target's* directory.
+// The resolution also decides whether the config gets confined (Config.Local).
 //
-// Unexported because nothing outside this package may take it: every caller of
-// LoadFragmentResolved has the resolution in hand already and must pass that
-// one, since the same answer decides its dedup. Exporting a second entry point
-// that resolves the path itself would invite a second EvalSymlinks per fragment
-// per directory change, and — where the two answers disagreed — a base derived
-// from a different resolution than the identity the caller deduplicated on.
-// It stays rather than being deleted because it is where the resolve-then-
-// delegate contract is stated in one call, and because this package's own tests
-// would otherwise each repeat that resolution.
+// Unexported so no caller outside this package resolves the path a second
+// time per fragment per directory change, or derives a base from a different
+// resolution than the identity it deduplicated on.
 func loadFragment(path string) (*Config, []byte, error) {
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
@@ -65,10 +53,7 @@ func loadFragment(path string) (*Config, []byte, error) {
 }
 
 // LoadFragmentResolved is loadFragment for a caller that has already followed
-// path's symlinks and needs that resolution for something else as well —
-// identifying the file, so the same file reached two ways is loaded once. The
-// resolution is an lstat/readlink loop per path component on every directory
-// change, so it is performed once and passed rather than repeated here.
+// path's symlinks and needs that resolution for something else as well.
 //
 // resolved must be filepath.EvalSymlinks' answer for path, or "" when it
 // refused to follow the link. "" is not the same as "path is not a link": the
@@ -78,11 +63,9 @@ func LoadFragmentResolved(path, resolved string) (*Config, []byte, error) {
 	if resolved == "" {
 		// Not fatal: a broken link fails on the read below with a message
 		// naming the link, which is more useful than one naming the target.
-		// A link that resolves badly here but reads fine anyway — the kernel
-		// and EvalSymlinks do not fail on identical conditions, least of all
-		// on Windows reparse points — leaves Dir describing the link's own
-		// directory rather than the target's, which is why the caller is told
-		// (see Config.DirUnresolved).
+		// The kernel and EvalSymlinks do not fail on identical conditions,
+		// least of all on Windows reparse points, so a link that reads fine
+		// anyway leaves Dir describing the link's own directory.
 		cfg, content, loadErr := load(path, path)
 		if cfg != nil {
 			cfg.DirUnresolved = true
@@ -100,9 +83,9 @@ func load(path, basedOn string) (*Config, []byte, error) {
 		return nil, nil, err
 	}
 
-	// Absolute, because the base is what "./src" resolves against and
-	// patterns are matched against absolute directories: resolving against a
-	// relative "." would compile a pattern that can never match.
+	// Absolute, because patterns are matched against absolute directories:
+	// resolving "./src" against a relative "." would compile a pattern that
+	// can never match.
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", path, err)
@@ -123,13 +106,11 @@ func load(path, basedOn string) (*Config, []byte, error) {
 // readSource reads path's contents once and refuses anything past
 // maxConfigBytes.
 //
-// The bound is on the read rather than on a stat's reported size, because a stat
-// answers neither case it exists for: a character device reports a size of zero
-// and would still read until memory ran out, and a regular file can grow between
-// being measured and being read. Reading one byte past the bound is how "at the
-// bound" is told from "over it" without looking at the file a second time — the
-// one read stays the one read, which is what lets a trust decision hash exactly
-// what was parsed.
+// The bound is on the read rather than on a stat's reported size: a character
+// device reports zero and would still read until memory ran out, and a
+// regular file can grow between being measured and being read. Reading one
+// byte past the bound tells "at the bound" from "over it" without a second
+// look, so the one read stays the one read.
 func readSource(path string) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -169,10 +150,9 @@ func ParseFile(path string) (*Config, error) {
 //
 // A block header ("enter "/"leave " at the start of a line, no leading
 // whitespace) is followed by an indented script body; the body ends at the
-// next unindented, non-blank line or EOF. Blank lines inside a body don't
-// end it, so multi-line scripts with blank lines in the middle work as
-// expected. Lines outside any block that are blank or start with "#" are
-// ignored; anything else outside a block is a syntax error.
+// next unindented, non-blank line or EOF. Blank lines inside a body don't end
+// it. Lines outside any block that are blank or start with "#" are ignored;
+// anything else outside a block is a syntax error.
 func Parse(r io.Reader, base string) (*Config, error) {
 	lines, err := readLines(r)
 	if err != nil {
@@ -256,11 +236,9 @@ func trimTrailingBlank(lines []string) []string {
 func readLines(r io.Reader) ([]string, error) {
 	var lines []string
 	scanner := bufio.NewScanner(r)
-	// The 1 MiB ceiling is what this call is for: a block body line longer
-	// than bufio's own 64 KiB limit has to parse rather than fail. The
-	// starting size is Scanner's to pick -- it grows from 4 KiB as needed,
-	// and this runs once per config file in the set, so a fixed floor would
-	// be allocated and zeroed for every one of them.
+	// A block body line longer than bufio's own 64 KiB limit has to parse
+	// rather than fail. The starting size is Scanner's to pick -- a fixed
+	// floor would be allocated and zeroed for every config in the set.
 	scanner.Buffer(nil, 1024*1024)
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
@@ -271,9 +249,9 @@ func readLines(r io.Reader) ([]string, error) {
 	return lines, nil
 }
 
-// dedent strips the common leading whitespace from a block's script lines,
-// so the script's own indentation (e.g. a shell for-loop) is preserved
-// relative to the block, not to the config file's column 0.
+// dedent strips the common leading whitespace from a block's script lines, so
+// the script's own indentation is preserved relative to the block rather than
+// to the config file's column 0.
 func dedent(lines []string) string {
 	minIndent := -1
 	for _, l := range lines {

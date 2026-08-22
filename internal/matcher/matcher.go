@@ -19,87 +19,58 @@ import (
 // directory on the path between them).
 type Match struct {
 	Block config.Block
-	// Config is the config the block was declared in. Every consumer needs
-	// it: nothing may run before that particular file's trust is checked,
-	// and with several configs in play the answer differs per match.
+	// Config gates execution: nothing runs before this particular file's
+	// trust is checked, and with several configs in play the answer differs
+	// per match.
 	Config *config.Config
-	// Dir is the directory in the platform's own form (backslashes on
-	// Windows), because it is used as a working directory and handed to
-	// scripts as ENVOKE_DIR. It is the directory the shell reported, symlinks
-	// unresolved: that is where the cd landed and what the user is looking
-	// at, whichever form the pattern was matched against.
+	// Dir is the directory the shell reported, symlinks unresolved and in the
+	// platform's own form: it is used as a working directory and handed to
+	// scripts as ENVOKE_DIR.
 	Dir string
-	// Groups holds the pattern's submatches, Groups[0] being the whole
-	// match, captured against the slash-normalized form (see MatchPath) of
-	// the path the pattern ran against — Dir, or for a confined config Dir's
-	// resolved form, since that config's patterns are compiled against
-	// physical paths and captures have to come from the path that actually
-	// matched. Storing them keeps the pattern running once per candidate
-	// directory rather than once to test and again to extract — this is the
-	// hot path of every cd.
+	// Groups holds the pattern's submatches against the path that actually
+	// matched — MatchPath(Dir), or its resolved form for a confined config.
+	// Stored so the pattern runs once per candidate directory rather than
+	// once to test and again to extract.
 	Groups []string
 }
 
-// NewMatch runs b's pattern against dir once, refusing the match outright
-// when cfg is a confined config and dir does not lie inside its subtree —
-// compared with symlinks resolved on both sides wherever dir can be resolved,
-// and by file identity where two spellings of one directory would otherwise
-// read as two (see newMatch). Everything that builds a Match goes through
-// here, so neither "captured against the normalized path" nor the confinement
-// rule can end up implemented two different ways.
+// NewMatch runs b's pattern against dir once, refusing the match when cfg is
+// a confined config and dir does not lie inside its subtree. Everything that
+// builds a Match goes through here, so the confinement rule cannot end up
+// implemented two different ways.
 func NewMatch(cfg *config.Config, b config.Block, dir string) (Match, bool) {
 	return newMatch(cfg, b, &candidate{dir: dir})
 }
 
-// newMatch is NewMatch over a candidate whose resolution can be shared with
-// the other configs and blocks tested against the same directory. It holds
-// the confinement refusal and builds the only Match this package ever
-// constructs; the exported wrapper exists so no caller outside the package
-// can supply a candidate whose resolution it did not compute itself.
+// newMatch is NewMatch over a candidate whose resolution is shared with the
+// other configs and blocks tested against the same directory. Unexported so
+// no caller outside the package can supply a candidate it did not compute.
 func newMatch(cfg *config.Config, b config.Block, c *candidate) (Match, bool) {
 	against := c.dir
-	// boundByIdentity says the bound still owed is withinBound's, over the
-	// resolved path in `against`. It cannot be recovered from `against !=
-	// c.dir`: a project with no symlink above it resolves to its own spelling,
-	// and that case is still the identity bound rather than the textual
-	// fallback below.
+	// Not recoverable from `against != c.dir`: a project with no symlink above
+	// it resolves to its own spelling, and that case still owes the identity
+	// bound.
 	boundByIdentity := false
 	if cfg.Local {
-		// A confined config's Dir, and the base its ./ patterns were
-		// compiled with, are both physical: config.LoadFragmentResolved bases
-		// them on the followed link. c.dir is the shell's own $PWD, which is
-		// not. Where an ancestor of the project is a symlink
-		// the two forms disagree, and comparing or matching one against the
-		// other makes every block in the fragment stop firing — on macOS
-		// that is any project under /var, a link to private/var.
+		// A confined config's Dir and pattern base are physical
+		// (config.LoadFragmentResolved); c.dir is the shell's own $PWD, which
+		// is not. Where an ancestor is a symlink the two disagree and every
+		// block in the fragment stops firing — on macOS, any project under
+		// /var.
 		//
-		// A directory that will not resolve is compared as spelled instead.
-		// That loosens nothing: it asks the same question of the same string
-		// the bound was always applied to, while the branch above replaces a
-		// comparison of spellings with one of facts. Refusing outright would
-		// instead cost a leave block for a directory that no longer exists —
-		// a build tree removed underfoot, a deleted worktree — and since
-		// enter and leave are independent, nothing else would clean up after
-		// it.
+		// A directory that will not resolve is compared as spelled. Refusing
+		// outright would cost the leave blocks of a directory removed
+		// underfoot, and nothing else unwinds those.
 		if physical, ok := c.resolve(); ok {
 			against, boundByIdentity = physical, true
 		} else if !Within(c.dir, cfg.Dir) {
-			// All that is left to judge by is the spelling: a link in the
-			// path could point anywhere, nothing here can tell, and a
-			// directory the kernel would not resolve has no file identity to
-			// put beside the bound's either.
 			return Match{}, false
 		}
 	}
-	// The pattern runs before the identity bound, and the two orders admit the
-	// same set: a Match needs both, and neither observes the other. The pattern
-	// is chosen first because it is the cheaper refusal by an unbounded margin.
-	// A confined fragment's ./ patterns carry cfg.Dir as a literal prefix
-	// (config.compilePattern), so for a directory outside the project the regex
-	// refuses without a syscall, while withinBound may stat every ancestor up
-	// to the filesystem root only to refuse as well. What survives to the bound
-	// is a pattern reaching out of its own project — the case the bound exists
-	// for, and the one worth the walk.
+	// Pattern before bound: both must hold and neither observes the other, but
+	// a confined fragment's ./ patterns carry cfg.Dir as a literal prefix
+	// (config.compilePattern), so outside the project the regex refuses with
+	// no syscall where withinBound may stat every ancestor up to the root.
 	groups := b.Pattern.FindStringSubmatch(MatchPath(against))
 	if groups == nil {
 		return Match{}, false
@@ -112,32 +83,24 @@ func newMatch(cfg *config.Config, b config.Block, c *candidate) (Match, bool) {
 
 // candidate is one directory being tested, holding its symlink-resolved form
 // and its answer to each confinement bound once something has asked for them.
-//
-// Both are per directory and not per (directory, config, block): collect tests
-// every block of every config against the same directory, and both answers
-// cost syscalls per path component, which is by far the most expensive thing
-// on this path.
+// Both cost syscalls per path component and are per directory, not per
+// (directory, config, block) — collect tests every block of every config
+// against the same candidate.
 type candidate struct {
 	dir      string
 	physical string
 	ok       bool
 	resolved bool
 
-	// bounds holds withinBound's answer per base, and only for a base the
-	// lexical comparison rejected — nil for every candidate that never needed
-	// the walk. Keyed on base, not on the candidate: two confined fragments in
-	// one set have different bounds, and one bound is shared by every block of
-	// its config and by two links into the same project.
+	// bounds is withinBound's answer per base, written only for a base the
+	// lexical comparison rejected. Keyed on base: two confined fragments in
+	// one set have different bounds.
 	bounds map[string]bool
 }
 
-// resolve returns dir with every symlink followed, computing that at most
-// once, and whether it could be determined at all.
-//
-// ok is false for a directory that no longer exists, or one with a component
-// the kernel will not follow. It is never an approximation: a caller gets the
-// physical path or is told there isn't one, and decides for itself what to do
-// without it.
+// resolve returns dir with every symlink followed, computed at most once. ok
+// is false for a directory that no longer exists, or one with a component the
+// kernel will not follow.
 func (c *candidate) resolve() (string, bool) {
 	if !c.resolved {
 		c.resolved = true
@@ -149,43 +112,16 @@ func (c *candidate) resolve() (string, bool) {
 }
 
 // withinBound reports whether this candidate's resolved form is base or lies
-// underneath it: the confinement test for a config bounded to base, over the
-// one form of the directory such a config's bound and patterns are both
-// expressed in.
+// underneath it: the confinement test for a config bounded to base.
 //
-// The bound is about which directory, not how that directory was spelled. Two
-// spellings of one name are one directory wherever the filesystem says so —
-// macOS's default, and a mount option on Linux — and Within cannot see that:
-// filepath.Rel compares components byte-wise off Windows, and EvalSymlinks
-// reproduces the spelling it was handed rather than the one on disk. So a cd
-// whose $PWD is cased differently lands in the very directory the fragment
-// came with, and the lexical answer is still no.
+// Within is lexical, so two spellings of one directory read as two — which a
+// case-insensitive filesystem (macOS by default) makes routine. os.SameFile
+// settles it and cannot widen the bound: an ancestor it accepts *is* base, so
+// the resolved directory is physically inside it.
 //
-// os.SameFile settles it, and is why this cannot widen the bound: it compares
-// the identity of the file each path names, so an ancestor it accepts *is*
-// base and the resolved directory is therefore physically inside it. No
-// spelling, junction or link can make that untrue, and a link below base has
-// already been followed out of it by resolve, taking its ancestors with it. A
-// stat that fails leaves no identity to compare, so the answer stays no. Where
-// that identity is not something the filesystem reliably keeps, there is no
-// settlement to have: sameDirOrAncestor answers no on Windows for that reason,
-// leaving the bound there as Within alone.
-//
-// That soundness rests on the walk starting from the *resolved* path, and
-// nothing in the signature says so. Walk the spelled path instead and
-// /proj/escape — a link out of the project — has base among its ancestors and
-// is admitted. What holds the precondition is that candidate.physical is
-// unexported, only resolve writes it, and NewMatch is the only way in from
-// outside the package: a refactor that "optimises away" the resolve, or hands
-// the walk c.dir, opens containment rather than saving syscalls.
-//
-// Cost: Within's lexical yes is free, but it says yes only *inside* base, so
-// the walk runs for every directory outside a confined fragment's project that
-// the fragment's pattern nonetheless matched — which is why newMatch runs the
-// pattern first. On Windows it does not run at all, sameDirOrAncestor refusing
-// before it stats anything. The memo is still written there: what it records is
-// that the identity half was reached and refused, which is what newMatch's
-// ordering is judged by, and not that any ancestor was stat'd.
+// That soundness rests on the walk starting from the resolved path, which the
+// signature cannot state. Walk c.dir instead and /proj/escape — a link out of
+// the project — has base among its ancestors and is admitted.
 func (c *candidate) withinBound(base string) bool {
 	physical, ok := c.resolve()
 	if !ok {
@@ -206,37 +142,21 @@ func (c *candidate) withinBound(base string) bool {
 }
 
 // sameDirOrAncestor reports whether base is dir itself or one of dir's
-// ancestors, by file identity rather than by spelling. On Windows it reports no
-// without comparing anything, for the reason at the top of its body — a caller
-// there gets a refusal, never an identity answer.
-//
-// The walk ends at the root, where filepath.Dir is idempotent — the same
-// termination ancestors relies on. It costs one stat for base plus one per
-// component of dir.
+// ancestors, by file identity rather than by spelling.
 func sameDirOrAncestor(dir, base string) bool {
-	// This is the widening half of a security bound — withinBound reaches it
-	// only for a directory Within has already placed *outside* base — and on
-	// Windows the identity it would widen on is not one every filesystem
-	// provides. os.SameFile compares (volume serial, file index) from
-	// GetFileInformationByHandle; the file index is documented as unsupported on
-	// ReFS, whose 128-bit file IDs do not fit it, and as a directory-entry offset
-	// on FAT/exFAT, and some SMB redirectors supply neither. Where two distinct
-	// directories report the same one — the same zero, say — os.SameFile calls
-	// them one file, and a directory outside the project a confined fragment came
-	// with is admitted as if it were inside it.
+	// Refused on Windows, and the guard is on the primitive rather than the
+	// caller so no future path in the package can obtain an identity answer
+	// there. os.SameFile compares (volume serial, file index); the file index
+	// is unsupported on ReFS, a directory-entry offset on FAT/exFAT, and
+	// absent from some SMB redirectors, so two distinct directories can
+	// compare equal. withinBound reaches this only for a directory Within has
+	// already placed outside base, so a false positive is a confinement
+	// bypass, not a missed match.
 	//
-	// Nothing the walk was written for is lost by refusing. It exists because a
-	// filesystem can call one directory by two names, and on Windows both halves
-	// of the bound already handle that: EvalSymlinks normalises each component to
-	// its on-disk spelling before withinBound sees it — long form, so an 8.3 name
-	// too — and filepath.Rel folds component case, which it does on no other
-	// platform. What is given up is a directory the kernel reaches through a
-	// device mapping no path spells, a subst drive or a drive mapped to a share:
-	// that now stays outside the bound, which is the direction a bound is
-	// supposed to fail in.
-	//
-	// So this is not an optimisation standing in front of a working comparison.
-	// Deleting it reopens a confinement bypass on filesystems Windows ships.
+	// Nothing is lost: EvalSymlinks normalises each component to its on-disk
+	// spelling there (8.3 names included) and filepath.Rel folds case, so
+	// Within answers the two-spellings question by itself. Deleting this guard
+	// reopens the bypass.
 	if runtime.GOOS == "windows" {
 		return false
 	}
@@ -257,22 +177,13 @@ func sameDirOrAncestor(dir, base string) bool {
 	}
 }
 
-// Within reports whether dir is base or lives underneath it.
+// Within reports whether dir is base or lives underneath it, lexically.
 //
-// This is what keeps a fragment symlinked into a project — a file someone
-// else's commit can rewrite — from reaching outside that project, however its
-// patterns are written. Trust still gates execution; this bounds what a
-// `git pull` can turn an already-approved config into.
-//
-// filepath.Rel does the work because it already understands the platform's
-// path rules: on Windows two different volumes have no relative path at all,
-// which is exactly the "not within" answer.
-//
-// It is arithmetic on strings and touches no filesystem, so two spellings of
-// one directory are two directories to it. That makes it the fast half of the
-// bound rather than the whole of it — see withinBound — and keeps it usable on
-// a path that need not exist, which configset.confine and the fallback in
-// newMatch both depend on.
+// filepath.Rel already understands the platform's path rules: on Windows two
+// different volumes have no relative path at all, which is the "not within"
+// answer. Touching no filesystem is what keeps it usable on a path that need
+// not exist, which configset.confine and newMatch's fallback both depend on —
+// see withinBound for the other half of the bound.
 func Within(dir, base string) bool {
 	rel, err := filepath.Rel(base, dir)
 	if err != nil {
@@ -284,31 +195,25 @@ func Within(dir, base string) bool {
 // MatchPath is the form of a path that patterns are matched against:
 // forward-slash separated, whatever the platform uses natively.
 //
-// Patterns are regexes over paths and `\` is the regex escape character, so
-// they are written with `/`; without this, filepath.Dir's backslashes on
-// Windows could never match one. It must stay filepath.ToSlash and never a
-// blind ReplaceAll: `\` is a legal character in a Unix filename, where
-// rewriting it would corrupt real directory names.
+// Patterns are regexes and `\` is the escape character, so they are written
+// with `/`. It must stay filepath.ToSlash and never a blind ReplaceAll: `\`
+// is a legal character in a Unix filename.
 func MatchPath(dir string) string {
 	return filepath.ToSlash(dir)
 }
 
 // Resolve computes which leave blocks fire walking out of from, and which
-// enter blocks fire walking into to, for a directory change from -> to.
+// enter blocks fire walking into to.
 //
-// from and to must be absolute paths; they're cleaned internally but not
-// otherwise resolved. What the shell reported is what a pattern is matched
-// against and what a block runs in — with one exception, a confined config,
-// whose bound and patterns are physical (see newMatch).
+// from and to must be absolute; they're cleaned internally but not otherwise
+// resolved, so what the shell reported is what a pattern is matched against —
+// except for a confined config, whose bound and patterns are physical (see
+// newMatch).
 //
-// cfgs must be ordered outermost-first — the central config, then each
-// envokerc.d fragment in config.Fragments' order, which is what configset.Load
-// produces. Resolve applies them in that order for enters and in the reverse
-// order for leaves, so a transition unwinds in the order it was applied.
-//
-// leaves is ordered deepest-directory-first (unwind the nested-most rule
-// first, mirroring a stack). enters is ordered shallowest-first (fire the
-// outer rule before the nested one on the way in).
+// cfgs must be ordered outermost-first, as configset.Load produces. Enters
+// apply in that order and leaves in reverse, so a transition unwinds in the
+// order it was applied; leaves are also deepest-directory-first and enters
+// shallowest-first.
 func Resolve(cfgs []*config.Config, from, to string) (leaves, enters []Match, err error) {
 	left, entered, err := Transitions(from, to)
 	if err != nil {
@@ -324,14 +229,10 @@ func Resolve(cfgs []*config.Config, from, to string) (leaves, enters []Match, er
 // shallowest first: the set that would have fired arriving from outside the
 // filesystem entirely.
 //
-// This is what `envoke reload` needs and Resolve cannot express. Resolve
-// answers "what changed between two directories", so from == to yields
-// nothing at all, and passing the root as from would still skip the root
-// itself — the one directory that is in every chain.
-//
-// Leave blocks have no equivalent here on purpose: nothing has been left.
-// Re-applying the enters without unwinding anything matches envoke's rule
-// that enter and leave are independent and explicit.
+// This is what `envoke reload` needs and Resolve cannot express — Resolve
+// answers "what changed", so from == to yields nothing and passing the root as
+// from still skips the root itself. Leave blocks have no equivalent: nothing
+// has been left, and enter and leave are independent.
 func Enters(cfgs []*config.Config, dir string) ([]Match, error) {
 	if !filepath.IsAbs(dir) {
 		return nil, fmt.Errorf("path %q is not absolute", dir)
@@ -340,10 +241,9 @@ func Enters(cfgs []*config.Config, dir string) ([]Match, error) {
 }
 
 // collect returns every block of the given type matching any of dirs, in
-// (directory, config, declaration) order.
-//
-// The candidate is built in the outer loop so that a directory is resolved at
-// most once however many confined configs and blocks are tested against it.
+// (directory, config, declaration) order. The candidate is built in the outer
+// loop so a directory is resolved at most once however many confined configs
+// and blocks are tested against it.
 func collect(cfgs []*config.Config, dirs []string, want config.BlockType) []Match {
 	var matches []Match
 	for _, dir := range dirs {

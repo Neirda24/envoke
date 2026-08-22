@@ -48,34 +48,25 @@ func main() {
 // fprintf, fprintln and fprint wrap the fmt equivalents, drop the error, and
 // escape every string or error argument for the terminal (see sanitize).
 //
-// Dropping the error: every write here goes to the user's terminal, where a
-// failed write is not something a CLI can report or recover from; without
-// these wrappers errcheck demands `_, _ =` on all hundred-odd call sites,
-// which buries the logic.
+// The split that holds is format string vs argument, not trusted vs untrusted
+// call site: a format string is a Go literal in this file, and every argument
+// is either derived from the filesystem or harmless to escape. Deciding per
+// call site leaves the line *next* to the untrusted one unescaped. So
+// arguments are escaped by default and the exceptions are spelled `raw`.
 //
-// Escaping the *arguments* rather than asking each call site to remember is
-// the part that matters. The split that holds is not trusted-vs-untrusted call
-// sites but format string vs argument: a format string is a Go literal in this
-// file, and every argument is either derived from the filesystem or harmless
-// to escape. Deciding per call site instead leaves the line *next* to the
-// untrusted one unescaped — a path printed beside an escaped body, an error
-// message quoting an escaped path — because that line only describes untrusted
-// text rather than obviously being it. So arguments are escaped by default and
-// the exceptions are spelled `raw`.
+// The dropped error is a write to the user's terminal, which a CLI can
+// neither report nor recover from.
 func fprintf(w io.Writer, format string, a ...any) { _, _ = fmt.Fprintf(w, format, escapeArgs(a)...) }
 func fprintln(w io.Writer, a ...any)               { _, _ = fmt.Fprintln(w, escapeArgs(a)...) }
 func fprint(w io.Writer, a ...any)                 { _, _ = fmt.Fprint(w, escapeArgs(a)...) }
 
-// raw marks a string that must reach the stream byte for byte, opting it out
-// of the escaping above. There are exactly two kinds: shell code envoke
-// generates for its caller to eval (where escaping would corrupt a script),
-// and envoke's own multi-line literals, whose newlines are structure rather
-// than content.
+// raw opts a string out of the escaping above. Two kinds only: shell code
+// envoke generates for its caller to eval, and envoke's own multi-line
+// literals, whose newlines are structure rather than content.
 //
-// Never wrap anything that came from a config file, a path or a directory
-// name in this — that is the whole class of bug the escaping exists for. It
-// is a distinct type, and short, so `grep raw(` lists every exception in one
-// screen.
+// Never wrap anything from a config file, a path or a directory name — that
+// is the class of bug the escaping exists for. A distinct type, and short, so
+// `grep raw(` lists every exception in one screen.
 type raw string
 
 // escapeArgs escapes the string and error arguments of a print call, unwraps
@@ -98,11 +89,9 @@ func escapeArgs(a []any) []any {
 	return out
 }
 
-// run dispatches a subcommand, writing to the given streams instead of
-// os.Stdout/os.Stderr directly so it can be exercised in tests without
-// capturing process output. stdin is threaded through for the one
-// subcommand that reads it (allow's y/N confirmation) rather than having
-// every subcommand accept a reader it ignores.
+// run dispatches a subcommand, writing to the given streams so tests need not
+// capture process output. stdin is threaded through only to allow's y/N
+// confirmation, the one subcommand that reads it.
 func run(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 	if len(args) == 0 {
 		usage(stderr)
@@ -148,9 +137,8 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 }
 
 // newFlagSet builds a per-subcommand flag set that never exits the process
-// (flag.ContinueOnError) and never prints Go's default usage dump, so run
-// stays a plain function returning an exit code and every subcommand can
-// print its own one-line usage in envoke's own voice.
+// and never prints Go's default usage dump, so run stays a plain function
+// returning an exit code and every subcommand prints its own one-line usage.
 func newFlagSet(name string) *flag.FlagSet {
 	fs := flag.NewFlagSet("envoke "+name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -159,9 +147,8 @@ func newFlagSet(name string) *flag.FlagSet {
 }
 
 // parseFlags parses args, printing usage on stderr and reporting ok=false
-// when they're malformed. `-h`/`--help` is treated as a request, not an
-// error, but still returns ok=false so the caller stops -- the exit code
-// differs, which is why help is reported separately.
+// when they're malformed. `-h`/`--help` also returns ok=false so the caller
+// stops, but with code 0.
 func parseFlags(fs *flag.FlagSet, args []string, usage string, stderr io.Writer) (ok bool, code int) {
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -174,10 +161,9 @@ func parseFlags(fs *flag.FlagSet, args []string, usage string, stderr io.Writer)
 	return true, 0
 }
 
-// printVersion prints the version, commit, and build date (as injected by
-// goreleaser's ldflags -- see .goreleaser.yaml -- or "dev"/"unknown" for a
-// local `go build`/`go test`, which never sets them) plus the Go toolchain
-// and OS/arch the binary was built with, on two lines.
+// printVersion prints the ldflags-injected version, commit and build date
+// (see .goreleaser.yaml; "dev"/"unknown" for a local build) plus the Go
+// toolchain and OS/arch.
 func printVersion(stdout io.Writer) {
 	fprintf(stdout, "envoke %s (commit %s, built %s)\n", version, commit, date)
 	fprintf(stdout, "%s %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
@@ -187,12 +173,10 @@ const allowUsage = "envoke allow [--yes|-y] [path]"
 
 const shellInitUsage = "envoke shell-init [bash|zsh|fish|tcsh|powershell]  (defaults to the shell named by $SHELL)"
 
-// detectShell maps a $SHELL value (a path like /usr/local/bin/fish) to one
-// of the supported shell names. It only ever looks at the basename, so a
-// shell installed anywhere works, and it deliberately does not fall back to
-// a default: silently emitting a bash hook for an unrecognised shell would
-// produce a broken rc file whose breakage surfaces much later, and much
-// less clearly, than a message right here.
+// detectShell maps a $SHELL value to one of the supported shell names, by
+// basename so a shell installed anywhere works. It deliberately has no
+// default: emitting a bash hook for an unrecognised shell would produce a
+// broken rc file whose breakage surfaces much later than a message here.
 func detectShell(shellPath string) (string, error) {
 	if shellPath == "" {
 		return "", errors.New("$SHELL is not set, so the shell can't be detected -- name it explicitly")
@@ -218,8 +202,8 @@ func detectShell(shellPath string) (string, error) {
 const completionUsage = "envoke completion [bash|zsh|fish]  (defaults to the shell named by $SHELL)"
 
 // cmdCompletion prints a tab-completion script, generated by the binary for
-// the same reason the hooks are: a per-shell script maintained by hand
-// drifts from the real subcommand list the moment anyone adds one, silently.
+// the same reason the hooks are: a hand-maintained one drifts from the real
+// subcommand list the moment anyone adds one, silently.
 func cmdCompletion(args []string, stdout, stderr io.Writer) int {
 	flags := newFlagSet("completion")
 	if ok, code := parseFlags(flags, args, completionUsage, stderr); !ok {
@@ -261,10 +245,9 @@ func cmdShellInit(args []string, stdout, stderr io.Writer) int {
 	var shell string
 	switch flags.NArg() {
 	case 0:
-		// Guessing from $SHELL removes the single most common install
-		// mistake -- pasting the bash line into a zsh rc -- and costs
-		// nothing, since an unrecognised guess still produces the same
-		// explicit error as typing the name wrong.
+		// Removes the commonest install mistake -- pasting the bash line into
+		// a zsh rc -- and costs nothing: an unrecognised guess produces the
+		// same error as typing the name wrong.
 		var err error
 		shell, err = detectShell(os.Getenv("SHELL"))
 		if err != nil {
@@ -289,18 +272,15 @@ func cmdShellInit(args []string, stdout, stderr io.Writer) int {
 }
 
 // cmdShellHook is invoked by the generated hook on every directory change.
-// If the matched config is trusted it prints executor.Render's output for
-// the shell to eval; otherwise it reports the match on stderr and prints
-// nothing, so evaluating the empty output stays a safe no-op.
+// If the matched config is trusted it prints executor.Render's output for the
+// shell to eval; otherwise it reports the match on stderr and prints nothing,
+// so evaluating the empty output stays a safe no-op. Omitting --shell
+// defaults to the POSIX profile, which bash's and zsh's hooks rely on.
 //
-// Omitting --shell defaults to the POSIX profile, which is what bash's and
-// zsh's hooks rely on.
-//
-// The directories come as positional arguments, or from ENVOKE_FROM and
-// ENVOKE_TO when there are none. The environment form exists for the tcsh
-// hook, whose only route into `source` is an `eval`: interpolating directory
-// names into a string that gets re-parsed is a command-injection hole (see
-// internal/shellinit's tcshHook).
+// The directories come as positional arguments, or from ENVOKE_FROM/ENVOKE_TO.
+// The environment form exists for the tcsh hook, whose only route into
+// `source` is an `eval`: interpolating directory names into a string that gets
+// re-parsed is a command-injection hole (see internal/shellinit's tcshHook).
 const shellHookUsage = "envoke shell-hook [--shell <name>] [--] <from> <to>  (or set ENVOKE_FROM/ENVOKE_TO)"
 
 func cmdShellHook(args []string, stdout, stderr io.Writer) int {
@@ -314,9 +294,9 @@ func cmdShellHook(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	// Checked before anything else, and silently: this runs on every
-	// directory change, so a switched-off envoke has to cost one stat and
-	// say nothing at all. `envoke debug` is where the state is reported.
+	// Silently, and before anything else: this runs on every directory
+	// change, so a switched-off envoke costs one stat and says nothing.
+	// `envoke debug` is where the state is reported.
 	if disabled, _, err := state.Disabled(); err != nil {
 		fprintln(stderr, "envoke:", err)
 		return 1
@@ -349,9 +329,9 @@ func cmdShellHook(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	code := reportLoadFailures(stderr, entries)
-	// On the hot path too, not only in the typed commands: a writable store
-	// lets someone forge an approval outright, which is the one warning that
-	// has to reach a user who never runs anything but `cd`.
+	// On the hot path too: a writable store lets someone forge an approval
+	// outright, the one warning that has to reach a user who never runs
+	// anything but `cd`.
 	warnUnsafeStore(stderr)
 
 	leaves, enters, err := matcher.Resolve(configset.Configs(entries), from, to)
@@ -370,12 +350,10 @@ func cmdShellHook(args []string, stdout, stderr io.Writer) int {
 
 // locateConfigs resolves where envoke's configs live: the central config and
 // the fragment directory, each "" when there isn't one. Either half being
-// absent is ordinary — a user may keep one file, or only fragments, or start
-// with neither.
+// absent is ordinary.
 //
-// Split out because two callers need the locations and only one of them wants
-// the contents, and the difference between them should be the only thing that
-// differs: loadConfigSet reads the files, configPaths deliberately doesn't.
+// Split out so the only difference between its two callers is the one that
+// matters: loadConfigSet reads the files, configPaths deliberately doesn't.
 func locateConfigs() (globalPath, fragmentDir string, err error) {
 	path, found, err := config.Locate()
 	if err != nil {
@@ -408,15 +386,12 @@ func loadConfigSet() ([]configset.Entry, error) {
 // parsed, and returns the exit code to use.
 //
 // A missing *central* config is silent: $ENVOKERC is honoured verbatim, so
-// pointing it at a file you haven't written yet is ordinary, and this runs on
-// every cd. A missing *fragment* is not ordinary — the directory scan just
-// listed it, so it is a broken symlink or a file that vanished, and either way
-// the user meant it to load.
+// pointing it at a file you haven't written yet is ordinary. A missing
+// *fragment* is not: the directory scan just listed it, so it is a broken
+// symlink or a file that vanished.
 //
-// Everything else stays loud — a config that exists and doesn't parse is not
-// doing what its owner thinks it is — but never stops the other configs in the
-// set from working: one fragment a `git pull` just rewrote must not disable
-// the whole set.
+// Nothing here stops the other configs in the set from working — one fragment
+// a `git pull` just rewrote must not disable the whole set.
 func reportLoadFailures(stderr io.Writer, entries []configset.Entry) int {
 	code := 0
 	for _, e := range entries {
@@ -432,13 +407,11 @@ func reportLoadFailures(stderr io.Writer, entries []configset.Entry) int {
 	return code
 }
 
-// runnable filters matches down to the ones envoke may act on, reporting
-// each config it had to skip exactly once however many of its blocks matched.
-//
-// Groups are decided in the order given (leaves, then enters), so the reports
-// arrive in the order the blocks would have run. refused says whether
-// anything was held back, for the commands where that has to be an error
-// rather than a quiet no-op.
+// runnable filters matches down to the ones envoke may act on, reporting each
+// skipped config exactly once however many of its blocks matched. Groups are
+// decided in the order given, so reports arrive in the order the blocks would
+// have run. refused is for the commands where being held back has to be an
+// error rather than a quiet no-op.
 func runnable(stderr io.Writer, entries []configset.Entry, context string, groups ...[]matcher.Match) (kept [][]matcher.Match, refused bool) {
 	counts := make(map[*config.Config]int)
 	for _, g := range groups {
@@ -470,8 +443,7 @@ func runnable(stderr io.Writer, entries []configset.Entry, context string, group
 }
 
 // mayRun answers whether one config's matched blocks may run, and says so on
-// stderr when they may not. Nothing here asks a question: every config in the
-// set lives in a directory the user owns, so the answer is either already
+// stderr when they may not. Nothing here prompts: the answer is either already
 // recorded or is `envoke allow` away.
 func mayRun(stderr io.Writer, e configset.Entry, matched int, context string) bool {
 	decision, err := configset.Decide(e)
@@ -494,8 +466,7 @@ func mayRun(stderr io.Writer, e configset.Entry, matched int, context string) bo
 
 // resolveConfigPath turns a subcommand's leftover positional arguments into
 // the config path to act on: the one given, or the located config when none
-// is. Shared by allow and revoke, which offer the same "default to the
-// config envoke would use" convenience and must agree on what that means.
+// is.
 func resolveConfigPath(positional []string, cmd, usage string, stderr io.Writer) (path string, code int, ok bool) {
 	switch len(positional) {
 	case 0:
@@ -520,16 +491,14 @@ func resolveConfigPath(positional []string, cmd, usage string, stderr io.Writer)
 // cmdAllow trusts a config's current content, so shell-hook will run blocks
 // matched against it until it is edited again.
 //
-// With no path it covers the whole set — the central config and every
-// envokerc.d fragment — because that is the unit a user thinks in: splitting
-// rules across files is an organisational choice, not a decision to approve
-// them one at a time. A path still targets exactly that file.
+// With no path it covers the whole set, because that is the unit a user
+// thinks in: splitting rules across files is an organisational choice, not a
+// decision to approve them one at a time. A path targets exactly that file.
 //
-// What it shows for review depends on whether there is a prior approval to
-// compare against: the full block dump for a first-time trust, a +/- line
-// diff when the file changed since the last one, and nothing at all when it
-// didn't. If anything needs approving it then asks for one y/N confirmation
-// covering all of it, which --yes/-y skips.
+// Review output depends on whether there is a prior approval to compare
+// against: a full block dump for a first-time trust, a +/- diff when the file
+// changed, nothing when it didn't. One y/N confirmation covers all of it, and
+// --yes/-y skips it.
 func cmdAllow(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 	flags := newFlagSet("allow")
 	yes := flags.Bool("yes", false, "skip the y/N confirmation prompt")
@@ -539,9 +508,9 @@ func cmdAllow(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 	}
 
 	// stdlib flag stops at the first non-flag argument, so `envoke allow
-	// <path> --yes` would otherwise read --yes as a second path. Picking out
-	// this one boolean rather than reimplementing flags-anywhere keeps a
-	// config genuinely named `--yes` approvable as `./--yes`.
+	// <path> --yes` would read --yes as a second path. Picking out this one
+	// boolean rather than reimplementing flags-anywhere keeps a config
+	// genuinely named `--yes` approvable as `./--yes`.
 	var positional []string
 	for _, a := range flags.Args() {
 		if a == "--yes" || a == "-y" {
@@ -583,8 +552,7 @@ func cmdAllow(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 		fprintf(stdout, "envoke: trusted %s\n", c.path)
 	}
 	// allow is a child process and cannot export into the shell that ran it,
-	// so what was just approved applies from the next cd on. Naming the way
-	// out here is the only place a user is guaranteed to be looking.
+	// so what was just approved applies from the next cd on.
 	fprintln(stdout, `envoke: to apply it to this shell without leaving the directory: eval "$(envoke reload)"`)
 	if failed {
 		return 1
@@ -592,10 +560,10 @@ func cmdAllow(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 	return 0
 }
 
-// candidate is one config that has been reviewed and is waiting on the
-// confirmation. The content travels with it because it must be the same bytes
-// that were shown — re-reading the file after the y/N answer would record a
-// hash for content the user was never shown (see config.LoadFile).
+// candidate is one config reviewed and waiting on the confirmation. The
+// content travels with it because it must be the same bytes that were shown:
+// re-reading after the y/N answer would record a hash for content the user
+// never saw.
 type candidate struct {
 	path    string
 	content []byte
@@ -625,9 +593,9 @@ func allowTargets(positional []string, stderr io.Writer) (paths []string, code i
 }
 
 // reviewForApproval prints what each path would have envoke run and returns
-// the ones still needing approval. failed reports that some path couldn't be
-// read or parsed — that one is skipped rather than aborting the others, since
-// with a set of fragments the broken one may not be the one being approved.
+// the ones still needing approval. A path that couldn't be read or parsed is
+// skipped rather than aborting the others — with a set of fragments the broken
+// one may not be the one being approved — and sets failed.
 func reviewForApproval(stdout, stderr io.Writer, paths []string) (pending []candidate, failed bool) {
 	for _, path := range paths {
 		warnUnsafeConfigAndDir(stderr, path)
@@ -654,14 +622,10 @@ func reviewForApproval(stdout, stderr io.Writer, paths []string) (pending []cand
 		}
 
 		if hadPrevious && alreadyTrusted && previous == string(current) {
-			// Nothing changed, so there is nothing to review: asking the user
-			// to confirm a config they already approved verbatim is busywork,
-			// and --yes has no prompt to skip here either.
-			//
 			// alreadyTrusted is tested on top of the content comparison so a
 			// half-written record (content copy landed, hash record didn't)
-			// can't wedge this into reporting an untrusted config as trusted
-			// forever. In that state it falls through and gets re-approved.
+			// can't report an untrusted config as trusted forever. In that
+			// state it falls through and gets re-approved.
 			fprintf(stdout, "envoke: %s is unchanged since it was last trusted -- nothing to review\n", path)
 			continue
 		}
@@ -678,9 +642,8 @@ func reviewForApproval(stdout, stderr io.Writer, paths []string) (pending []cand
 }
 
 // configPaths lists every config file envoke would load, in set order,
-// without reading any of them. `envoke allow` needs the names before the
-// contents, and loading here would mean every file was read twice — once to
-// enumerate and once to hash.
+// without reading any of them: `envoke allow` needs the names before the
+// contents, and loading here would read every file twice.
 func configPaths() ([]string, error) {
 	globalPath, fragmentDir, err := locateConfigs()
 	if err != nil {
@@ -702,10 +665,9 @@ func configPaths() ([]string, error) {
 	return append(paths, fragments...), nil
 }
 
-// printBlocksForReview dumps every block's pattern, line and script body
-// before it is trusted, so approving a config means seeing the code that
-// will run on every matching cd rather than a hash being recorded silently.
-// Used for a first-time trust; see printDiff for the re-approval case.
+// printBlocksForReview dumps every block's pattern, line and script body, so
+// approving a config means seeing the code that will run rather than a hash
+// being recorded silently. First-time trust only; see printDiff.
 func printBlocksForReview(w io.Writer, blocks []config.Block) {
 	if len(blocks) == 0 {
 		fprintln(w, "  (no blocks defined)")
@@ -722,15 +684,13 @@ func printBlocksForReview(w io.Writer, blocks []config.Block) {
 }
 
 // sanitize escapes the characters that let text redraw a terminal rather than
-// appear in it. Applied to every print argument by fprintf and friends, which
-// is where the reasoning for doing it there rather than per call site lives.
+// appear in it. Applied to every print argument by fprintf and friends.
 //
-// What it defends: a config envoke has *not* been told to trust gets dumped
-// for review, a fragment can be a symlink into a repository, and a directory
-// name comes from whatever was cloned or extracted. An escape sequence in any
-// of them could scroll the review out of sight, colour a convincing "already
-// trusted" line over the real one, or move the cursor back over the y/N
-// question — turning the output into whatever its author wanted read.
+// An untrusted config gets dumped for review, a fragment can be a symlink into
+// a repository, and a directory name comes from whatever was cloned. An escape
+// sequence in any of them could scroll the review out of sight, colour a
+// convincing "already trusted" line over the real one, or move the cursor back
+// over the y/N question.
 func sanitize(s string) string {
 	if !needsEscaping(s) {
 		return s
@@ -741,10 +701,9 @@ func sanitize(s string) string {
 		r, size := utf8.DecodeRuneInString(s[i:])
 		switch {
 		case r == utf8.RuneError && size == 1:
-			// A byte that is not valid UTF-8 at all. Filenames on Unix are
-			// arbitrary bytes, so this is reachable from any path envoke
-			// prints; showing the byte beats letting the terminal guess at
-			// it in whatever legacy encoding it assumes.
+			// Filenames on Unix are arbitrary bytes, so this is reachable
+			// from any path envoke prints. Showing the byte beats letting the
+			// terminal guess at its encoding.
 			_, _ = fmt.Fprintf(&b, `\x%02x`, s[i])
 		case !isDisplayUnsafe(r):
 			b.WriteString(s[i : i+size])
@@ -759,9 +718,9 @@ func sanitize(s string) string {
 }
 
 // needsEscaping is the fast path: anything outside printable ASCII (minus
-// tab) sends sanitize down the slow path, where the actual decision is made
-// per rune. Deliberately pessimistic about non-ASCII — an accented directory
-// name costs one extra pass and comes out unchanged.
+// tab) sends sanitize down the per-rune path. Deliberately pessimistic about
+// non-ASCII — an accented directory name costs one extra pass and comes out
+// unchanged.
 func needsEscaping(s string) bool {
 	for i := 0; i < len(s); i++ {
 		if (s[i] < 0x20 && s[i] != '\t') || s[i] >= 0x7f {
@@ -772,21 +731,16 @@ func needsEscaping(s string) bool {
 }
 
 // isDisplayUnsafe reports whether a rune can change what a terminal shows
-// rather than adding to it.
+// rather than adding to it:
 //
-// Three groups, all reachable from a config body, a config path or a
-// directory name:
-//
-//   - C0 (including newline — a message is one line, so a newline in a value
-//     is a forged second line), DEL and C1. This is what carries ESC, and
-//     with it cursor movement, colour, and erase-display.
-//   - The bidi controls. 202A-202E and 2066-2069 are the Trojan Source set;
-//     200E/200F and 061C do the same job with less ceremony and were missed
-//     the first time round. All of them reorder text without changing a byte
-//     of it.
+//   - C0 (newline included — a message is one line, so a newline in a value is
+//     a forged second line), DEL and C1, which carry ESC and with it cursor
+//     movement, colour and erase-display.
+//   - The bidi controls (202A-202E, 2066-2069, 200E/200F, 061C), which reorder
+//     text without changing a byte of it.
 //   - Zero-width and invisible characters (200B-200D, FEFF), which let two
-//     different paths render identically, and the line/paragraph separators
-//     2028/2029, which some terminals break lines on.
+//     different paths render identically, and 2028/2029, which some terminals
+//     break lines on.
 func isDisplayUnsafe(r rune) bool {
 	switch {
 	case r == '\t':
@@ -804,7 +758,7 @@ func isDisplayUnsafe(r rune) bool {
 
 // printDiff replaces printBlocksForReview's full dump when there is a prior
 // approval to compare against, so re-approving after a small edit doesn't
-// mean re-reading the whole file to spot what changed.
+// mean re-reading the whole file.
 func printDiff(stdout io.Writer, path, previous, current string) {
 	fprintf(stdout, "envoke: %s changed since it was last trusted -- here's what's different:\n\n", path)
 	for _, line := range diffLines(splitLines(previous), splitLines(current)) {
@@ -814,8 +768,7 @@ func printDiff(stdout io.Writer, path, previous, current string) {
 }
 
 // splitLines drops a trailing carriage return the way the parser's scanner
-// does, so the diff shows the same lines the review dump does and a CRLF
-// config doesn't print stray \r at every line end.
+// does, so a CRLF config doesn't print stray \r at every line end.
 func splitLines(s string) []string {
 	lines := strings.Split(s, "\n")
 	for i, l := range lines {
@@ -825,20 +778,18 @@ func splitLines(s string) []string {
 }
 
 // diffLines returns only the lines that differ between old and new, prefixed
-// "- " and "+ " as `diff -u` does. Common lines are aligned via a longest
-// common subsequence and omitted rather than printed as context, so an edit
-// touching one block doesn't drag the rest of the config into the output.
+// "- " and "+ ". Common lines are aligned via a longest common subsequence and
+// omitted rather than printed as context, so an edit touching one block
+// doesn't drag the rest of the config into the output.
 //
 // A plain O(len(old)*len(new)) DP table rather than Myers: diffCap keeps the
 // inputs small, and this needs nothing beyond the stdlib.
 func diffLines(oldLines, newLines []string) []string {
 	n, m := len(oldLines), len(newLines)
 
-	// lcs is the (n+1)x(m+1) table flattened into one allocation:
-	// lcs[i*stride+j] is the LCS length of oldLines[i:] and newLines[j:].
-	// One contiguous block keeps the inner loop walking memory in order, and
-	// int32 halves its footprint -- the values are bounded by the line count,
-	// which diffCap keeps well inside it.
+	// The (n+1)x(m+1) table flattened into one allocation: lcs[i*stride+j] is
+	// the LCS length of oldLines[i:] and newLines[j:]. int32 is safe because
+	// the values are bounded by the line count, which diffCap bounds.
 	stride := m + 1
 	lcs := make([]int32, (n+1)*stride)
 	for i := n - 1; i >= 0; i-- {
@@ -879,15 +830,10 @@ func diffLines(oldLines, newLines []string) []string {
 	return out
 }
 
-// diffCap bounds the LCS table. The algorithm is O(n*m) in both time and
-// memory, and while "config files are small" is true of every config anyone
-// would write by hand, nothing enforces it -- the parser accepts any number
-// of lines, and a config that grew a large generated block (or simply had
-// something appended to it) would make `envoke allow` allocate a table
-// quadratic in its size. At this cap the table is 2000*2000 int32 = 16 MiB,
-// which is the most an interactive approval prompt has any business
-// reserving. Beyond it, cmdAllow shows the full block dump instead: less
-// convenient, but bounded and never wrong.
+// diffCap bounds the LCS table, which is O(n*m) in time and memory and would
+// otherwise grow with a generated or appended-to config the parser happily
+// accepts. At this cap the table is 2000*2000 int32 = 16 MiB. Beyond it,
+// cmdAllow shows the full block dump instead: less convenient, but bounded.
 const diffCap = 2000
 
 // canDiff reports whether a line-level diff is worth attempting between two
@@ -899,8 +845,8 @@ func canDiff(previous, current string) bool {
 const revokeUsage = "envoke revoke [path]"
 
 // cmdRevoke withdraws trust for a config. Without it the only ways back are
-// editing the config, which revokes trust as a side effect of something
-// else, or deleting a sha256-named file out of the data home by hand.
+// editing the config, which revokes trust as a side effect, or deleting a
+// sha256-named file out of the data home by hand.
 func cmdRevoke(args []string, stdout, stderr io.Writer) int {
 	flags := newFlagSet("revoke")
 	if ok, code := parseFlags(flags, args, revokeUsage, stderr); !ok {
@@ -928,19 +874,14 @@ func cmdRevoke(args []string, stdout, stderr io.Writer) int {
 
 const listUsage = "envoke list"
 
-// cmdList answers "what would envoke run, and what has it got recorded" — two
-// questions that are not the same and used to be conflated.
-//
-// The store holds *records*; the config set is what envoke would actually
-// load. A record can outlive the config it was written for, and a config can
-// be in the set with no record at all — which is the more interesting case,
-// because that is a file being skipped on every cd. Listing only records
-// showed neither. So this reconciles the two: the set first, with the status
-// each file would get on the next `cd`, then whatever records are left over.
+// cmdList reconciles two different questions: what envoke would load, and
+// what the store has recorded. A record can outlive the config it was written
+// for, and a config can be in the set with no record at all — a file being
+// skipped on every cd. So the set comes first, with the status each file would
+// get on the next `cd`, then whatever records are left over.
 //
 // It is also the only place a user would notice that the store keeps a
-// plaintext copy of every approved config — which routinely means secrets,
-// since exporting project-scoped API keys is one of envoke's headline uses.
+// plaintext copy of every approved config, which routinely means secrets.
 func cmdList(args []string, stdout, stderr io.Writer) int {
 	flags := newFlagSet("list")
 	if ok, code := parseFlags(flags, args, listUsage, stderr); !ok {
@@ -991,9 +932,9 @@ func cmdList(args []string, stdout, stderr io.Writer) int {
 	if len(entries) > 0 {
 		fprintln(stdout)
 	}
-	// Not an error, and not necessarily stale: a record for a config you keep
-	// under a different $ENVOKERC, or for one you have since split into
-	// fragments, is a perfectly ordinary thing to find here.
+	// Not an error, and not necessarily stale: a record for a config kept
+	// under a different $ENVOKERC, or one since split into fragments, is
+	// ordinary.
 	fprintln(stdout, "envoke: other trust records (not in the current config set)")
 	for _, r := range leftover {
 		if r.ConfigPath == "" {
@@ -1013,11 +954,9 @@ func entryKind(e configset.Entry) string {
 }
 
 // entryStatus is what would happen to a config in the set on the next `cd`.
-//
-// It distinguishes a config that was never approved from one that was and has
-// since been edited, which the trust decision itself does not: both are simply
-// "untrusted" to everything that executes blocks, but they need different
-// things from the user — a first review, or a look at what changed.
+// It distinguishes never-approved from approved-then-edited, which the trust
+// decision does not — both are "untrusted" to anything that executes blocks,
+// but they need different things from the user.
 func entryStatus(e configset.Entry) string {
 	if e.Err != nil {
 		if errors.Is(e.Err, fs.ErrNotExist) {
@@ -1042,14 +981,11 @@ func entryStatus(e configset.Entry) string {
 // listStatus classifies a record whose config is not in the set, against the
 // file as it exists now.
 //
-// This is the one place that reads a config outside config.LoadFile, and
-// the read-once rule it appears to break does not apply here. That rule
-// exists so the bytes that get *executed* are the bytes that were approved;
-// list executes nothing and renders nothing for a shell to eval. The worst
-// a file changing mid-listing can do is print a status that was true a
-// moment earlier — which is all any status report can ever promise.
-// Parsing the file would be strictly worse: an unparseable config is still
-// a trusted record worth listing.
+// The one place that reads a config outside config.LoadFile. The read-once
+// rule exists so the bytes *executed* are the bytes approved; list executes
+// nothing, so the worst a file changing mid-listing can do is print a status
+// that was true a moment earlier. Parsing would be worse: an unparseable
+// config is still a trusted record worth listing.
 func listStatus(r trust.Record) string {
 	content, err := os.ReadFile(r.ConfigPath)
 	if err != nil {
@@ -1070,9 +1006,9 @@ func listStatus(r trust.Record) string {
 
 const pruneUsage = "envoke prune"
 
-// cmdPrune drops records whose config no longer exists. Those records are
-// dead weight that also keeps a plaintext copy of a config the user has
-// already deleted, which is the part that actually matters.
+// cmdPrune drops records whose config no longer exists. Each one keeps a
+// plaintext copy of a config the user has already deleted, which is the part
+// that matters.
 func cmdPrune(args []string, stdout, stderr io.Writer) int {
 	flags := newFlagSet("prune")
 	if ok, code := parseFlags(flags, args, pruneUsage, stderr); !ok {
@@ -1104,14 +1040,12 @@ func cmdPrune(args []string, stdout, stderr io.Writer) int {
 const reloadUsage = `envoke reload [--shell <name>]  (used as: eval "$(envoke reload)")`
 
 // cmdReload re-applies the enter blocks for the current directory, for the
-// case `envoke allow` cannot cover: allow runs as a child of your shell and
-// cannot export anything into it, so a freshly approved config only takes
-// effect on the next cd. Rather than cd .. && cd -, this prints the same
-// shell text the hook does, for the caller to eval.
+// case `envoke allow` cannot cover: allow runs as a child of your shell, so a
+// freshly approved config only takes effect on the next cd. This prints the
+// same shell text the hook does, for the caller to eval.
 //
-// Only enter blocks, and no unwinding of what a previous version of the
-// config set: nothing has been left, and envoke does not snapshot state to
-// restore later.
+// Only enter blocks, and nothing is unwound: nothing has been left, and envoke
+// does not snapshot state to restore later.
 func cmdReload(args []string, stdout, stderr io.Writer) int {
 	flags := newFlagSet("reload")
 	shell := flags.String("shell", "", "shell dialect to render for (bash, zsh, fish, tcsh, powershell)")
@@ -1162,18 +1096,17 @@ func cmdReload(args []string, stdout, stderr io.Writer) int {
 	kept, refused := runnable(stderr, entries, "for the current directory", enters)
 	fprint(stdout, raw(executor.Render(*shell, nil, kept[0])))
 
-	// Louder than shell-hook's equivalent, which merely notes it: reload was
-	// typed, so a config that didn't get applied has to be an error rather
-	// than a no-op the user might not notice.
+	// Louder than shell-hook's equivalent: reload was typed, so a config that
+	// didn't get applied has to be an error rather than a silent no-op.
 	if refused {
 		return 1
 	}
 	return code
 }
 
-// currentDir prefers $PWD over os.Getwd for the same reason the hooks pass
-// the shell's own $PWD: through a symlinked directory the two disagree, and
-// the patterns a user writes describe the path they cd'd through.
+// currentDir prefers $PWD over os.Getwd for the same reason the hooks pass the
+// shell's own $PWD: through a symlinked directory the two disagree, and the
+// patterns a user writes describe the path they cd'd through.
 func currentDir() (string, error) {
 	if pwd := os.Getenv("PWD"); filepath.IsAbs(pwd) {
 		return pwd, nil
@@ -1186,11 +1119,10 @@ const (
 	enableUsage  = "envoke enable"
 )
 
-// cmdSwitch backs both `envoke disable` and `envoke enable`. The two are the
-// same operation with opposite arguments, and splitting them into separate
-// functions would mean duplicating the part that actually matters: telling
-// the user when $ENVOKE_DISABLE is going to override what they just asked
-// for, so a `disable` that appears to do nothing has a visible reason.
+// cmdSwitch backs both `envoke disable` and `envoke enable`. Splitting them
+// would duplicate the part that matters: telling the user when
+// $ENVOKE_DISABLE is going to override what they just asked for, so a
+// `disable` that appears to do nothing has a visible reason.
 func cmdSwitch(args []string, stdout, stderr io.Writer, enable bool) int {
 	usage := disableUsage
 	if enable {
@@ -1235,10 +1167,9 @@ func enabledWord(disabled bool) string {
 	return "on"
 }
 
-// transitionArgs resolves the <from> <to> pair shared by exec and debug.
-// Both are typed by a human, unlike shell-hook which only ever receives
-// generated arguments, so both accept relative paths and default to the
-// shell's own last transition.
+// transitionArgs resolves the <from> <to> pair shared by exec and debug. Both
+// are typed by a human, unlike shell-hook, so both accept relative paths and
+// default to the shell's own last transition.
 func transitionArgs(args []string) (from, to string, err error) {
 	switch len(args) {
 	case 0:
@@ -1264,15 +1195,14 @@ func transitionArgs(args []string) (from, to string, err error) {
 const execUsage = "envoke exec [<from> <to>]  (defaults to $OLDPWD -> $PWD)"
 
 // cmdExec runs the matching blocks for non-interactive callers — scripts,
-// Makefiles, CI — that want a project's enter hooks to have run without an
-// interactive shell to hook into.
+// Makefiles, CI — with no interactive shell to hook into.
 //
 // Each block runs in its own `sh -c`, so export, source and cd inside one
 // affect that subprocess and nothing else. Anything meant to change the
 // caller's own shell needs the generated hook instead.
 //
-// Trust is enforced inside envoke.Transition rather than here, so no future
-// caller of that package can forget it.
+// Trust is enforced inside envoke.Transition, so no future caller of that
+// package can forget it.
 
 func cmdExec(args []string, stderr io.Writer) int {
 	flags := newFlagSet("exec")
@@ -1286,10 +1216,9 @@ func cmdExec(args []string, stderr io.Writer) int {
 		return 2
 	}
 
-	// Unlike shell-hook, this says so out loud. exec is called deliberately,
-	// usually from a script, and silently running nothing is how a build
-	// ends up mysteriously missing half its environment. Still exit 0: the
-	// user asked for envoke to be off, that isn't a failure.
+	// Unlike shell-hook, out loud: exec is called deliberately, and silently
+	// running nothing is how a build ends up missing half its environment.
+	// Still exit 0 -- being switched off is not a failure.
 	if disabled, source, err := state.Disabled(); err != nil {
 		fprintln(stderr, "envoke:", err)
 		return 1
@@ -1306,17 +1235,16 @@ func cmdExec(args []string, stderr io.Writer) int {
 
 	warnUnsafeStore(stderr)
 
-	// Without this, Go's default handling terminates envoke on the spot and
-	// leaves the block's `sh` running — visible when exec is driven from a
-	// script or CI runner that sends SIGTERM. Cancelling the context instead
-	// interrupts the script and gives it killGrace to clean up.
+	// Go's default handling would terminate envoke on the spot and leave the
+	// block's `sh` running. Cancelling the context instead interrupts the
+	// script and gives it killGrace to clean up.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	if err := envoke.Transition(ctx, entries, from, to); err != nil {
 		if ctx.Err() != nil {
-			// Conventional exit status for "died from a signal", and the
-			// signal is not news to whoever sent it.
+			// Conventional status for "died from a signal", which is not news
+			// to whoever sent it.
 			return 130
 		}
 		for _, line := range strings.Split(err.Error(), "\n") {
@@ -1337,10 +1265,9 @@ func cmdExec(args []string, stderr io.Writer) int {
 }
 
 // cmdDebug prints which enter/leave blocks would fire for a directory
-// transition, without running them and regardless of trust — a dry-run
-// diagnostic for developing a config without surprises. It does note whether
-// the config is currently trusted, since that determines whether shell-hook
-// would actually run what's listed here.
+// transition, without running them and regardless of trust. It notes whether
+// each config is trusted, since that decides whether shell-hook would actually
+// run what is listed.
 const debugUsage = "envoke debug [<from> <to>]  (defaults to $OLDPWD -> $PWD)"
 
 func cmdDebug(args []string, stdout, stderr io.Writer) int {
@@ -1379,16 +1306,13 @@ func cmdDebug(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	// Same escaping as the prompt, and for the same reason: every path below
-	// comes from a directory scan, not from something the user typed.
 	fprintf(stdout, "envoke debug: %s -> %s\n", from, to)
 	for _, e := range entries {
 		fprintf(stdout, "  config %s (%s)\n", e.Path, debugStatus(e))
 	}
 
-	// debug never executes anything, so being switched off doesn't stop it —
-	// but it does change whether what follows would happen for real, exactly
-	// like the trust state above.
+	// debug never executes anything, so being switched off doesn't stop it --
+	// but it changes whether what follows would happen for real.
 	disabled, source, err := state.Disabled()
 	if err != nil {
 		fprintln(stderr, "envoke:", err)
@@ -1429,14 +1353,11 @@ func debugStatus(e configset.Entry) string {
 	return fmt.Sprintf("NOT trusted -- run `envoke allow %s` before these would actually run", e.Path)
 }
 
-// printWorkingDirNote spells out where a matched script actually runs,
-// whenever that is not the directory it matched.
-//
-// debug lists the matched directory next to each block, which reads as
-// though relative paths in the script resolve from there. That holds for
-// exec, which sets the working directory to the match, and not for the
-// hook, which eval's the block in the shell that has already landed
-// somewhere else.
+// printWorkingDirNote spells out where a matched script actually runs, when
+// that is not the directory it matched. debug lists the matched directory next
+// to each block, which reads as though relative paths resolve from there: true
+// for exec, false for the hook, which eval's the block in a shell that has
+// already landed somewhere else.
 func printWorkingDirNote(stdout io.Writer, to string, matches ...[]matcher.Match) {
 	differs := false
 	for _, ms := range matches {
@@ -1454,23 +1375,20 @@ func printWorkingDirNote(stdout io.Writer, to string, matches ...[]matcher.Match
 	fprintln(stdout, "        $ENVOKE_DIR always names the matched directory -- use it for relative paths.")
 }
 
-// printIndentedScript prints a block's script body indented further than the
-// summary line above it, so `envoke debug` shows the actual code that would
-// run, not just metadata about the match.
+// printIndentedScript prints a block's script body under its summary line, so
+// `envoke debug` shows the code that would run and not just metadata.
 func printIndentedScript(stdout io.Writer, script string) {
 	for _, line := range strings.Split(script, "\n") {
 		fprintf(stdout, "    %s\n", line)
 	}
 }
 
-// warnUnsafeConfig warns, without ever blocking, when a config is writable by
-// group or other. Content-hash revocation already stops a silently-modified
-// config from running unapproved; this flags the permissions that make such
-// tampering possible to begin with. A Stat failure is ignored: the caller's
-// own load already handles a missing or unreadable file.
+// warnUnsafeConfig warns, never blocks, when a config is writable by group or
+// other: content-hash revocation stops a silently-modified config from
+// running, this flags the permissions that make the modification possible. A
+// Stat failure is ignored — the caller's own load handles a missing file.
 //
-// Split from the store warning because there is now a set of configs rather
-// than one: this is per file, and the store is warned about once.
+// Per file, unlike the store warning, since there is a set of configs.
 func warnUnsafeConfig(stderr io.Writer, path string) {
 	if unsafe, mode, err := config.UnsafePermissions(path); err == nil && unsafe {
 		fprintf(stderr, "envoke: warning: %s is writable by group/other (mode %o) -- consider tightening its permissions\n", path, mode)
@@ -1478,15 +1396,11 @@ func warnUnsafeConfig(stderr io.Writer, path string) {
 }
 
 // warnUnsafeConfigAndDir adds the containing directory's permissions to the
-// file's own. Whoever can write the directory can replace the config
-// wholesale, which the file's mode says nothing about — so this is the
-// stronger signal of the two.
+// file's own: whoever can write the directory can replace the config
+// wholesale, the stronger of the two signals.
 //
-// Deliberately *not* used by the shell hook. It costs a second stat per
-// config, on the path every `cd` goes through, to report something that in
-// practice can only be true of your own config directory. The commands a
-// human is actually reading — `allow` and `debug` — are where it earns the
-// syscall.
+// Deliberately not used by the shell hook — a second stat per config on the
+// path every `cd` takes. `allow` and `debug` are where it earns the syscall.
 func warnUnsafeConfigAndDir(stderr io.Writer, path string) {
 	warnUnsafeConfig(stderr, path)
 	if unsafe, mode, dir, err := config.UnsafeDirPermissions(path); err == nil && unsafe {
@@ -1495,11 +1409,10 @@ func warnUnsafeConfigAndDir(stderr io.Writer, path string) {
 	}
 }
 
-// warnUnsafeStore warns when the trust store itself is group/other-writable.
-// That matters more than any single config: a writable store lets someone
-// forge an approval outright, rather than merely tamper with a config whose
-// next edit would revoke its own trust. Allow's 0o700 doesn't cover it —
-// os.MkdirAll only applies its mode to directories it actually creates.
+// warnUnsafeStore warns when the trust store itself is group/other-writable:
+// that lets someone forge an approval outright, rather than merely tamper with
+// a config whose next edit would revoke its own trust. Allow's 0o700 doesn't
+// cover it — os.MkdirAll only applies its mode to directories it creates.
 func warnUnsafeStore(stderr io.Writer) {
 	if unsafe, mode, dir, err := trust.UnsafeStorePermissions(); err == nil && unsafe {
 		fprintf(stderr, "envoke: warning: the trust store %s is writable by group/other (mode %o) -- anyone who can write there can forge an approval; run `chmod go-w %s`\n", dir, mode, dir)

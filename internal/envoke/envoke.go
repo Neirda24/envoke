@@ -15,36 +15,29 @@ import (
 )
 
 // ErrUntrusted reports that a config has not been approved with `envoke
-// allow` since its last edit, so none of *its* blocks were run. Callers can
-// test for it with errors.Is.
+// allow` since its last edit, so none of *its* blocks were run.
 var ErrUntrusted = errors.New("config is not trusted")
 
-// ErrNoConfig reports that there is no config at all — neither a central one
-// nor any envokerc.d fragment. exec is called deliberately, usually from a
-// script, so having nothing to run is a setup mistake worth failing on rather
-// than a quiet success.
+// ErrNoConfig reports that there is no config at all. exec is called
+// deliberately, usually from a script, so having nothing to run is a setup
+// mistake worth failing on rather than a quiet success.
 var ErrNoConfig = errors.New("no config found")
 
 // Transition runs every enter/leave block that fires for a directory change
-// from -> to, in a subprocess per block: leave blocks first (deepest
-// directory first), then enter blocks (shallowest directory first) — see
-// matcher.Resolve for the ordering rules, including traverse behavior for
-// intermediate directories.
+// from -> to, in a subprocess per block: leaves first, then enters, ordered
+// by matcher.Resolve.
 //
-// The config set is passed in already loaded — cmd/envoke locates it, since
-// that is where "no config at all" has to be reported — but every trust
-// decision is made here: this is the only thing in the codebase that spawns a
-// shell from config, so the gate lives where no caller can skip it. One read
-// feeds both the parse and the hash (see config.LoadFile).
+// The set is passed in already loaded, but every trust decision is made here:
+// this is the only thing in the codebase that spawns a shell from config, so
+// the gate lives where no caller can skip it.
 //
-// A config that is untrusted or unreadable does not stop the others: with
-// several fragments in play, one that a `git pull` just rewrote would
-// otherwise disable the whole set. Every such config is reported in the
-// returned error — joined, so errors.Is still finds ErrUntrusted — after the
-// trusted blocks have run.
+// A config that is untrusted or unreadable does not stop the others — one
+// fragment a `git pull` just rewrote must not disable the whole set — and is
+// reported in the returned error, joined so errors.Is still finds
+// ErrUntrusted.
 //
 // Execution stops at the first failing block, and a partially-applied
-// transition is not unwound — enter and leave are independent.
+// transition is not unwound: enter and leave are independent.
 func Transition(ctx context.Context, entries []configset.Entry, from, to string) error {
 	if len(entries) == 0 {
 		return ErrNoConfig
@@ -75,11 +68,8 @@ func Transition(ctx context.Context, entries []configset.Entry, from, to string)
 
 // decide resolves each matched config's trust state once, whatever number of
 // blocks it contributed, and turns everything that isn't runnable into a
-// reportable problem.
-//
-// Only configs that actually matched are consulted. A fragment with nothing
-// to say about this transition is not something to warn about — it isn't
-// being skipped, it simply doesn't apply.
+// reportable problem. Only configs that actually matched are consulted: a
+// fragment with nothing to say about this transition isn't being skipped.
 func decide(entries []configset.Entry, matched ...[]matcher.Match) (map[*config.Config]bool, []error, error) {
 	var problems []error
 	for _, e := range entries {
