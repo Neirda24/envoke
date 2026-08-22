@@ -339,12 +339,10 @@ func cmdShellHook(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 
-	// On the hot path too, not only in the typed commands: a writable store
-	// lets someone forge an approval outright, which is the one warning that
-	// has to reach a user who never runs anything but `cd`. Below the
-	// early-out, because a forged approval can only take effect where a block
-	// would run, and every `cd` that matches nothing would otherwise stat the
-	// store's ancestors for a warning about nothing.
+	// On the hot path too: a writable store lets someone forge an approval
+	// outright, the one warning that has to reach a user who never runs
+	// anything but `cd`. Below the early-out, because a forged approval can
+	// only take effect where a block would run.
 	warnUnsafeStore(stderr)
 
 	kept, _ := runnable(stderr, entries, fmt.Sprintf("for %s -> %s", from, to), leaves, enters)
@@ -377,15 +375,11 @@ func locateConfigs() (globalPath, fragmentDir string, err error) {
 	return globalPath, fragmentDir, nil
 }
 
-// emptySetReason says why envoke has nothing to act on, for the commands a
-// human typed and is waiting on an answer from.
-//
-// "You have no envokerc.d directory" and "you have one and every file in it was
-// skipped" are the same empty set and want opposite next moves — create the
-// directory, or look at what is in it — so a message that only ever claims the
-// first sends half its readers looking in the wrong place. Reached only when
-// the set is empty, which is why it can afford to locate a second time rather
-// than widen what loadConfigSet returns.
+// emptySetReason says why envoke has nothing to act on. "You have no
+// envokerc.d directory" and "you have one and every file in it was skipped"
+// are the same empty set and want opposite next moves. Reached only when the
+// set is empty, so it can afford to locate a second time rather than widen
+// what loadConfigSet returns.
 func emptySetReason() string {
 	_, dir, err := locateConfigs()
 	if err != nil || dir == "" {
@@ -394,9 +388,8 @@ func emptySetReason() string {
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		return "no central config, and no directory at " + dir
 	}
-	// The set being empty with the directory present means nothing in it
-	// counted as a fragment, and the skip rules are the only way that happens
-	// short of it being empty (see config.Fragments).
+	// With the directory present, the skip rules are the only way the set is
+	// empty short of the directory being empty (see config.Fragments).
 	return "no central config, and " + dir + " holds no config files -- names starting with \".\" or ending in \"~\", and links to directories, are skipped"
 }
 
@@ -577,16 +570,13 @@ type candidate struct {
 }
 
 // configTargets resolves what `envoke allow` or `envoke revoke` should act on:
-// the given path, or every config envoke would load when none is given.
+// the given path, or every config envoke would load when none is given. Shared
+// so the two cannot drift on what "no path" means — a set one command approves
+// has to be a set the other can withdraw.
 //
-// Shared by the two so they cannot drift on what "no path" means: a set that one
-// command approves has to be a set the other can withdraw, or the whole-set
-// default has no inverse.
-//
-// derived says which of the two happened, because "this file is not there" is
-// not the same report in both. A derived path is one envoke chose, and a central
-// config that hasn't been written yet is a state the hot path already treats as
-// ordinary; a path the user typed and that isn't there is a typo.
+// derived distinguishes a path envoke chose from one the user typed: a central
+// config that hasn't been written yet is ordinary, a typed path that isn't
+// there is a typo.
 func configTargets(positional []string, cmd, usage string, stderr io.Writer) (paths []string, derived bool, code int, ok bool) {
 	switch len(positional) {
 	case 1:
@@ -614,15 +604,14 @@ func configTargets(positional []string, cmd, usage string, stderr io.Writer) (pa
 // with a set of fragments the broken one may not be the one being approved.
 //
 // Each path is reviewed the way the set will actually load it, which for a
-// fragment means through the symlink: the file that gets parsed, the directory
-// its "./" patterns resolve against, and the bound its blocks are held to are
-// all properties of the target rather than of the link. Approving content whose
-// displayed meaning differs from its effective one approves nothing.
+// fragment means through the symlink: what gets parsed, what its "./" patterns
+// resolve against, and what bounds its blocks are all properties of the target.
+// Approving content whose displayed meaning differs from its effective one
+// approves nothing.
 func reviewForApproval(stdout, stderr io.Writer, paths []string, derived bool) (pending []candidate, failed bool) {
-	// The set is the only thing that can answer "is this config confined, and
-	// to what": that decision needs the config directory's resolved root, which
-	// no single file carries. Its entries also hold the bytes configset has
-	// already read, so a path in the set is not read a second time here.
+	// Only the set can answer "is this config confined, and to what": that
+	// needs the config directory's resolved root, which no single file
+	// carries. Its entries also hold the bytes configset already read.
 	entries, err := loadConfigSet()
 	if err != nil {
 		fprintln(stderr, "envoke:", err)
@@ -641,10 +630,9 @@ func reviewForApproval(stdout, stderr io.Writer, paths []string, derived bool) (
 			cfg, content, loadErr := config.LoadFile(target)
 			e = configset.Entry{Path: target, Config: cfg, Content: content, Err: loadErr}
 		}
-		// Nothing below names the argument again. The entry's own path is the
-		// file the set loaded and the name the hook will look up, so it is the
-		// one the review has to describe and the one the record has to be keyed
-		// on; approving under any other spelling records trust nothing reads.
+		// Nothing below names the argument again: the entry's own path is the
+		// name the hook will look up, so approving under any other spelling
+		// records trust nothing reads.
 		path := e.Path
 		if reviewed[path] {
 			// Two names for one file — configPaths lists both where the set's
@@ -658,13 +646,12 @@ func reviewForApproval(stdout, stderr io.Writer, paths []string, derived bool) (
 
 		if e.Err != nil {
 			if derived && !e.Fragment && errors.Is(e.Err, fs.ErrNotExist) {
-				// reportLoadFailures makes the same exemption for the same
-				// reason: $ENVOKERC is honoured verbatim, so a central config
-				// nobody has written yet is an ordinary state rather than a
-				// failure, and the whole-set form did not name that file. It has
-				// to stay a success too, because a dotfiles bootstrap runs
-				// `envoke allow --yes` under set -e and the fragments it does
-				// hold approve cleanly. A path typed by hand keeps failing.
+				// reportLoadFailures makes the same exemption: $ENVOKERC is
+				// honoured verbatim, so a central config nobody has written
+				// yet is ordinary, and the whole-set form did not name it. A
+				// success, so a dotfiles bootstrap running `envoke allow
+				// --yes` under set -e still approves the fragments it does
+				// hold. A path typed by hand keeps failing.
 				fprintf(stdout, "envoke: %s does not exist yet -- nothing to review\n", path)
 				continue
 			}
@@ -711,26 +698,19 @@ func reviewForApproval(stdout, stderr io.Writer, paths []string, derived bool) (
 }
 
 // entryFor finds the loaded entry for a path, so a config `envoke allow` was
-// pointed at is reviewed as the set will load it — content, parse base and
-// confinement alike — rather than as a standalone file, and so its approval is
-// recorded under the name the hook will look up.
+// pointed at is reviewed as the set will load it and recorded under the name
+// the hook will look up.
 //
-// Matched on the file, not on the spelling. The set reaches a fragment through
-// the resolved config directory (config.Fragments resolves before walking it),
-// while a user reaches it by whatever spelling their home layout gives them —
-// and in the ordinary dotfiles layout, which is also what tab completion hands
-// them, those are two different strings for one file.
+// Matched on the file, not the spelling: the set reaches a fragment through the
+// resolved config directory while a user reaches it by whatever spelling their
+// home layout gives them, and in the ordinary dotfiles layout those are two
+// strings for one file.
 //
-// Two passes, spelling before inode. A textual match is an identity match as
-// well, so the second pass only ever answers for a target the first did not, and
-// where one file is in the set under two names — a hard-linked fragment; the
-// dedup's key is a resolved path and cannot collapse those — the target's own
-// name in the set wins over another name's inode, which is the name the hook
-// looks up for that entry. What the order is for is cost: the whole-set form
-// feeds this configPaths' names, which are the entries' own, so every target
-// settles above and nothing is stat'd at all, where testing both per candidate
-// stats both sides of every earlier entry for every target — n(n-1) syscalls
-// across a set, for an answer string equality already had.
+// Spelling before inode. Where one file is in the set under two names — a hard
+// link, which the resolved-path dedup cannot collapse — the target's own name
+// wins, which is the one the hook looks up. The order is also what keeps the
+// whole-set form from statting anything: its targets are the entries' own
+// names, so every one settles in the first pass.
 func entryFor(entries []configset.Entry, path string) (configset.Entry, bool) {
 	for _, e := range entries {
 		if sameName(path, e.Path) {
@@ -749,42 +729,32 @@ func entryFor(entries []configset.Entry, path string) (configset.Entry, bool) {
 	return configset.Entry{}, false
 }
 
-// sameName reports whether two paths are one string once made absolute.
-//
-// It is the only test that can answer for a file that isn't there — `envoke
-// allow` on an $ENVOKERC nobody has written yet is an ordinary state, and two
-// spellings of a file that does not exist cannot be told apart by anything
-// stronger — which is why both scans below exhaust it before statting.
+// sameName reports whether two paths are one string once made absolute. The
+// only test that can answer for a file that isn't there — an $ENVOKERC nobody
+// has written yet — which is why both scans exhaust it before statting.
 func sameName(a, b string) bool {
 	absA, errA := filepath.Abs(a)
 	absB, errB := filepath.Abs(b)
 	return errA == nil && errB == nil && absA == absB
 }
 
-// sameFileAs reports whether path is the file info describes — the file, not the
-// spelling, and it needs no assumption about which symlinks either side
-// followed. A path that cannot be stat'd is not a match: a file nothing can read
-// is not evidence about which file was meant.
+// sameFileAs reports whether path is the file info describes, needing no
+// assumption about which symlinks either side followed. A path that cannot be
+// stat'd is not a match.
 func sameFileAs(info os.FileInfo, path string) bool {
 	other, err := os.Stat(path)
 	return err == nil && os.SameFile(info, other)
 }
 
-// setSpelling is the name the config set reaches path's file by — the name its
-// trust record is keyed on — given the set's names in configPaths order. A path
-// none of them names comes back unchanged, so a record for a config outside the
-// set, which is what pointing $ENVOKERC somewhere else leaves behind, stays
-// revocable by the name it was approved under.
+// setSpelling is the name the config set reaches path's file by, and so the
+// name its trust record is keyed on. A path none of them names comes back
+// unchanged, keeping a record left behind by an old $ENVOKERC revocable under
+// the name it was approved with.
 //
-// Order matters: it is configPaths' order, which is the set's, so a file two
-// names reach resolves to whichever of them configset.Load's dedup kept. Textual
-// before physical for the reason entryFor is, and the target is stat'd once: a
-// name nothing in the set spells and nothing on disk answers for — `envoke
-// revoke` on a record left by a config since deleted — comes back from that one
-// syscall rather than from two per name in the set.
-//
-// Only the names are needed, so nothing here reads a config. Withdrawing a
-// record is a decision about a path, not about content.
+// known is in configPaths' order, so a file two names reach resolves to
+// whichever configset.Load's dedup kept. Spelling before identity as in
+// entryFor. Nothing here reads a config: withdrawing a record is a decision
+// about a path, not about content.
 func setSpelling(known []string, path string) string {
 	for _, p := range known {
 		if sameName(path, p) {
@@ -803,24 +773,18 @@ func setSpelling(known []string, path string) string {
 	return path
 }
 
-// printConfigBound reports the two things that decide whether a config's blocks
-// can fire at all and that no other output carries: the file a symlinked config
-// leads to, and — for a confined one — the directory matcher.NewMatch keeps
-// every one of its blocks inside, whatever their patterns say. Without it a
-// project fragment whose pattern points out of its own tree is approved, lists
-// as trusted, shows as loaded, and then never fires.
+// printConfigBound reports the two things that decide whether a config's
+// blocks can fire at all and that no other output carries: the file a
+// symlinked config leads to, and the directory a confined one is kept inside
+// whatever its patterns say. Without it, a project fragment whose pattern
+// points out of its own tree is approved, lists as trusted, and never fires.
 //
-// Only the commands a human is reading call this. It costs a readlink per
-// config to report something the hook could not act on anyway, which is the
-// same reason warnUnsafeConfigAndDir is kept off that path.
+// Only the commands a human is reading call this: it costs a readlink per
+// config, the same reason warnUnsafeConfigAndDir is kept off the hot path.
 //
-// lead prefixes every line: debug indents these under a config's status line,
-// where the nesting says what they describe, while allow's review has nothing
-// to nest under and needs each line marked as a note rather than read as one
-// more block of the config being approved.
-//
-// noted says whether anything was printed, for a caller that follows it with a
-// blank line.
+// lead prefixes every line — debug nests these under a config's status line,
+// allow's review has nothing to nest under and marks them as notes. noted says
+// whether anything was printed, for a caller that follows it with a blank line.
 func printConfigBound(w io.Writer, lead string, e configset.Entry) (noted bool) {
 	if target, ok := linkTarget(e.Path); ok {
 		fprintf(w, "%ssymlink to %s\n", lead, target)
@@ -838,12 +802,10 @@ func printConfigBound(w io.Writer, lead string, e configset.Entry) (noted bool) 
 }
 
 // linkTarget is the file a config symlink leads to, every link in the chain
-// followed: that is the file config.LoadFragmentResolved parses and the
-// directory a confined config is bounded to, so reporting the link's own text
-// would name neither. ok is false for a config that is not a symlink.
-//
-// The text is the fallback for a chain that can't be followed, since it is then
-// all there is to report — the state Config.DirUnresolved describes.
+// followed: that is what config.LoadFragmentResolved parses and what a
+// confined config is bounded to, so the link's own text would name neither. ok
+// is false for a config that is not a symlink; the text is the fallback for a
+// chain that can't be followed (see Config.DirUnresolved).
 func linkTarget(path string) (string, bool) {
 	text, err := os.Readlink(path)
 	if err != nil {
@@ -1065,21 +1027,16 @@ const revokeUsage = "envoke revoke [path]"
 // editing the config, which revokes trust as a side effect, or deleting a
 // sha256-named file out of the data home by hand.
 //
-// With no path it covers the whole set, for the same reason `envoke allow`
-// does and because that is what makes the two inverses: a set approved by one
-// command has to be withdrawable by one command. A path targets exactly that
-// file, whether or not it is in the set.
+// With no path it covers the whole set, which is what makes it `allow`'s
+// inverse. A path targets exactly that file, whether or not it is in the set.
 //
-// It names every file it acted on and exits 0 whether it removed three records
-// or none: the end state asked for is "none of these is trusted", and a config
-// that was never approved already satisfies it. Deliberately unlike `reload`,
-// which exits non-zero when it was refused, because there doing nothing means
-// the blocks the user typed for never ran.
+// Exits 0 whether it removed three records or none: the end state asked for is
+// "none of these is trusted", which a config that was never approved already
+// satisfies. Unlike `reload`, where doing nothing means the blocks the user
+// typed for never ran.
 //
-// A record left behind by a config that has since left the set is not this
-// command's: `list` reconciles the set against the store, and `prune` drops the
-// records whose config file no longer exists. Nothing here widens revoke into
-// either.
+// A record left behind by a config that has since left the set belongs to
+// `list` and `prune`, not here.
 func cmdRevoke(args []string, stdout, stderr io.Writer) int {
 	flags := newFlagSet("revoke")
 	if ok, code := parseFlags(flags, args, revokeUsage, stderr); !ok {
@@ -1091,11 +1048,10 @@ func cmdRevoke(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 
-	// The set's own names, so a target can be matched to the file it is rather
-	// than to the string it was typed as. Listed once for the whole loop, and the
-	// error dropped: no names means every target stays spelled as given, which is
-	// what a path outside the set gets anyway — and revoking one record must not
-	// become impossible because something else in $ENVOKERC_D is broken.
+	// The set's own names, listed once for the whole loop. The error is
+	// dropped: no names means every target stays spelled as given, which is
+	// what a path outside the set gets anyway, and revoking one record must
+	// not become impossible because something else in $ENVOKERC_D is broken.
 	known, _ := configPaths()
 
 	done := make(map[string]bool, len(paths))
@@ -1111,11 +1067,10 @@ func cmdRevoke(args []string, stdout, stderr io.Writer) int {
 		}
 		done[path] = true
 
-		// Both spellings, where the user's differs from the set's. Trust is keyed
-		// on the path text, so a file approved before this command resolved
-		// identity has a record under whatever was typed then — inert, but still a
-		// plaintext copy of the config in the store, and no other command can name
-		// it. The end state asked for is that this file is not trusted.
+		// Both spellings, where the user's differs from the set's: a file
+		// approved before this command resolved identity has a record under
+		// whatever was typed then — inert, but still a plaintext copy of the
+		// config that no other command can name.
 		keys := []string{path}
 		if target != path {
 			keys = append(keys, target)
@@ -1438,15 +1393,12 @@ func enabledWord(disabled bool) string {
 // Both are typed by a human, unlike shell-hook which only ever receives
 // generated arguments, so both accept relative paths and infer what they can.
 //
-// The two halves are not equally inferable, which is why <to> may be omitted
-// on its own: envoke can always work out where you are, and can only be told
-// where you came from. OLDPWD is a POSIX shell convention that PowerShell has
-// no counterpart to (its hook tracks the previous directory in a shell
-// variable of its own), so the no-argument form is a POSIX convenience and
-// `envoke <cmd> <from>` is the form that works in every shell.
+// Only <to> may be omitted on its own: envoke can always work out where you
+// are, and can only be told where you came from. OLDPWD is a POSIX convention
+// PowerShell has no counterpart to, so the no-argument form is a POSIX
+// convenience and `envoke <cmd> <from>` works in every shell.
 //
-// cmd names the caller so the error can print a command a user can retype;
-// the two callers are the only place the name is known.
+// cmd names the caller so the error can print a command a user can retype.
 func transitionArgs(cmd string, args []string) (from, to string, err error) {
 	var inferTo bool
 	switch len(args) {
@@ -1501,15 +1453,12 @@ func cmdExec(args []string, stderr io.Writer) int {
 		return 2
 	}
 
-	// One argument names <from> and leaves <to> inferred, which can be read as
-	// "run the blocks for this directory" -- the opposite direction, and here
-	// that means running the named directory's leave blocks. debug leads with
-	// the pair it resolved, so the misreading corrects itself there; this is
-	// that line for exec. Scoped to this form alone: the two-argument form
-	// states the pair already, and the no-argument form is what scripts use,
-	// which must keep printing nothing. On stderr, which is also the only
-	// stream exec is given -- its stdout belongs to the blocks it runs, and a
-	// caller capturing them must not find a diagnostic mixed in.
+	// One argument names <from>, which reads as "run the blocks for this
+	// directory" -- the opposite direction, and here that runs the named
+	// directory's leave blocks. debug leads with the pair it resolved; this is
+	// that line for exec. This form alone: the two-argument form states the
+	// pair already and the no-argument form is what scripts use. On stderr,
+	// since exec's stdout belongs to the blocks it runs.
 	if len(flags.Args()) == 1 {
 		fprintf(stderr, "envoke exec: %s -> %s\n", from, to)
 	}
