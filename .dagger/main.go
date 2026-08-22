@@ -43,6 +43,9 @@ const (
 type Envoke struct {
 	// Source is the envoke repository root.
 	Source *dagger.Directory
+	// GitDir is the repository's own .git, kept out of Source and mounted
+	// only by withGitSource.
+	GitDir *dagger.Directory
 	// GhAuthToken authenticates zizmor's and actions-up's GitHub API calls,
 	// raising their unauthenticated 60/hr rate limit. Optional: both tools
 	// still work without it, just slower/flakier on a busy day.
@@ -54,13 +57,26 @@ func New(
 	// anything no check reads is excluded. Keep it that way: .github and docs
 	// are read by yaml-lint and docs-build, so neither may be added.
 	//
+	// .git is excluded here and taken as gitDir below rather than left out
+	// altogether, because goreleaser does read it. Nothing tracked may be
+	// added to this list now that it is: git compares the mounted history
+	// against the mounted tree, so an ignored tracked file reads as deleted
+	// and `goreleaser release` refuses a dirty tree.
+	//
 	// +defaultPath="/"
 	// +ignore=[".git", ".idea", "review", "*_handoff.md", "CLAUDE.local.md"]
 	source *dagger.Directory,
+	// The repository's history, which goreleaser derives the version and the
+	// tag from. Separate from source so that a commit invalidates only the
+	// two functions that mount it, rather than every check's cache.
+	//
+	// +defaultPath="/.git"
+	// +optional
+	gitDir *dagger.Directory,
 	// +optional
 	ghAuthToken *dagger.Secret,
 ) *Envoke {
-	return &Envoke{Source: source, GhAuthToken: ghAuthToken}
+	return &Envoke{Source: source, GitDir: gitDir, GhAuthToken: ghAuthToken}
 }
 
 // goBase is a bare Go toolchain container, before the source tree is
@@ -90,6 +106,19 @@ func (m *Envoke) goBase() *dagger.Container {
 
 func (m *Envoke) withSource(c *dagger.Container) *dagger.Container {
 	return c.WithMountedDirectory("/src", m.Source).WithWorkdir("/src")
+}
+
+// withGitSource is withSource for goreleaser, which is the only thing here
+// that reads the repository's history: it derives the version from the
+// nearest tag, and `goreleaser release` refuses to run without one at all.
+// Without this the release job publishes 0.0.0 or fails outright, and
+// nothing else in the pipeline would notice — no check reads .git.
+func (m *Envoke) withGitSource(c *dagger.Container) *dagger.Container {
+	c = m.withSource(c)
+	if m.GitDir == nil {
+		return c
+	}
+	return c.WithMountedDirectory("/src/.git", m.GitDir)
 }
 
 // aptInstall installs the given Debian packages on top of goBase.
@@ -470,7 +499,7 @@ func (m *Envoke) TestShellPowershell(ctx context.Context) error {
 // and cosign's keyless signing then hangs for the OIDC device flow's full
 // timeout waiting for a GitHub Actions token a local run never has.
 func (m *Envoke) Snapshot(ctx context.Context) (*dagger.Directory, error) {
-	dist := m.withSource(m.goreleaserBase()).
+	dist := m.withGitSource(m.goreleaserBase()).
 		WithExec([]string{"goreleaser", "release", "--snapshot", "--clean", "--skip=sign"}).
 		Directory("/src/dist")
 	if _, err := dist.Sync(ctx); err != nil {
@@ -497,7 +526,7 @@ func (m *Envoke) Snapshot(ctx context.Context) (*dagger.Directory, error) {
 // alone, minted per run by release.yml, so a compromise of the release job
 // cannot reach beyond them.
 func (m *Envoke) Publish(ctx context.Context, githubToken *dagger.Secret, actionsIDTokenRequestURL *dagger.Secret, actionsIDTokenRequestToken *dagger.Secret, homebrewTapToken *dagger.Secret) (string, error) {
-	return m.withSource(m.goreleaserBase()).
+	return m.withGitSource(m.goreleaserBase()).
 		WithSecretVariable("GITHUB_TOKEN", githubToken).
 		WithSecretVariable("ACTIONS_ID_TOKEN_REQUEST_URL", actionsIDTokenRequestURL).
 		WithSecretVariable("ACTIONS_ID_TOKEN_REQUEST_TOKEN", actionsIDTokenRequestToken).
