@@ -1,47 +1,91 @@
+---
+title: envoke
+description: >-
+  Run a shell script when you cd into or out of a directory, matched by path
+  pattern. One static binary, five shells, nothing runs until you approve it.
+---
+
 # envoke
 
-`envoke` runs a shell script automatically when you `cd` into — or out of —
-a directory, matched by path pattern. One static binary, every major shell,
+`envoke` runs a shell script automatically when you `cd` into — or out of — a
+directory, matched by path pattern. One static binary, every major shell,
 nothing runs until you approve it.
 
-It's a spiritual rewrite of [ondir](https://github.com/alecthomas/ondir) in
-Go: same idea (per-directory `enter`/`leave` hooks matched by path). ondir
-is feature-complete by its own maintainer's account and still works, but
-it's had no release in years; envoke picks up the same model, addresses a
-few specific long-standing rough edges, and reaches every major shell and
-OS with a single static binary.
+```sh
+brew install neirda24/tap/envoke
+echo 'eval "$(envoke shell-init zsh)"' >> ~/.zshrc
+```
+
+```
+# ~/.envokerc
+enter ~/Projects/([^/]+)
+    source "$ENVOKE_DIR/venv/bin/activate"
+
+leave ~/Projects/([^/]+)
+    deactivate
+```
+
+```sh
+envoke allow          # review the config once, approve it
+cd ~/Projects/my-app  # the venv activates
+```
+
+## I want to…
+
+| | |
+|---|---|
+| install it and write a first block | [Getting Started](getting-started.md) |
+| learn the config syntax | [Block syntax](configuration.md#block-syntax) |
+| write a pattern that matches what I mean | [Path patterns](configuration.md#path-patterns) |
+| know what my script can see | [What a matched script sees](configuration.md#what-a-matched-script-sees) |
+| copy a working example | [Recipes](recipes.md) |
+| **find out why my block didn't run** | [Troubleshooting](troubleshooting.md) |
+| **stop it firing, right now** | [Turning envoke off](debugging.md#turning-envoke-off) |
+| see what would fire, without running it | [`envoke debug`](debugging.md) |
+| apply a config without leaving the directory | [`envoke reload`](debugging.md#applying-a-config-without-leaving-the-directory) |
+| understand the approval step | [Trust Model](trust.md) |
+| keep rules with the repository they belong to | [Bringing a project's own config in](configuration.md#bringing-a-projects-own-config-in) |
+| split one big config into several | [The `envokerc.d` directory](configuration.md#the-envokercd-directory) |
+| run blocks from a script, a Makefile or CI | [Non-interactive Use](non-interactive.md) |
+| look up a command, flag, variable or exit code | [Reference](reference.md) |
+| compare it with direnv | [envoke vs. direnv](vs-direnv.md) |
+| remove it | [Uninstalling](uninstall.md) |
 
 !!! warning "Status: early development"
-    Everything documented here exists and is tested end-to-end against real interpreters — a `cd` into a trusted, matching directory really does run its `enter` block in your shell today. That covers the matching engine, shell hooks for bash/zsh/fish/tcsh/PowerShell, the `envokerc.d` fragment directory with relative patterns and symlinked project configs, the trust mechanism (`allow`, `revoke`, `list`, `prune`), the `disable`/`enable` off switch, `reload`, non-interactive `exec`, and `debug` dry-run diagnostics. GitHub Releases, a Homebrew tap, a Scoop bucket, and `.deb`/`.rpm` packages are all live, each release carrying a per-archive SBOM alongside cosign-signed checksums. The [Reference](reference.md) is the complete list of commands, flags, variables and exit codes.
 
-## Why not just use ondir / direnv?
+    Everything documented here exists and is tested end to end against real
+    interpreters — a `cd` into a trusted, matching directory really does run
+    its `enter` block in your shell today. That covers:
 
-`envoke` targets the same model as [ondir](https://github.com/alecthomas/ondir) —
-path-pattern-driven `enter`/`leave` hooks, not one file per directory like
-[direnv](https://direnv.net/). ondir is feature-complete by its own maintainer's
-account and still does the job, but it's had no release in years; envoke picks
-up the same model on a few specific points (regex engine choice, path matching
-semantics, a trust/approval step) and extends shell support beyond bash/zsh.
+    - the **matching engine** — patterns, intermediate directories, ordering;
+    - **shell hooks** for bash, zsh, fish, tcsh and PowerShell;
+    - the **`envokerc.d`** fragment directory, with `./`-relative patterns and
+      symlinked project configs;
+    - the **trust mechanism** — `allow`, `revoke`, `list`, `prune`;
+    - the **off switch** — `disable`/`enable` and `ENVOKE_DISABLE`;
+    - **`reload`**, non-interactive **`exec`**, and **`debug`** diagnostics;
+    - **packaging** — GitHub Releases, a Homebrew tap, a Scoop bucket and
+      `.deb`/`.rpm` packages, each release carrying a per-archive SBOM
+      alongside cosign-signed checksums.
+
+    What is early is the mileage, not the feature list. There is no roadmap
+    section here on purpose: if `envoke help` doesn't list it, it doesn't
+    exist. The [Reference](reference.md) is the complete inventory of
+    commands, flags, variables, files and exit codes.
+
+## How it compares
+
+`envoke` is a spiritual rewrite of
+[ondir](https://github.com/alecthomas/ondir) in Go — the same
+`enter`/`leave`-by-path-pattern model, reaching every major shell and OS from
+a single static binary. ondir is feature-complete by its own maintainer's
+account and still works, but it has had no release in years.
 
 - [envoke vs. direnv](vs-direnv.md) — path patterns covering whole trees
   instead of an `.envrc` per directory, arbitrary shell scripts instead of
   environment variables only, and when to use which (or both).
-- [Design Notes](design-notes.md) — the full, point-by-point comparison with
-  ondir.
-
-## Where to go next
-
-- [envoke vs. direnv](vs-direnv.md) — how the two differ, and which one fits your case.
-- [Getting Started](getting-started.md) — install, hook into your shell, write your first config.
-- [Configuration](configuration.md) — the config file syntax, path patterns, and what a matched script sees.
-- [Recipes](recipes.md) — worked enter/leave pairs for virtualenvs, kubectl contexts, cloud profiles, generated shell functions and `.env` files, unwinding included.
-- [Trust Model](trust.md) — why `envoke allow` exists and how it works.
-- [Non-interactive Use](non-interactive.md) — running blocks from scripts, Makefiles and CI.
-- [Debugging](debugging.md) — inspect what would fire, switch envoke off, reload a config in place.
-- [Troubleshooting](troubleshooting.md) — why a block didn't fire, in the order the causes actually come up.
-- [Reference](reference.md) — every command, flag, environment variable, file and exit code.
-- [Uninstalling](uninstall.md) — remove the shell hook and the binary, per install method.
-- [Design Notes](design-notes.md) — the specific points where envoke departs from ondir.
+- [Design Notes](design-notes.md) — the point-by-point list of where envoke
+  departs from ondir, and the principles that hold across the codebase.
 
 ## License
 
