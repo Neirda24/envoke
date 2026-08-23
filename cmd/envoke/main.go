@@ -1671,20 +1671,36 @@ func usage(w io.Writer) {
 	fprintln(w, raw(`envoke - run shell scripts when you cd into or out of a directory
 
 Usage:
-  envoke version                                     print version, commit, build date, and Go/OS/arch info, then exit
-  envoke help                                        print this usage text and exit
-  envoke shell-init [<shell>]                        print shell hook code to eval/source (bash|zsh|fish|tcsh|powershell; guessed from $SHELL if omitted)
-  envoke completion [<shell>]                        print a tab-completion script (bash|zsh|fish; guessed from $SHELL if omitted)
-  envoke allow [--yes|-y] [path]                     trust a config after reviewing and confirming it (default: every config envoke would load; --yes/-y skips the y/N prompt)
-  envoke revoke [path]                               withdraw trust for a config (default: every config envoke would load)
-  envoke list                                        reconcile the configs envoke would load with the trust store: each one's status, then any records left over
-  envoke prune                                       drop trust records whose config no longer exists
-  envoke disable                                     stop running blocks, in every shell, until enable
-  envoke enable                                      undo disable (set ENVOKE_DISABLE=1 or =0 to override either one for a single shell)
-  envoke reload [--shell <name>]                     re-apply the enter blocks for the current directory: eval "$(envoke reload)"
-  envoke exec [<from> [<to>]]                        run the blocks matching a directory change, each in its own subprocess (for scripts/CI, not your interactive shell)
-  envoke debug [<from> [<to>]]                       print which blocks would fire for a directory change, without running them
-  envoke shell-hook [--shell <name>] <from> <to>     run blocks matching a directory change (internal, called by the shell hook; <from>/<to> may also come from $ENVOKE_FROM/$ENVOKE_TO)
+  envoke <command> [arguments]
+
+Set up your shell
+  envoke shell-init [<shell>]    print the hook to eval/source from your rc file
+  envoke completion [<shell>]    print a tab-completion script (bash, zsh, fish)
+
+Approve configs -- nothing runs until you do
+  envoke allow [--yes|-y] [path] review a config and trust it (--yes/-y skips the y/N prompt)
+  envoke revoke [path]           withdraw trust for a config
+  envoke list                    what envoke would load, each one's status, then records left over
+  envoke prune                   drop trust records whose config no longer exists
+
+Run blocks
+  envoke reload [--shell <name>] re-apply this directory's enter blocks: eval "$(envoke reload)"
+  envoke exec [<from> [<to>]]    run matching blocks, each in its own subprocess (scripts, CI)
+  envoke disable                 stop running blocks, in every shell, until enable
+  envoke enable                  undo disable
+
+Inspect
+  envoke debug [<from> [<to>]]   print which blocks would fire, without running them
+  envoke version                 version, commit, build date, Go toolchain and OS/arch
+  envoke help                    print this text
+
+Called by the generated hook, not by you
+  envoke shell-hook [--shell <name>] [--] <from> <to>
+                                 <from>/<to> may also come from $ENVOKE_FROM/$ENVOKE_TO
+
+allow and revoke default to every config envoke would load; give a path to
+target one file. disable and enable set a persistent switch, and
+ENVOKE_DISABLE=1 or =0 overrides it for a single shell.
 
 exec and debug accept relative paths. <to> defaults to the directory you are
 in; <from> defaults to $OLDPWD, which only POSIX shells set -- in PowerShell,
@@ -1694,7 +1710,9 @@ Blocks come from your central config ($ENVOKERC, ~/.envokerc or
 $XDG_CONFIG_HOME/envoke/config) plus every file in the envokerc.d directory
 ($ENVOKERC_D, ~/.envokerc.d or $XDG_CONFIG_HOME/envoke/envokerc.d), applied in
 order of each file's path relative to that directory. A fragment may be a
-symlink to a config committed inside a
-project: its "./"-relative patterns then resolve against that project, and it
-may only match inside it. Each file is trusted separately.`))
+symlink to a config committed inside a project: its "./"-relative patterns then
+resolve against that project, and it may only match inside it. Each file is
+trusted separately.
+
+Full documentation: https://neirda24.github.io/envoke/`))
 }

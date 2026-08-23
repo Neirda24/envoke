@@ -20,7 +20,7 @@ place. The task-oriented pages explain *why* — this page is the checklist.
 | `envoke disable` | Stops running blocks, in every shell, until `enable`. |
 | `envoke enable` | Undoes `disable`. |
 | `envoke reload [--shell <name>]` | Prints the enter blocks for the current directory, to `eval`. See [Debugging](debugging.md#applying-a-config-without-leaving-the-directory). |
-| `envoke exec [<from> [<to>]]` | Runs matching blocks in subprocesses. See [Non-interactive Use](non-interactive.md). |
+| `envoke exec [<from> [<to>]]` | Runs matching blocks, each in its own `sh -c`. Needs a POSIX `sh` on `PATH`. See [Non-interactive Use](non-interactive.md). |
 | `envoke debug [<from> [<to>]]` | Prints what would fire, without running it. See [Debugging](debugging.md). |
 | `envoke shell-hook [--shell <name>] [--] <from> <to>` | Internal; called by the generated hook on every directory change. |
 
@@ -77,14 +77,30 @@ extra.
 | `ENVOKE_DISABLE` | Per-session override of the persistent switch. `0`/`false`/`no`/`off` force envoke on; any other non-empty value forces it off; unset or empty defers to the flag. See [Debugging](debugging.md#turning-envoke-off). |
 | `OLDPWD` | `<from>` for `exec` and `debug` when given no arguments. Unset — as in PowerShell, which has no counterpart — means there is nothing to infer, and both error rather than guess. tcsh maintains `$owd` instead, so an `$OLDPWD` seen there was inherited from the shell that started it and never updates: pass `<from>` yourself rather than trust it. Nothing can detect that case; it is an ordinary environment variable either way. |
 | `PWD` | The current directory, used by `reload` and for `<to>` whenever `exec` or `debug` is not given one. Preferred over the process's own working directory, which is the fallback when `$PWD` is unset or relative: through a symlinked directory the two disagree, and the patterns you write describe the path you `cd`'d through. |
+| `PATH` | Where `envoke exec` looks for the `sh` it runs each block through. Nothing else needs it. |
 | `ENVOKE_FROM`, `ENVOKE_TO` | Read by `shell-hook` when it gets no positional arguments. Exists for the tcsh hook — see [Trust Model](trust.md#directory-names-are-never-executed). |
 
 ## Environment variables a matched block sees
 
-`ENVOKE_DIR`, `ENVOKE_TYPE`, `ENVOKE_MATCH` and `ENVOKE_MATCH_N` — set
-before the block's script and cleared again after it. See
-[Configuration](configuration.md#what-a-matched-script-sees) for what each
-holds, and for the working directory a block actually runs in.
+Set before the block's script and cleared again after it, so one block never
+sees another's values and nothing survives into the session.
+
+| Variable | Holds |
+|---|---|
+| `ENVOKE_DIR` | The directory that matched, as your shell spelled it — symlinks not resolved. |
+| `ENVOKE_TYPE` | `enter` or `leave`. |
+| `ENVOKE_MATCH` | The full text the pattern matched. Always set. |
+| `ENVOKE_MATCH_N` | Capture group `N`, one variable per group (`ENVOKE_MATCH_1`, `ENVOKE_MATCH_2`, …). |
+
+Under `envoke exec` a block never inherits one of these from outside: the
+subprocess environment is built with all four names stripped out first, so a
+block with one capture group cannot see an `ENVOKE_MATCH_2` left behind by
+whatever invoked `envoke exec`.
+
+**The working directory is not the matched directory.** Through the shell hook
+a block runs wherever your shell landed; under `envoke exec` it runs in the
+directory it matched. Use `$ENVOKE_DIR` for anything relative — see
+[Where the script runs](configuration.md#where-the-script-runs).
 
 `ENVOKE_DIR` is always the directory as your shell spelled it. For a
 [confined](configuration.md#bringing-a-projects-own-config-in) fragment —
@@ -97,7 +113,7 @@ forms are the same.
 
 | Path | Contents |
 |---|---|
-| `$ENVOKERC`, `~/.envokerc`, or `$XDG_CONFIG_HOME/envoke/config` | Your central config, in lookup order. The first that exists is used and the others are ignored. |
+| `$ENVOKERC`, `~/.envokerc`, or `$XDG_CONFIG_HOME/envoke/config` | Your central config, in lookup order. `$ENVOKERC` is used **verbatim whether or not the file exists**; the other two are used only if they exist, first one wins. At most 1 MiB, as for any config. |
 | `$ENVOKERC_D`, `~/.envokerc.d`, or `$XDG_CONFIG_HOME/envoke/envokerc.d` | The fragment directory, in lookup order — again, only the first that exists. Every file in it is a config, applied in order of its path relative to the directory; at most 512 files, nested at most 8 levels deep. See [Configuration](configuration.md#the-envokercd-directory). |
 | `<data home>/envoke/allow/<sha256 of the config's absolute path>` | The approved content's hash — the trust token. |
 | `<same>.content` | A plaintext copy of the approved config, for the diff on re-approval. |

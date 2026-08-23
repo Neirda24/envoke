@@ -49,7 +49,7 @@ unaffected — it passes `$owd` itself, so this is only about commands you type.
 In both shells the fix is the same one-argument form above: name `<from>` and
 `<to>` is still worked out for you.
 
-This runs the same resolution logic (`matcher.Resolve`) as the live `shell-hook`, and additionally reports the status of every config in play — but it never calls the code path that executes or renders a script, regardless of trust status. That's the point: `envoke debug` is safe to run against a config you haven't approved yet, or one you're actively editing and don't want to accidentally trigger. It also never asks you anything.
+This runs the same resolution the live `shell-hook` does, and additionally reports the status of every config in play — but it never calls the code path that executes or renders a script, regardless of trust status. That's the point: `envoke debug` is safe to run against a config you haven't approved yet, or one you're actively editing and don't want to accidentally trigger. It also never asks you anything.
 
 Its first lines list every config in play — your central one plus each `envokerc.d` fragment — and what would happen with it:
 

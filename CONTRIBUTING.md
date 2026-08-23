@@ -52,7 +52,7 @@ Pick the command that matches what you changed:
 
 | You changed... | Run this |
 |---|---|
-| Go code anywhere in `internal/`/`cmd/` | `dagger check -m .dagger` (runs the check set — which is not every row below: `fuzz`, `snapshot`, `zizmor` and `actions-up` are deliberately not checks) |
+| Go code anywhere in `internal/`/`cmd/` | `dagger check -m .dagger` (runs the check set, which is not every function the module exposes — `fuzz`, `snapshot`, `zizmor`, `actions-up`, `autofix`, `docs` and `publish` are deliberately outside it) |
 | Just want a quick loop while iterating | `dagger call -m .dagger fmt`, `vet`, `build`, or `test` individually — the Go build and module caches live in persistent Dagger cache volumes, so only the first run after an image pull pays for compiling the standard library |
 | `internal/shellinit` (hook generation) or `internal/executor` (ENVOKE_* rendering) | `dagger call -m .dagger test-shell-bash` (swap in `zsh`/`fish`/`tcsh`/`powershell`) — each spins up a container with only that one interpreter installed and runs both packages, so nothing silently skips for lack of a binary |
 | `internal/config` (the parser or pattern compilation) | `dagger call -m .dagger fuzz` — a short burst per fuzz target. Give it longer when the change is substantial: `dagger call -m .dagger fuzz --fuzz-time=5m`. The seed corpus runs as ordinary tests under `test` regardless |

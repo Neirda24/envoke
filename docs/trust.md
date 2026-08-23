@@ -255,7 +255,7 @@ Both siblings are optional on read, so upgrading envoke never revokes an existin
 
 When `envoke shell-hook` runs, it recomputes the current file's content hash and compares it to the trusted record:
 
-- **Match** → the resolved blocks execute (via `executor.Render`, `eval`'d by your shell).
+- **Match** → the resolved blocks are rendered into your shell's dialect and `eval`'d by your shell.
 - **No match, or no record at all** → nothing executes. envoke reports the untrusted match on stderr only (never stdout), along with an `envoke allow <path>` hint, and stops there.
 
 Any edit to the config — even whitespace — changes the content hash and revokes trust until you run `envoke allow` again. This means there's no way to silently smuggle a change into an already-trusted config; every modification requires a fresh, explicit approval.
@@ -278,14 +278,18 @@ re-opens.
 Content-hash revocation protects you from *silently* running a config that
 changed since you last trusted it — but on a shared machine (multi-user
 box, NFS home), nothing stops another local user from editing a config
-you've already approved. `envoke allow`, `envoke shell-hook`, `envoke reload`
-and `envoke debug` all check whether the config file is writable by anyone
-other than its owner (group or other write bits set) and print a non-fatal
-warning to stderr if so:
+you've already approved. So envoke checks whether the config file is writable
+by anyone other than its owner (group or other write bits set) and prints a
+non-fatal warning to stderr if so:
 
 ```
 envoke: warning: /home/you/.envokerc is writable by group/other (mode 664) -- consider tightening its permissions
 ```
+
+Which configs get checked depends on the command, and the split is the hot
+path: `envoke allow` and `envoke debug` check **every** config in the set,
+while `envoke shell-hook` and `envoke reload` check only the ones that
+actually matched the directory change in front of them.
 
 `envoke allow` and `envoke debug` additionally check the **directory** the
 config lives in, which is the stronger signal of the two: a config whose own
