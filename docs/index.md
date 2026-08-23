@@ -30,6 +30,44 @@ envoke allow          # review the config once, approve it
 cd ~/Projects/my-app  # the venv activates
 ```
 
+## Start here
+
+<div class="grid cards" markdown>
+
+-   **New to envoke**
+
+    ---
+
+    Install it, hook your shell, write a first block and approve it.
+
+    [Getting Started →](getting-started.md)
+
+-   **Writing a config**
+
+    ---
+
+    Block syntax, path patterns, and the variables a matched script gets.
+
+    [Configuration →](configuration.md)
+
+-   **It didn't fire**
+
+    ---
+
+    Eleven causes, ordered by how often they actually come up.
+
+    [Troubleshooting →](troubleshooting.md)
+
+-   **Looking something up**
+
+    ---
+
+    Every command, flag, environment variable, file and exit code.
+
+    [Reference →](reference.md)
+
+</div>
+
 ## I want to…
 
 | | |

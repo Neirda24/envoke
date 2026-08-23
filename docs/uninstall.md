@@ -8,28 +8,47 @@ prompt/`cd` once `envoke` is gone.
 ## 1. Remove the shell hook
 
 Delete the line you added in [Getting Started](getting-started.md#shell-integration)
-from your shell's rc file, then restart your shell (or re-source the rc
-file):
+from your shell's rc file, then restart your shell (or re-source the rc file).
 
-```sh
-# bash: ~/.bashrc   zsh: ~/.zshrc
-eval "$(envoke shell-init bash)"   # or zsh — delete this line
-```
+=== "bash"
 
-```fish
-# fish: ~/.config/fish/config.fish
-envoke shell-init fish | source    # delete this line
-```
+    Delete from `~/.bashrc`:
 
-```tcsh
-# tcsh: ~/.tcshrc
-envoke shell-init tcsh | source /dev/stdin   # delete this line
-```
+    ```sh
+    eval "$(envoke shell-init bash)"
+    ```
 
-```powershell
-# PowerShell: $PROFILE
-& envoke shell-init powershell | Out-String | Invoke-Expression   # delete this line
-```
+=== "zsh"
+
+    Delete from `~/.zshrc`:
+
+    ```sh
+    eval "$(envoke shell-init zsh)"
+    ```
+
+=== "fish"
+
+    Delete from `~/.config/fish/config.fish`:
+
+    ```fish
+    envoke shell-init fish | source
+    ```
+
+=== "tcsh"
+
+    Delete from `~/.tcshrc`:
+
+    ```tcsh
+    envoke shell-init tcsh | source /dev/stdin
+    ```
+
+=== "PowerShell"
+
+    Delete from `$PROFILE`:
+
+    ```powershell
+    & envoke shell-init powershell | Out-String | Invoke-Expression
+    ```
 
 ## 2. (Optional) Remove trust records and config
 
