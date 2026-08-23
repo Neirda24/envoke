@@ -16,7 +16,7 @@ jobs:
     # contents: write is needed for the ambient GITHUB_TOKEN to create the
     # envoke release itself -- the homebrew-tap push uses a separate,
     # narrower-scoped GitHub App installation token instead (see the
-    # create-github-app-token step below and security_audit.md's Finding 6),
+    # create-github-app-token step below),
     # so this job never holds a credential with write access to more than
     # one repo at a time. Both permissions scoped to this job, not the
     # workflow, matching this repo's minimal-permissions pattern (see
@@ -34,8 +34,8 @@ jobs:
       # Mints a short-lived (~1h) installation token scoped only to
       # homebrew-tap and scoop-bucket, via a GitHub App installed on just
       # those two repos -- replaces the old long-lived PUBLISH_HOMEBREW_TAP
-      # PAT that had write access to both envoke and homebrew-tap
-      # (security_audit.md's Finding 6). TAP_APP_CLIENT_ID/TAP_APP_PRIVATE_KEY
+      # PAT that had write access to both envoke and homebrew-tap.
+      # TAP_APP_CLIENT_ID/TAP_APP_PRIVATE_KEY
       # identify the App itself; nothing here can reach envoke. Requires the
       # App's installation to also be granted access to scoop-bucket (it was
       # previously homebrew-tap only) -- see .goreleaser.yaml's scoops block.

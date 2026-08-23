@@ -6,13 +6,13 @@
 # to be on the machine invoking this script.
 #
 # Deliberately NOT a permanent `.dagger` check: `.dagger/main.go`'s five
-# test-shell-* checks intentionally isolate one shell per container each
-# (see CLAUDE.md's Status section) so each stays cheap to build/cache and
-# `dagger check -m .dagger` runs them in parallel -- this script exists for
-# the rarer case of wanting one combined zero-skip confirmation run.
+# test-shell-* checks intentionally isolate one shell per container each, so
+# each stays cheap to build/cache and `dagger check -m .dagger` runs them in
+# parallel -- this script exists for the rarer case of wanting one combined
+# zero-skip confirmation run.
 #
-# Requires Docker. Never run this suite's `go test` directly on the host --
-# see CLAUDE.md's Go conventions section.
+# Requires Docker. Never run this suite's `go test` directly on the host: it
+# has to run on the pinned image, not whatever is installed locally.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
