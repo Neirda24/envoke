@@ -34,9 +34,6 @@ envoke allow          # review the config once, approve it
 cd ~/Projects/my-app  # venv activates, automatically
 ```
 
-Full walkthrough in [Getting Started](https://neirda24.github.io/envoke/getting-started/),
-more config examples in [Configuration](https://neirda24.github.io/envoke/configuration/#example-envokerc).
-
 ## Why envoke
 
 - **Predictable matching** — path patterns compile to Go's RE2 engine:
@@ -59,22 +56,6 @@ more config examples in [Configuration](https://neirda24.github.io/envoke/config
   `ENVOKE_DISABLE` for one terminal. And `eval "$(envoke reload)"` applies a
   freshly approved config where you're standing.
 
-### vs. ondir / direnv
-
-envoke is a spiritual rewrite of [ondir](https://github.com/alecthomas/ondir) —
-same enter/leave-by-path-pattern idea. ondir is feature-complete by its own
-maintainer's account and still does the job, but it hasn't seen a release
-in years; envoke picks up the same model on a few specific points (regex
-engine choice, path matching semantics, a trust/approval step) and extends
-shell support beyond bash/zsh. [direnv](https://direnv.net/) solves an
-adjacent problem: one `.envrc` per directory, found by walking into it, shaped
-around environment variables with automatic load/unload and a large stdlib —
-rather than arbitrary scripts pattern-matched across a whole tree.
-
-Point-by-point: [envoke vs. direnv](https://neirda24.github.io/envoke/vs-direnv/)
-(patterns across a tree vs. per-directory files, and when to use which) and
-[Design Notes](https://neirda24.github.io/envoke/design-notes/) (vs. ondir).
-
 ## What you can do with it
 
 - Activate/deactivate a Python (or any) virtualenv per project
@@ -82,6 +63,20 @@ Point-by-point: [envoke vs. direnv](https://neirda24.github.io/envoke/vs-direnv/
 - Export and unset project-scoped API keys or feature flags
 - Swap Node/Ruby/Go toolchain versions per project
 - Tighten `umask` for a sensitive tree, restore it on the way out
+
+Each of these is written out as a complete `enter`/`leave` pair, unwinding
+included, in [Recipes](https://neirda24.github.io/envoke/recipes/).
+
+## Documentation
+
+| | |
+|---|---|
+| Install, hook your shell, write a first block | [Getting Started](https://neirda24.github.io/envoke/getting-started/) |
+| Config syntax, path patterns, what a script sees | [Configuration](https://neirda24.github.io/envoke/configuration/) |
+| Worked examples with their teardown | [Recipes](https://neirda24.github.io/envoke/recipes/) |
+| Why a block didn't fire | [Troubleshooting](https://neirda24.github.io/envoke/troubleshooting/) |
+| Every command, flag, variable and exit code | [Reference](https://neirda24.github.io/envoke/reference/) |
+| Why `envoke allow` exists and how it works | [Trust Model](https://neirda24.github.io/envoke/trust/) |
 
 ## Installation
 
@@ -95,18 +90,38 @@ Or grab a prebuilt binary, `.deb`, or `.rpm` from [Releases](https://github.com/
 for macOS/Linux/Windows (amd64/arm64) — each release's `checksums.txt` is
 [cosign](https://docs.sigstore.dev/cosign/)-signed, see the release notes to verify.
 
+## vs. ondir / direnv
+
+envoke is a spiritual rewrite of [ondir](https://github.com/alecthomas/ondir) —
+the same `enter`/`leave`-by-path-pattern model, picked up on a few specific
+points (regex engine choice, path matching semantics, a trust/approval step)
+and extended past bash/zsh to five shells.
+[direnv](https://direnv.net/) solves an adjacent problem: one `.envrc` per
+directory, found by walking into it, shaped around environment variables with
+automatic load/unload and a large stdlib.
+
+Point by point: [envoke vs. direnv](https://neirda24.github.io/envoke/vs-direnv/)
+and [Design Notes](https://neirda24.github.io/envoke/design-notes/) (vs. ondir).
+
 ## Status
 
-Early development. Implemented and tested end-to-end against real
-interpreters: the matching engine, all five shell integrations, the
-`envokerc.d` fragment directory (relative patterns, symlinked project
-configs), the trust mechanism (`allow`, `revoke`, `list`, `prune`), the
-`disable`/`enable` off switch, `reload`, non-interactive `exec`, and `debug`
-dry-run diagnostics. Packaging is live: Homebrew, Scoop, GitHub Releases, and
-`.deb`/`.rpm` packages, each release carrying a per-archive SBOM and
-cosign-signed checksums.
+**Early development** — the mileage is early, not the feature list.
+Everything below is implemented and tested end to end against real
+interpreters:
 
-Every command, flag, environment variable and exit code is listed in the
+- the matching engine — patterns, intermediate directories, ordering;
+- all five shell integrations (bash, zsh, fish, tcsh, PowerShell);
+- the `envokerc.d` fragment directory — relative patterns, symlinked project
+  configs;
+- the trust mechanism — `allow`, `revoke`, `list`, `prune`;
+- the `disable`/`enable` off switch, `reload`, non-interactive `exec`, and
+  `debug` dry-run diagnostics;
+- packaging — Homebrew, Scoop, GitHub Releases, and `.deb`/`.rpm` packages,
+  each release carrying a per-archive SBOM and cosign-signed checksums.
+
+There is no roadmap section here on purpose: if `envoke help` doesn't list it,
+it doesn't exist. Every command, flag, environment variable, file and exit
+code is inventoried in the
 [Reference](https://neirda24.github.io/envoke/reference/).
 
 ## Contributing
