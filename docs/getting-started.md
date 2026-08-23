@@ -17,28 +17,60 @@ exact verification command.
 
 ## Shell integration
 
-Add one of these to your shell's rc file, matching your shell:
+Add the line for your shell to the rc file named above it, then restart the
+shell (or re-source that file):
 
-| Shell | File |
-|---|---|
-| bash | `~/.bashrc` |
-| zsh | `~/.zshrc` (**not** `~/.zshenv`) |
-| fish | `~/.config/fish/config.fish` |
-| tcsh | `~/.tcshrc` (**not** `~/.cshrc`) |
-| PowerShell | `$PROFILE` |
+=== "bash"
 
-The file matters. `~/.zshenv`, `~/.cshrc` and fish's `config.fish` are read by
-*non-interactive* shells too, so a hook in one of them is evaluated by every
+    In `~/.bashrc`:
+
+    ```sh
+    eval "$(envoke shell-init bash)"
+    ```
+
+=== "zsh"
+
+    In `~/.zshrc` — **not** `~/.zshenv`:
+
+    ```sh
+    eval "$(envoke shell-init zsh)"
+    ```
+
+=== "fish"
+
+    In `~/.config/fish/config.fish`:
+
+    ```fish
+    envoke shell-init fish | source
+    ```
+
+=== "tcsh"
+
+    In `~/.tcshrc` — **not** `~/.cshrc`:
+
+    ```tcsh
+    # `eval "$(...)"`-style substitution splits multi-line output on newlines
+    # in tcsh, so this pipes into source instead.
+    envoke shell-init tcsh | source /dev/stdin
+    ```
+
+=== "PowerShell"
+
+    In `$PROFILE`:
+
+    ```powershell
+    # Out-String joins the (possibly multi-line) output into one string
+    # before Invoke-Expression evaluates it.
+    & envoke shell-init powershell | Out-String | Invoke-Expression
+    ```
+
+**The file matters.** `~/.zshenv`, `~/.cshrc` and fish's `config.fish` are read
+by *non-interactive* shells too, so a hook in one of them is evaluated by every
 `zsh -c` or `tcsh -c` that changes directory. The hook guards against that
 itself — it installs only in an interactive shell, so nothing breaks either
 way — but zsh and tcsh each have an interactive-only file, and that is where
-the line belongs, which is what the two "not"s mark. fish has no such file and
-relies on the guard.
-
-```sh
-# bash/zsh
-eval "$(envoke shell-init bash)"   # or zsh
-```
+the line belongs, which is what the two **not**s mark. fish has no such file
+and relies on the guard.
 
 `envoke shell-init` with no argument guesses the shell from `$SHELL`, which
 is usually what you want when adding the line to your own rc file. It never
@@ -46,38 +78,34 @@ falls back to a default it isn't sure about: an unrecognised `$SHELL` is an
 error telling you to name the shell, rather than a bash hook quietly written
 into a fish config.
 
-```fish
-# fish
-envoke shell-init fish | source
-```
-
-```tcsh
-# tcsh — `eval "$(...)"`-style substitution splits multi-line output on
-# newlines in tcsh, so this pipes into source instead.
-envoke shell-init tcsh | source /dev/stdin
-```
-
-```powershell
-# PowerShell — Out-String joins the (possibly multi-line) output into one
-# string before Invoke-Expression evaluates it.
-& envoke shell-init powershell | Out-String | Invoke-Expression
-```
-
-Restart your shell (or re-source your rc file) after adding the hook.
-
 ### Tab completion
 
-Optional, and separate from the hook above:
+Optional, and separate from the hook above. bash, zsh and fish only — tcsh and
+PowerShell would need a half-working script to be worth shipping, so they get
+an explicit error instead.
 
-```sh
-envoke completion bash >> ~/.bashrc          # or: source <(envoke completion bash)
-envoke completion zsh  > "${fpath[1]}/_envoke"   # zsh, with compinit already set up
-envoke completion fish > ~/.config/fish/completions/envoke.fish
-```
+=== "bash"
 
-With no argument it guesses from `$SHELL`, like `shell-init`. Only bash, zsh
-and fish are covered — tcsh and PowerShell would need a half-working script
-to be worth shipping, so they get an explicit error instead.
+    ```sh
+    envoke completion bash >> ~/.bashrc
+    # or, without touching the rc file:
+    source <(envoke completion bash)
+    ```
+
+=== "zsh"
+
+    ```sh
+    # compinit must already be set up
+    envoke completion zsh > "${fpath[1]}/_envoke"
+    ```
+
+=== "fish"
+
+    ```fish
+    envoke completion fish > ~/.config/fish/completions/envoke.fish
+    ```
+
+With no argument it guesses from `$SHELL`, like `shell-init`.
 
 ### A note on Windows
 

@@ -25,17 +25,28 @@ theme:
     - navigation.tracking
     - navigation.top
     - navigation.sections
+    - navigation.footer
     - content.code.copy
     - content.action.edit
+    # Keeps the per-shell tabs on a page in step with each other: pick "fish"
+    # once and every other tabbed block on the page follows.
+    - content.tabs.link
+    - search.suggest
+    - search.highlight
+    - toc.follow
 
 markdown_extensions:
   - admonition
+  - attr_list
+  - md_in_html
+  - tables
   - pymdownx.details
   - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
   - pymdownx.snippets:
       base_path: ["."]
       check_paths: true
-  - tables
   - toc:
       permalink: true
 
@@ -43,21 +54,32 @@ markdown_extensions:
 # URL; MkDocs only logs it at INFO, which --strict ignores. Raising it to a
 # warning is what stops a draft, a handoff or a contributor note dropped into
 # docs/ from going online unnoticed.
+#
+# The link checks are the same idea one level down: a `[…](page.md#section)`
+# whose heading has been renamed still builds, and --strict is what turns the
+# dangling anchor into a failed build rather than a link a reader finds first.
 validation:
   nav:
     omitted_files: warn
+  links:
+    absolute_links: warn
+    unrecognized_links: warn
+    anchors: warn
 
 nav:
   - Home: index.md
-  - envoke vs. direnv: vs-direnv.md
-  - Getting Started: getting-started.md
-  - Configuration: configuration.md
-  - Recipes: recipes.md
-  - Trust Model: trust.md
-  - Non-interactive Use: non-interactive.md
-  - Inspecting and switching off: debugging.md
-  - Troubleshooting: troubleshooting.md
-  - Reference: reference.md
-  - Uninstalling: uninstall.md
-  - Design Notes: design-notes.md
+  - Start here:
+      - Getting Started: getting-started.md
+      - Configuration: configuration.md
+      - Recipes: recipes.md
+  - Guides:
+      - Trust Model: trust.md
+      - Inspecting and switching off: debugging.md
+      - Non-interactive Use: non-interactive.md
+      - Troubleshooting: troubleshooting.md
+  - Reference:
+      - CLI Reference: reference.md
+      - envoke vs. direnv: vs-direnv.md
+      - Design Notes: design-notes.md
+      - Uninstalling: uninstall.md
   - Contributing: contributing.md

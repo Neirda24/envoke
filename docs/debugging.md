@@ -119,18 +119,34 @@ eval "$(envoke reload)"
 
 That re-runs the `enter` blocks matching your current directory and everything above it, exactly as if you had arrived from outside. `envoke allow` prints this line for you when it succeeds.
 
-Per shell:
+=== "bash"
 
-```fish
-envoke reload --shell fish | source
-```
+    ```sh
+    eval "$(envoke reload)"
+    ```
 
-```tcsh
-envoke reload --shell tcsh | source /dev/stdin
-```
+=== "zsh"
 
-```powershell
-envoke reload --shell powershell | Out-String | Invoke-Expression
-```
+    ```sh
+    eval "$(envoke reload)"
+    ```
+
+=== "fish"
+
+    ```fish
+    envoke reload --shell fish | source
+    ```
+
+=== "tcsh"
+
+    ```tcsh
+    envoke reload --shell tcsh | source /dev/stdin
+    ```
+
+=== "PowerShell"
+
+    ```powershell
+    envoke reload --shell powershell | Out-String | Invoke-Expression
+    ```
 
 `reload` runs `enter` blocks only. Nothing has been left, and envoke never snapshots state to unwind later — if the previous version of your config exported something the new one doesn't, clear it yourself or open a new shell.
