@@ -19,9 +19,9 @@ place. The task-oriented pages explain *why* — this page is the checklist.
 | `envoke prune` | Drops records whose config no longer exists. |
 | `envoke disable` | Stops running blocks, in every shell, until `enable`. |
 | `envoke enable` | Undoes `disable`. |
-| `envoke reload [--shell <name>]` | Prints the enter blocks for the current directory, to `eval`. See [Debugging](debugging.md#applying-a-config-without-leaving-the-directory). |
+| `envoke reload [--shell <name>]` | Prints the enter blocks for the current directory, to `eval`. See [Applying a config without leaving the directory](debugging.md#applying-a-config-without-leaving-the-directory). |
 | `envoke exec [<from> [<to>]]` | Runs matching blocks, each in its own `sh -c`. Needs a POSIX `sh` on `PATH`. See [Non-interactive Use](non-interactive.md). |
-| `envoke debug [<from> [<to>]]` | Prints what would fire, without running it. See [Debugging](debugging.md). |
+| `envoke debug [<from> [<to>]]` | Prints what would fire, without running it. See [Inspecting and switching off](debugging.md#envoke-debug). |
 | `envoke shell-hook [--shell <name>] [--] <from> <to>` | Internal; called by the generated hook on every directory change. |
 
 `shell-init` and `completion` guess the shell from `$SHELL` when it is
@@ -74,7 +74,7 @@ extra.
 | `XDG_DATA_HOME` | Where trust records and the disable flag live. Defaults to `~/.local/share`. |
 | `HOME` / `USERPROFILE` | Expands a leading `~` in a pattern, and anchors the default config and data paths. `USERPROFILE` on Windows. |
 | `SHELL` | Guessed shell for `shell-init`/`completion` with no argument. |
-| `ENVOKE_DISABLE` | Per-session override of the persistent switch. `0`/`false`/`no`/`off` force envoke on; any other non-empty value forces it off; unset or empty defers to the flag. See [Debugging](debugging.md#turning-envoke-off). |
+| `ENVOKE_DISABLE` | Per-session override of the persistent switch. `0`/`false`/`no`/`off` force envoke on; any other non-empty value forces it off; unset or empty defers to the flag. See [Turning envoke off](debugging.md#turning-envoke-off). |
 | `OLDPWD` | `<from>` for `exec` and `debug` when given no arguments. Unset — as in PowerShell, which has no counterpart — means there is nothing to infer, and both error rather than guess. tcsh maintains `$owd` instead, so an `$OLDPWD` seen there was inherited from the shell that started it and never updates: pass `<from>` yourself rather than trust it. Nothing can detect that case; it is an ordinary environment variable either way. |
 | `PWD` | The current directory, used by `reload` and for `<to>` whenever `exec` or `debug` is not given one. Preferred over the process's own working directory, which is the fallback when `$PWD` is unset or relative: through a symlinked directory the two disagree, and the patterns you write describe the path you `cd`'d through. |
 | `PATH` | Where `envoke exec` looks for the `sh` it runs each block through. Nothing else needs it. |

@@ -1,53 +1,47 @@
-# Debugging
+---
+title: Inspecting and switching off
+description: >-
+  envoke debug prints what a directory change would fire without running it;
+  disable and enable switch envoke off; reload applies a config where you stand.
+---
 
-This page is the tour of the tools. If you are here because something didn't
-happen and you want the answer rather than the tour, start with
-[Troubleshooting](troubleshooting.md) — it is ordered by which cause actually
-comes up most.
+# Inspecting and switching off
+
+Three tools that never run a block, or stop blocks running:
+
+| | |
+|---|---|
+| [`envoke debug`](#envoke-debug) | what a directory change *would* fire, without running any of it |
+| [`envoke disable` / `enable`](#turning-envoke-off) | stop running blocks — every shell, or just this one |
+| [`eval "$(envoke reload)"`](#applying-a-config-without-leaving-the-directory) | apply a freshly approved config where you are standing |
+
+If you are here because something didn't happen and you want the answer rather
+than the tour, start with [Troubleshooting](troubleshooting.md) — it is ordered
+by which cause actually comes up most.
+
+## envoke debug
 
 `envoke debug [<from> [<to>]]` prints which `enter`/`leave` blocks would fire for a given directory transition, without ever running them.
 
 ```sh
-envoke debug ~/Projects ~/Projects/envoke
+envoke debug ~/Projects ~/Projects/envoke   # both directories named
+envoke debug ~/Projects                     # <to> is where you are standing
+envoke debug                                # <from> is $OLDPWD as well
 ```
 
-Both arguments are optional and may be relative. **One argument is `<from>`**,
-with the directory you are standing in as `<to>` — envoke can always work out
-where you are, and can only be told where you came from:
+Both arguments are optional and may be relative. **One argument is `<from>`** —
+envoke can always work out where you are and can only be told where you came
+from — and that is the form to reach for whenever a page here says "run
+`envoke debug`", because it is typeable in every shell.
 
-```sh
-cd ~/Projects/envoke
-envoke debug ~/Projects
-```
-
-That form is typeable in every shell, which is why it is the one to reach for
-when a page tells you to run `envoke debug`. With no arguments at all, `<from>`
-comes from `$OLDPWD` — your shell's own last transition, which answers "why
-didn't anything fire when I just cd'd here?" without typing a path:
-
-```sh
-cd ~/Projects/envoke
-envoke debug
-```
-
-`$OLDPWD` is a POSIX shell convention, and the two shells that don't follow it
-fail differently.
-
-**PowerShell fails loudly.** It has no `$OLDPWD` at all, so the no-argument form
-has nothing to infer `<from>` from and says so, naming the one-argument form
-instead.
-
-**tcsh fails quietly.** It maintains `$owd` rather than `$OLDPWD`, so a bare
-`envoke debug` there either has nothing to work from or — in a tcsh started
-from a shell that did export `$OLDPWD` — resolves a `<from>` that was true when
-the shell started and has been wrong ever since. Nothing warns you: an
-inherited `$OLDPWD` is an ordinary environment variable, indistinguishable from
-a live one. A silent wrong answer from a diagnostic is the worse of the two
-failures, so on tcsh don't use the no-argument form. The generated tcsh hook is
-unaffected — it passes `$owd` itself, so this is only about commands you type.
-
-In both shells the fix is the same one-argument form above: name `<from>` and
-`<to>` is still worked out for you.
+The no-argument form needs `$OLDPWD`, which only POSIX shells maintain.
+PowerShell has none and fails loudly, naming the one-argument form. tcsh keeps
+`$owd` instead, so any `$OLDPWD` a tcsh has was inherited when it started and
+has been wrong ever since — a plausible, silent, wrong answer from a
+diagnostic, which is the worse of the two failures. Name `<from>` yourself on
+both. (The generated tcsh hook is unaffected: it passes `$owd` itself, so this
+is only about commands you type.) See
+[`OLDPWD`](reference.md#environment-variables-envoke-reads).
 
 This runs the same resolution the live `shell-hook` does, and additionally reports the status of every config in play — but it never calls the code path that executes or renders a script, regardless of trust status. That's the point: `envoke debug` is safe to run against a config you haven't approved yet, or one you're actively editing and don't want to accidentally trigger. It also never asks you anything.
 

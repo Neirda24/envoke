@@ -1,12 +1,194 @@
+---
+title: Configuration
+description: >-
+  The envoke config format: enter/leave block syntax, RE2 path patterns, the
+  ENVOKE_* variables a matched script sees, and where config files live.
+---
+
 # Configuration
 
-envoke reads two kinds of config, in the same format:
+A config file is a list of `enter`/`leave` blocks: a path pattern, and a shell
+script to run when a directory matches it. This page is the format, then the
+places envoke looks for it.
+
+- [Block syntax](#block-syntax) and [the order blocks fire in](#the-order-blocks-fire-in)
+- [Path patterns](#path-patterns), including [`./`-relative ones](#relative-patterns)
+- [What a matched script sees](#what-a-matched-script-sees), and
+  [where it runs](#where-the-script-runs)
+- Where the files go: [your central config](#locating-the-central-config) and
+  [the `envokerc.d` directory](#the-envokercd-directory)
+
+If you just want a file to start from, put the
+[example below](#example-envokerc) in `~/.envokerc` and run `envoke allow` —
+nothing in it runs until you do.
+
+## Block syntax
+
+A config file declares `enter`/`leave` blocks: an unindented header line, followed by an indented script body.
+
+```
+enter <path-pattern>
+    <script line 1>
+    <script line 2>
+
+leave <path-pattern>
+    <script line>
+```
+
+- `enter <path-pattern>`: runs when you `cd` into a directory matching the pattern.
+- `leave <path-pattern>`: runs when you `cd` out of a directory matching the pattern.
+- Moving straight from `/a` to `/a/x/y/z` still fires `/a/x`'s and `/a/x/y`'s rules — envoke walks every intermediate directory, not just the endpoints.
+- The complement holds too: a directory you were **already inside** is not entered again, so moving from `/a/x` to `/a/x/y` does not re-fire `/a`'s or `/a/x`'s `enter` block. That is what makes save-and-restore work at all.
+- **Enter and leave are independent, explicit blocks.** envoke does not snapshot state on enter and auto-restore it on leave. If entering exports a variable or activates a venv, the matching `leave` block is responsible for explicitly unwinding it.
+
+The details of the format:
+
+- A body ends at the next unindented, non-blank line, or at end of file. **Blank lines inside a body do not end it**, so a multi-line script can breathe.
+- The common leading whitespace is stripped from a body, so the script's own indentation — a `for` loop, an `if` — is preserved relative to the block rather than to column 0.
+- **`#` starts a comment only outside a block.** Inside a body it is part of the script, which is what you want, since it is a shell comment there. So indent the `#` with the rest of the body to comment inside a block. An unindented `#` *ends* the block above it — and picking the body back up afterwards is a positioned parse error, not a silently truncated block.
+- A block header with no script body is an error, not an empty block.
+
+A malformed config fails with a positioned error (line number + message) rather than silently misbehaving.
+
+### The order blocks fire in
+
+For a single directory change:
+
+1. **`leave` blocks first, deepest directory first** — unwinding the nested-most rule before the ones above it, mirroring a stack.
+2. **Then `enter` blocks, shallowest directory first** — the outer rule before the nested one, so a project-wide block runs before a subdirectory's.
+3. When several configs match the *same* directory, they apply in set order on the way in — the central config first, then each `envokerc.d` fragment in relative path order — and in the reverse order on the way out.
+4. When several blocks in one config match the same directory, they fire in the order they are declared in the file — **in both directions**. Only the *set* is reversed on the way out, never the blocks inside one file, so a single file's `leave` blocks unwind in the order you wrote them.
+
+## Path patterns
+
+Patterns are matched with Go's `regexp` package (RE2) — linear-time matching, guaranteed regardless of the pattern.
+
+- A leading `~` expands to your home directory.
+- A leading `./` or `../` resolves against the config file's own directory — see [Relative patterns](#relative-patterns).
+- `$VAR` / `${VAR}` expand as literal substitutions (not re-interpreted as regex) before the pattern is compiled.
+- **An undefined variable is an error, not an empty string.** `$HOEM/Projects` fails with a positioned parse error naming `HOEM`, instead of quietly compiling to a pattern that can never match. A variable that is set but empty is a value, and expands to nothing as you'd expect.
+- A `$` that isn't followed by a variable name stays a literal `$` — so it still works as the regex end anchor (`~/Projects/(a|b)$`).
+- The final pattern is anchored as `^(?:...)$` against each path segment being tested — this is what makes matching **segment-based** rather than a raw string prefix, so `~/Projects/foo` never falsely matches `~/Projects/foobar` (unlike ondir's raw prefix matching).
+- **Matching is case-sensitive, even where the filesystem is not.** macOS by
+  default, and Windows, treat `~/work/API` and `~/work/api` as one directory; a
+  pattern matches only the spelling it is written with. A leading `(?i)` makes a
+  pattern case-insensitive — though not a `./`-relative one, since only a
+  *leading* `./` is special and `(?i)./src` is an ordinary regex. For a
+  [confined](#bringing-a-projects-own-config-in) fragment this has a further
+  twist, in
+  [Troubleshooting](troubleshooting.md#10-the-directory-and-the-pattern-differ-in-case).
+
+### Relative patterns
+
+A pattern starting with `./` or `../` resolves against the directory the config
+file itself lives in — for a fragment
+[symlinked in from a project](#bringing-a-projects-own-config-in), the directory
+of the file it points at:
+
+```
+# ~/work/api-server/envoke.conf, symlinked into envokerc.d
+enter .
+    export PROJECT_ROOT="$ENVOKE_DIR"
+
+enter ./src
+    echo "in the source tree"
+
+enter ./services/([^/]+)
+    echo "service $ENVOKE_MATCH_1"
+```
+
+`.` is the config's own directory, `./x` a child of it, `../x` a sibling —
+though a *symlinked* fragment like this one is confined to its own tree, so a
+`../` pattern in it compiles fine and then never fires. `envoke debug` names
+that bound under the config's status line, which is how to tell this apart from
+a pattern that is simply wrong. Only the central config, or a fragment that
+really lives in your config directory, can match a directory outside its own
+tree.
+
+Relative patterns are what make such a file portable: no absolute path appears
+in it, so it works wherever the repository is checked out — including on
+another operating system, since patterns are always written with `/` and envoke
+normalizes the paths it tests to match (`C:\proj` is tested as `C:/proj`).
+
+Only a *leading* `./` or `../` is special, exactly as only a leading `~` is.
+Everything else keeps its regular-expression meaning, so an alternation like
+`(/opt|/srv)/x` is unaffected — and a pattern that merely starts with a dot,
+such as `...`, is still an ordinary regex.
+
+Relative patterns work in the central config too, where the base is that
+file's own directory (`$HOME`, for `~/.envokerc`).
+
+## What a matched script sees
+
+Each matched block runs with these environment variables set:
+
+| Variable | Meaning |
+|---|---|
+| `ENVOKE_DIR` | The directory that matched, as your shell spelled it — symlinks not resolved. |
+| `ENVOKE_TYPE` | `enter` or `leave`. |
+| `ENVOKE_MATCH` | The full text the pattern matched. |
+| `ENVOKE_MATCH_N` | Capture group `N` (e.g. `ENVOKE_MATCH_1`), if the pattern has capture groups. |
+
+For example, `enter ~/Projects/([^/]+)` exposes the matched project name via `ENVOKE_MATCH_1`, so one generic block can handle every directory under `~/Projects` instead of duplicating config per project.
+
+These variables are scoped to the block that sets them: they are cleared again as soon as its script finishes, so one block never sees another's capture groups and nothing leaks into the processes you start afterwards.
+
+**For a [confined](#bringing-a-projects-own-config-in) fragment, `ENVOKE_MATCH`
+and `ENVOKE_DIR` can name the same directory two different ways.** Such a
+config is bounded to where its files really are, so its patterns are matched
+against the directory with every symlink resolved — and captures can only come
+from the path the pattern actually ran against. `ENVOKE_MATCH` and every
+`ENVOKE_MATCH_N` therefore hold segments of the **resolved** path, while
+`ENVOKE_DIR` stays the directory your shell reported, because that is where the
+`cd` landed and what the block runs in. On macOS the two differ for any project
+under `/var`, a symlink to `/private/var`. So a block that captures a path
+prefix and builds on it — `export ROOT="$ENVOKE_MATCH"` — will see the resolved
+form; use `$ENVOKE_DIR` when you want the path as typed. Every other config,
+your central one and any fragment that really lives in `envokerc.d`, matches
+the directory as your shell spelled it, and the two agree.
+
+### Where the script runs
+
+**Use `$ENVOKE_DIR` for anything relative — the working directory is not the directory that matched.**
+
+Through the shell hook, a block runs in your own shell, which has already arrived at your destination. The two are the same only when you `cd` exactly onto the matching directory:
+
+```sh
+cd ~/Projects/my-app            # ENVOKE_DIR and the working directory both ~/Projects/my-app
+cd ~/Projects/my-app/cmd/srv    # ENVOKE_DIR is ~/Projects/my-app, you are three levels below it
+```
+
+The pattern `~/Projects/([^/]+)` matches whole path segments, so it still fires exactly once in both cases, for `~/Projects/my-app` — but in the second, `source venv/bin/activate` would look under `cmd/srv`. Write `source "$ENVOKE_DIR/venv/bin/activate"` and it works from anywhere in the tree. `leave` blocks always run from outside the directory they matched, so they never have a usable relative path.
+
+`envoke exec` differs here: it runs each block as a subprocess with the matched directory as its working directory. `envoke debug` points out the discrepancy whenever it applies.
+
+That difference is the whole design of the shell hook. It does not execute your
+script at all — it renders shell text (`export`/`source` statements, in your
+shell's dialect) that your *own* shell then evaluates, which is the only way an
+exported variable or a `source`d activation script is still there once the `cd`
+completes.
+
+### When a block fails
+
+**Through the shell hook, a failing block does not stop the ones after it.** envoke hands your shell one script containing every matched block in order, and your shell runs it the way it runs any script: a command that exits non-zero is not fatal. If an `enter` block's `source` fails, the next block still runs.
+
+**And the failure does not reach `$?`.** Every hook saves the exit status it was entered with and restores it before returning — otherwise a prompt that colours on the last command's status would report envoke's instead of yours, on every single `cd`. The cost of that is real: a failing block shows up on stderr and nowhere else. If a block must not fail silently, say so in the block itself:
+
+```
+enter ~/Projects/api-server
+    source "$ENVOKE_DIR/venv/bin/activate" || echo "envokerc: venv activation failed" >&2
+```
+
+`envoke exec` is the opposite on both counts: it stops at the first block that exits non-zero and exits 1 itself. Nothing already applied is unwound — see the enter/leave independence rule above.
+
+## Where config files live
+
+Two kinds of file, in the same format, both loaded on every directory change
+and both approved separately:
 
 - **your central config** — one file, the documented default;
-- **fragments in an `envokerc.d` directory** — one file per project or concern, so rules don't accumulate in a single file.
-
-Both are loaded together, both live in a directory you own, and both are
-approved separately. Nothing in either runs until it is.
+- **fragments in an `envokerc.d` directory** — one file per project or concern,
+  so rules don't accumulate in a single file.
 
 !!! info "Already have a `~/.envokerc`?"
     Nothing changes. `envokerc.d` is *additive*: your central config is
@@ -118,7 +300,7 @@ sees](#what-a-matched-script-sees).
 Neither the bound nor the target is left for you to infer: `envoke debug`
 prints both under the config's status line, and `envoke allow`'s review states
 them before asking you to confirm — the target because that file, not the link,
-is what envoke parses, hashes and shows you. See [Debugging](debugging.md) and
+is what envoke parses, hashes and shows you. See [`envoke debug`](debugging.md#envoke-debug) and
 [Reviewing a symlinked project
 fragment](trust.md#reviewing-a-symlinked-project-fragment).
 
@@ -137,158 +319,6 @@ Two things about that layout across several machines:
 - **Prefer `./`-relative patterns** in a fragment whose repository may be
   checked out at a different path on the next machine. An absolute pattern has
   to be edited per machine; a relative one doesn't.
-
-### Relative patterns
-
-Inside any config, a pattern starting with `./` or `../` resolves against the
-directory the config file itself lives in — for a symlinked fragment, the
-directory of the file it points at:
-
-```
-# ~/work/api-server/envoke.conf, symlinked into envokerc.d
-enter .
-    export PROJECT_ROOT="$ENVOKE_DIR"
-
-enter ./src
-    echo "in the source tree"
-
-enter ./services/([^/]+)
-    echo "service $ENVOKE_MATCH_1"
-```
-
-`.` is the config's own directory, `./x` a child of it, `../x` a sibling —
-though a *symlinked* fragment like this one is confined to its own tree, so a
-`../` pattern in it compiles fine and then never fires. `envoke debug` names
-that bound under the config's status line, which is how to tell this apart from
-a pattern that is simply wrong. Only the central config, or a fragment that
-really lives in your config directory, can match a directory outside its own
-tree.
-
-Relative patterns are what make such a file portable: no absolute path appears
-in it, so it works wherever the repository is checked out — including on
-another operating system, since patterns are always written with `/` and envoke
-normalizes the paths it tests to match (`C:\proj` is tested as `C:/proj`).
-
-Only a *leading* `./` or `../` is special, exactly as only a leading `~` is.
-Everything else keeps its regular-expression meaning, so an alternation like
-`(/opt|/srv)/x` is unaffected — and a pattern that merely starts with a dot,
-such as `...`, is still an ordinary regex.
-
-Relative patterns work in the central config too, where the base is that
-file's own directory (`$HOME`, for `~/.envokerc`).
-
-## Block syntax
-
-A config file declares `enter`/`leave` blocks: an unindented header line, followed by an indented script body.
-
-```
-enter <path-pattern>
-    <script line 1>
-    <script line 2>
-
-leave <path-pattern>
-    <script line>
-```
-
-- `enter <path-pattern>`: runs when you `cd` into a directory matching the pattern.
-- `leave <path-pattern>`: runs when you `cd` out of a directory matching the pattern.
-- Moving straight from `/a` to `/a/x/y/z` still fires `/a/x`'s and `/a/x/y`'s rules — envoke walks every intermediate directory, not just the endpoints.
-- The complement holds too: a directory you were **already inside** is not entered again, so moving from `/a/x` to `/a/x/y` does not re-fire `/a`'s or `/a/x`'s `enter` block. That is what makes save-and-restore work at all.
-- **Enter and leave are independent, explicit blocks.** envoke does not snapshot state on enter and auto-restore it on leave. If entering exports a variable or activates a venv, the matching `leave` block is responsible for explicitly unwinding it.
-
-The details of the format:
-
-- A body ends at the next unindented, non-blank line, or at end of file. **Blank lines inside a body do not end it**, so a multi-line script can breathe.
-- The common leading whitespace is stripped from a body, so the script's own indentation — a `for` loop, an `if` — is preserved relative to the block rather than to column 0.
-- **`#` starts a comment only outside a block.** Inside a body it is part of the script, which is what you want, since it is a shell comment there. So indent the `#` with the rest of the body to comment inside a block. An unindented `#` *ends* the block above it — and picking the body back up afterwards is a positioned parse error, not a silently truncated block.
-- A block header with no script body is an error, not an empty block.
-
-A malformed config fails with a positioned error (line number + message) rather than silently misbehaving.
-
-### The order blocks fire in
-
-For a single directory change:
-
-1. **`leave` blocks first, deepest directory first** — unwinding the nested-most rule before the ones above it, mirroring a stack.
-2. **Then `enter` blocks, shallowest directory first** — the outer rule before the nested one, so a project-wide block runs before a subdirectory's.
-3. When several configs match the *same* directory, they apply in set order on the way in — the central config first, then each `envokerc.d` fragment in relative path order — and in the reverse order on the way out.
-4. When several blocks in one config match the same directory, they fire in the order they are declared in the file — **in both directions**. Only the *set* is reversed on the way out, never the blocks inside one file, so a single file's `leave` blocks unwind in the order you wrote them.
-
-## Path patterns
-
-Patterns are matched with Go's `regexp` package (RE2) — linear-time matching, guaranteed regardless of the pattern.
-
-- A leading `~` expands to your home directory.
-- A leading `./` or `../` resolves against the config file's own directory — see [Relative patterns](#relative-patterns).
-- `$VAR` / `${VAR}` expand as literal substitutions (not re-interpreted as regex) before the pattern is compiled.
-- **An undefined variable is an error, not an empty string.** `$HOEM/Projects` fails with a positioned parse error naming `HOEM`, instead of quietly compiling to a pattern that can never match. A variable that is set but empty is a value, and expands to nothing as you'd expect.
-- A `$` that isn't followed by a variable name stays a literal `$` — so it still works as the regex end anchor (`~/Projects/(a|b)$`).
-- The final pattern is anchored as `^(?:...)$` against each path segment being tested — this is what makes matching **segment-based** rather than a raw string prefix, so `~/Projects/foo` never falsely matches `~/Projects/foobar` (unlike ondir's raw prefix matching).
-- **Matching is case-sensitive, even where the filesystem is not.** macOS by
-  default, and Windows, treat `~/work/API` and `~/work/api` as one directory; a
-  pattern matches only the spelling it is written with. A leading `(?i)` makes a
-  pattern case-insensitive — though not a `./`-relative one, since only a
-  *leading* `./` is special and `(?i)./src` is an ordinary regex. For a
-  [confined](#bringing-a-projects-own-config-in) fragment this has a further
-  twist, in
-  [Troubleshooting](troubleshooting.md#10-the-directory-and-the-pattern-differ-in-case).
-
-## What a matched script sees
-
-Each matched block runs with these environment variables set:
-
-| Variable | Meaning |
-|---|---|
-| `ENVOKE_DIR` | The directory that matched, as your shell spelled it — symlinks not resolved. |
-| `ENVOKE_TYPE` | `enter` or `leave`. |
-| `ENVOKE_MATCH` | The full text the pattern matched. |
-| `ENVOKE_MATCH_N` | Capture group `N` (e.g. `ENVOKE_MATCH_1`), if the pattern has capture groups. |
-
-For example, `enter ~/Projects/([^/]+)` exposes the matched project name via `ENVOKE_MATCH_1`, so one generic block can handle every directory under `~/Projects` instead of duplicating config per project.
-
-These variables are scoped to the block that sets them: they are cleared again as soon as its script finishes, so one block never sees another's capture groups and nothing leaks into the processes you start afterwards.
-
-**For a [confined](#bringing-a-projects-own-config-in) fragment, `ENVOKE_MATCH`
-and `ENVOKE_DIR` can name the same directory two different ways.** Such a
-config is bounded to where its files really are, so its patterns are matched
-against the directory with every symlink resolved — and captures can only come
-from the path the pattern actually ran against. `ENVOKE_MATCH` and every
-`ENVOKE_MATCH_N` therefore hold segments of the **resolved** path, while
-`ENVOKE_DIR` stays the directory your shell reported, because that is where the
-`cd` landed and what the block runs in. On macOS the two differ for any project
-under `/var`, a symlink to `/private/var`. So a block that captures a path
-prefix and builds on it — `export ROOT="$ENVOKE_MATCH"` — will see the resolved
-form; use `$ENVOKE_DIR` when you want the path as typed. Every other config,
-your central one and any fragment that really lives in `envokerc.d`, matches
-the directory as your shell spelled it, and the two agree.
-
-### Where the script runs
-
-**Use `$ENVOKE_DIR` for anything relative — the working directory is not the directory that matched.**
-
-Through the shell hook, a block runs in your own shell, which has already arrived at your destination. The two are the same only when you `cd` exactly onto the matching directory:
-
-```sh
-cd ~/Projects/my-app            # ENVOKE_DIR and the working directory both ~/Projects/my-app
-cd ~/Projects/my-app/cmd/srv    # ENVOKE_DIR is ~/Projects/my-app, you are three levels below it
-```
-
-The pattern `~/Projects/([^/]+)` matches whole path segments, so it still fires exactly once in both cases, for `~/Projects/my-app` — but in the second, `source venv/bin/activate` would look under `cmd/srv`. Write `source "$ENVOKE_DIR/venv/bin/activate"` and it works from anywhere in the tree. `leave` blocks always run from outside the directory they matched, so they never have a usable relative path.
-
-`envoke exec` differs here: it runs each block as a subprocess with the matched directory as its working directory. `envoke debug` points out the discrepancy whenever it applies.
-
-### When a block fails
-
-**Through the shell hook, a failing block does not stop the ones after it.** envoke hands your shell one script containing every matched block in order, and your shell runs it the way it runs any script: a command that exits non-zero is not fatal. If an `enter` block's `source` fails, the next block still runs.
-
-**And the failure does not reach `$?`.** Every hook saves the exit status it was entered with and restores it before returning — otherwise a prompt that colours on the last command's status would report envoke's instead of yours, on every single `cd`. The cost of that is real: a failing block shows up on stderr and nowhere else. If a block must not fail silently, say so in the block itself:
-
-```
-enter ~/Projects/api-server
-    source "$ENVOKE_DIR/venv/bin/activate" || echo "envokerc: venv activation failed" >&2
-```
-
-`envoke exec` is the opposite on both counts: it stops at the first block that exits non-zero and exits 1 itself. Nothing already applied is unwound — see the enter/leave independence rule above.
 
 ## Example envokerc
 
@@ -338,7 +368,3 @@ Save this as `~/.envokerc`, or split it across [`envokerc.d`](#the-envokercd-dir
 files (or wherever [the lookup order](#locating-the-central-config)
 resolves for you), then run `envoke allow` to review and approve it — no
 block in this file runs until you do.
-
-## A note on `envoke shell-hook`'s execution model
-
-The shell hook that runs on every `cd` doesn't exec your script in a subprocess — it renders shell text (`export`/`source` statements, in the right dialect for your shell) that your *own* shell then `eval`s. That's deliberate: only running in the parent shell process makes exported variables or `source`d scripts (like venv activation) actually visible after the `cd` completes.

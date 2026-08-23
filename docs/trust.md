@@ -1,10 +1,38 @@
+---
+title: Trust Model
+description: >-
+  Why envoke never runs a config you have not approved, what `envoke allow`
+  shows you before it records anything, and how to see or withdraw trust.
+---
+
 # Trust Model
 
-Any config that runs arbitrary shell code on `cd` needs an opt-in step before it executes for the first time — direnv-style (`direnv allow`). ondir has no such mechanism: any `~/.ondirrc` runs unconditionally, which means `cd`ing into a directory with a malicious or accidentally-broken config runs its script with no warning. `envoke` requires an explicit approval before a new or changed config block is executed.
+**No config runs until you approve it, and any edit to it revokes that
+approval.** That is the whole rule. The rest of this page is where it is
+enforced and what each command prints.
 
-**Every config file is approved separately**, including each `envokerc.d`
-fragment. Approving your central config says nothing about a fragment
-symlinked in from a repository you cloned.
+```sh
+envoke allow                   # review every config envoke would load, then trust them
+envoke allow /path/to/config   # ...or just that one
+envoke list                    # the set, each one's status, then any leftover records
+envoke revoke                  # withdraw trust for the whole set
+envoke prune                   # drop records whose config file is gone
+```
+
+The five things that follow from the rule:
+
+- **Approval is per file.** Approving your central config says nothing about a
+  fragment symlinked in from a repository you cloned. `envoke allow` with no
+  path still covers all of them at once, behind a single confirmation.
+- **Approval is of *content*.** It is a SHA-256 of the file's bytes, so any
+  edit — whitespace included — revokes it until you approve again.
+- **Nothing is ever discovered.** envoke loads configs only from your own
+  config directory, so there is no prompt on the way into a directory, and no
+  file you did not put there can ask to be trusted.
+- **A skipped config never stops the others.** It is reported on stderr, the
+  trusted configs still run, and nothing executes from the untrusted one.
+- **`envoke debug` is exempt.** It reports what would fire without executing
+  anything, trusted or not, so it is safe against a config you are mid-edit.
 
 ## Nothing is discovered; everything is approved
 
@@ -137,7 +165,7 @@ one where the bound matters most. For your central config, or an ordinary file
 in `envokerc.d`, there is no link to resolve and no bound to state, so neither
 note appears. `envoke debug` reports the same two facts under each
 config's status line, which is where to look when a config reads `trusted` and
-still fires nothing — see [Debugging](debugging.md).
+still fires nothing — see [`envoke debug`](debugging.md#envoke-debug).
 
 ## Seeing and withdrawing trust
 
@@ -374,4 +402,13 @@ metacharacters and asserts nothing was executed.
 
 ## Why this is non-negotiable
 
-Trust-before-execution is one of envoke's core design principles: no code path is allowed to auto-execute an unapproved config, including "convenience" paths. If you're ever unsure what a config would do before trusting it, use [`envoke debug`](debugging.md) — it reports matches without executing anything, trusted or not.
+Any tool that runs arbitrary shell code on `cd` needs an opt-in step before it
+executes for the first time — direnv has one (`direnv allow`), and ondir has
+none at all: any `~/.ondirrc` runs unconditionally, so `cd`ing into a directory
+with a malicious or accidentally-broken config runs its script with no warning.
+
+Trust-before-execution is one of envoke's core design principles: no code path
+is allowed to auto-execute an unapproved config, including "convenience" paths.
+If you're ever unsure what a config would do before trusting it, use
+[`envoke debug`](debugging.md) — it reports matches without executing anything,
+trusted or not.

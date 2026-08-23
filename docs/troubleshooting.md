@@ -7,7 +7,21 @@ description: >-
 
 # Troubleshooting
 
-Almost every "why didn't that happen?" has the same first step.
+Almost every "why didn't that happen?" has the same first step, below. If you
+already know the symptom, jump straight to it:
+
+| Symptom | Likely cause |
+|---|---|
+| Nothing happens on `cd`, and stderr mentions trust | [1. Not approved, or edited since](#1-the-config-isnt-approved-or-was-edited-since) |
+| `envoke debug` lists the config but no block for the directory | [2. The pattern doesn't match a whole segment](#2-the-pattern-doesnt-match-a-whole-segment) |
+| The block runs, but a relative path inside it resolves wrong | [3. It ran somewhere else](#3-the-block-fired-but-ran-somewhere-else) |
+| Nothing fires anywhere, for any config | [4. envoke is switched off](#4-envoke-is-switched-off) |
+| `envoke debug` looks right, and still nothing happens on `cd` | [5. The hook isn't installed in this shell](#5-the-hook-isnt-installed-in-this-shell) |
+| The block fires, its effect is missing, and `$?` is 0 | [6. It ran and failed silently](#6-the-block-ran-and-failed-silently) |
+| The file you edited isn't listed by `envoke debug` at all | [7. A fragment isn't being loaded](#7-a-fragment-isnt-being-loaded-at-all) |
+| A fragment is listed as `failed to load` | [8. It doesn't parse](#8-a-fragment-is-loaded-but-doesnt-parse) |
+| A `trusted`, loaded fragment fires nothing, silently | [9. It points out of its project](#9-a-symlinked-project-fragment-points-out-of-its-project), then [10. Case](#10-the-directory-and-the-pattern-differ-in-case) |
+| No fragment loads at all, and the *directory* is listed as failed | [11. The fragment directory hit a bound](#11-the-fragment-directory-hit-a-bound) |
 
 ## Run this first
 
@@ -51,31 +65,23 @@ Four things to read, in this order:
    [the pattern doesn't match](#2-the-pattern-doesnt-match-a-whole-segment).
 4. **Any extra line** — `envoke debug` reports the off switch here too.
 
-**On PowerShell and tcsh, name the directory you came from.** `$OLDPWD` is a
-POSIX shell convention, and neither of those two follows it. PowerShell has no
-`$OLDPWD` at all, so a bare `envoke debug` there fails loudly: it has nothing to
-infer `<from>` from and says so. tcsh fails quietly, which is worse — it
-maintains `$owd` instead, so any `$OLDPWD` a tcsh has was inherited from the
-shell that started it and has not moved since, and `envoke debug` reports a
-transition that looks plausible and is wrong. Nothing flags it, because an
-inherited `$OLDPWD` is an ordinary environment variable and envoke cannot tell
-it from a live one. (Your tcsh hook is fine: it passes `$owd` itself. This is
-only about commands you type.)
+!!! warning "On PowerShell and tcsh, name the directory you came from"
 
-One argument is `<from>`, with `<to>` still taken from where you are — in tcsh:
+    Neither maintains a usable `$OLDPWD`. PowerShell has none and fails loudly.
+    tcsh fails *quietly* — it keeps `$owd` instead, so any `$OLDPWD` a tcsh has
+    was inherited when the shell started and has not moved since, and
+    `envoke debug` reports a plausible, wrong transition with nothing to flag
+    it. (Your tcsh hook is fine: it passes `$owd` itself. This is only about
+    commands you type.)
 
-```sh
-envoke debug ~/work/api
-```
+    Name `<from>` and `<to>` is still worked out for you. This one form covers
+    both shells, works in every other one, and stands in for a bare
+    `envoke debug` wherever this page asks for one:
 
-and in PowerShell:
-
-```powershell
-envoke debug C:\work\api
-```
-
-That one form covers both shells, works in every other one too, and stands in
-for a bare `envoke debug` wherever this page asks for one.
+    ```sh
+    envoke debug ~/work/api          # tcsh, and everywhere else
+    envoke debug C:\work\api         # PowerShell
+    ```
 
 ---
 

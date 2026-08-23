@@ -20,28 +20,17 @@ fish or tcsh you write fish or tcsh.
 
 ## Read this first
 
-Four things account for most of the surprises, and every recipe below is built
+Four rules account for most of the surprises, and every recipe below is built
 around them.
 
-**Use `$ENVOKE_DIR`, never a relative path.** Through the shell hook a block
-runs in the directory your shell landed in, which is only the matched
-directory when you `cd` exactly onto it. `cd ~/work/api/cmd/srv` fires
-`~/work/([^/]+)` once, for `~/work/api`, while your shell sits three levels
-down. See [Where the script runs](configuration.md#where-the-script-runs).
+| Rule | Why it bites |
+|---|---|
+| **Use `$ENVOKE_DIR`, never a relative path.** | Through the shell hook a block runs where your shell *landed*, which is the matched directory only when you `cd` exactly onto it. `cd ~/work/api/cmd/srv` fires `~/work/([^/]+)` once, for `~/work/api`, three levels up. See [Where the script runs](configuration.md#where-the-script-runs). |
+| **Entering a subdirectory does not re-fire the parent's block.** | `~/work/api` → `~/work/api/src` enters only `~/work/api/src`. A block matching `~/work/api` fires once going in and its `leave` once when you leave the tree for good — which is what makes save-and-restore work at all. |
+| **A `leave` block can run when its `enter` never did.** | You opened a terminal already inside the directory, then left. Every restore below guards against the saved variable being empty, because that is not a rare case. |
+| **Nothing is auto-undone, and a failing block is quiet.** | There is no snapshot/restore; the `leave` block is the whole unwind. A failing block does not stop the ones after it and does not reach `$?`. |
 
-**Entering a subdirectory does not re-fire the parent's block.** Going from
-`~/work/api` to `~/work/api/src` enters only `~/work/api/src`, so a block
-matching `~/work/api` fires once on the way in and its `leave` fires once when
-you leave the tree for good. That is what makes save-and-restore work at all.
-
-**A `leave` block can run when its `enter` never did** — you opened a terminal
-already inside the directory, then left. Every restore below is guarded
-against the variable being empty, because that is not a rare case.
-
-**Nothing is auto-undone, and a failing block is quiet.** envoke has no
-snapshot/restore; the `leave` block is the whole unwind. And a block that
-fails does not stop the ones after it and does not reach `$?` — if a failure
-matters, say so in the block itself:
+If a failure matters, say so in the block itself:
 
 ```
 enter ~/work/api
@@ -371,7 +360,7 @@ envoke debug ~/ ~/work/infra/cmd/api
 ```
 
 `envoke debug` prints exactly which blocks a move would fire, in order, and
-never runs a thing. See [Debugging](debugging.md).
+never runs a thing. See [`envoke debug`](debugging.md#envoke-debug).
 
 ---
 

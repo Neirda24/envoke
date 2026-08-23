@@ -252,10 +252,6 @@ the rules in one place you control and lets a block run whatever you want.
 
 ## Try it
 
-```sh
-brew install neirda24/tap/envoke
-```
-
-Then head to [Getting Started](getting-started.md) — hook your shell, write a
-first block, `envoke allow`, and `cd`. Other install methods (Scoop, `.deb`,
-`.rpm`, `go install`, prebuilt binaries) are listed there too.
+[Getting Started](getting-started.md) is the whole path: install, hook your
+shell, write a first block, `envoke allow`, `cd`. Five minutes, and
+`envoke debug` will tell you what it is about to do before it does it.
