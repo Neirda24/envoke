@@ -103,6 +103,29 @@ Work through these; each is a diff between two sources of truth.
    pages the change left alone and ask why each was exempt. That is how a page
    predating a whole subsystem gets found; nothing else surfaces it.
 
+10. **`docs/llms.txt` against `mkdocs.yml`'s nav.** `llms.txt` is hand-written
+    and published at the site root, so it is the one page-list nothing builds
+    from the nav: a page added, removed or renamed leaves it stale and
+    `mkdocs build --strict` will not notice, because a `.txt` is copied
+    verbatim and the nav-omission rule only sees `.md`. Both lists are
+    derivable, so the diff is mechanical:
+
+    ```
+    diff <(sed -n '/^nav:/,$p' mkdocs.yml | grep -oE '[a-z0-9-]+\.md' \
+             | sed 's/\.md$//; s/^index$//' | sort -u) \
+         <(grep -oE 'https://neirda24\.github\.io/envoke/[a-z0-9-]*' docs/llms.txt \
+             | sed 's|.*/envoke/||' | sort -u)
+    ```
+
+    Empty output is the pass. A `<` line is a page llms.txt never mentions; a
+    `>` line is a URL that now 404s.
+
+    **The one-line note per link is not covered by that diff**, and is the
+    half that rots quietly: it summarises what a page *holds*, so moving a
+    section between pages leaves both URLs valid and both notes wrong. Item 9
+    is the same question — when a page changes, ask what in `llms.txt` claimed
+    to describe it.
+
 ## The rule when two sources disagree
 
 The code is the truth; the docs are the intent. A docs page wins over a
@@ -117,6 +140,11 @@ fix the code, or file the gap.
 docs change can be verified before merging rather than after. To read the
 result, `dagger -m ./.dagger call docs up --ports 8000:8000` serves it locally
 without installing Python.
+
+`validation.links` raises unrecognized links, absolute links and dead anchors
+to warnings, so `--strict` fails on a `[...](page.md#section)` whose heading has
+since been renamed. Item 10's `llms.txt` diff is the gap that guard leaves: its
+links are absolute URLs in a `.txt`, which nothing validates.
 
 A new page must be added to `mkdocs.yml`'s `nav` in the same change:
 `validation.nav.omitted_files` is raised to `warn`, and `--strict` turns that

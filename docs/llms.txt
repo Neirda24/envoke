@@ -1,0 +1,34 @@
+# envoke
+
+> envoke runs a shell script automatically when you `cd` into — or out of — a
+> directory, matched by path pattern. One static binary (Go, no cgo, no
+> non-stdlib dependencies), hooks for bash, zsh, fish, tcsh and PowerShell, and
+> nothing runs until you approve it with `envoke allow`.
+
+Rules live in configs you own — a central file plus an optional `envokerc.d`
+directory of fragments — never in the directories they act on. Patterns are
+RE2 regexes anchored to whole path segments. Approval is a SHA-256 of a
+config's content, so any edit revokes it. There is no automatic state
+snapshot: `enter` and `leave` are independent blocks you write yourself.
+
+`envoke help` is the authoritative command list; anything it does not list
+does not exist.
+
+## Docs
+
+- [Home](https://neirda24.github.io/envoke/): what envoke is, a runnable quickstart, and a task-oriented index of every page.
+- [Getting Started](https://neirda24.github.io/envoke/getting-started/): install methods, the rc-file line per shell, tab completion, Windows notes, and a first config approved end to end.
+- [Configuration](https://neirda24.github.io/envoke/configuration/): the `enter`/`leave` block format, the order blocks fire in, RE2 path patterns and `./`-relative ones, the `ENVOKE_*` variables a matched script receives, where a block actually runs, and where config files live.
+- [Recipes](https://neirda24.github.io/envoke/recipes/): complete `enter`/`leave` pairs with their teardown — virtualenvs, kubectl contexts, AWS profiles, `umask`, secrets from a password manager, `.env` files, `PATH` entries, generated shell functions.
+- [Trust Model](https://neirda24.github.io/envoke/trust/): why `envoke allow` exists, what it prints before recording anything, the three files a trust record is made of, how to see and withdraw trust, and the file-permission warnings.
+- [Inspecting and switching off](https://neirda24.github.io/envoke/debugging/): `envoke debug` for what a directory change would fire without running it, `envoke disable`/`enable` and `ENVOKE_DISABLE`, and `envoke reload` to apply a config where you stand.
+- [Non-interactive Use](https://neirda24.github.io/envoke/non-interactive/): `envoke exec` for scripts, Makefiles and CI — one subprocess per block, why side effects stay there, and how trust and interruption behave.
+- [Troubleshooting](https://neirda24.github.io/envoke/troubleshooting/): eleven reasons a block didn't fire, ordered by how often they come up, each with the `envoke debug` output that confirms it.
+- [Reference](https://neirda24.github.io/envoke/reference/): the complete inventory — every command, flag, environment variable read and exported, file path and exit code.
+
+## Optional
+
+- [envoke vs. direnv](https://neirda24.github.io/envoke/vs-direnv/): point-by-point comparison, including where direnv is the better fit and how to run both.
+- [Design Notes](https://neirda24.github.io/envoke/design-notes/): where envoke departs from ondir, the non-negotiable principles, and why it never discovers a config by walking into a directory.
+- [Uninstalling](https://neirda24.github.io/envoke/uninstall/): removing the hook, the trust store (which holds a plaintext copy of every approved config) and the binary.
+- [Contributing](https://neirda24.github.io/envoke/contributing/): how the project is built, tested through Dagger, and what counts as a breaking change.
