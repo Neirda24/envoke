@@ -25,11 +25,14 @@ config you are still editing.
 envoke debug: /home/you/work/api -> /home/you/work/api/src
   config /home/you/.envokerc (trusted)
   config /home/you/.config/envoke/envokerc.d/10-work (NOT trusted -- run `envoke allow …`)
+  note: via the shell hook these run in /home/you/work/api/src, where your shell lands;
+        via `envoke exec` each runs in the directory it matched.
+        $ENVOKE_DIR always names the matched directory -- use it for relative paths.
   enter /home/you/work/api (line 3 of /home/you/.envokerc: ~/work/([^/]+))
     source "$ENVOKE_DIR/venv/bin/activate"
 ```
 
-Three things to read, in this order:
+Four things to read, in this order:
 
 1. **The `config` lines** — every config envoke loaded, and whether it would
    run. If the file you edited isn't listed at all, jump to
@@ -39,10 +42,14 @@ Three things to read, in this order:
    line may be followed by indented notes — the file a symlinked fragment
    leads to, and the directory a confined one is bounded to; see
    [§9](#9-a-symlinked-project-fragment-points-out-of-its-project).
-2. **The block lines** — what would fire, in order, each naming the file and
+2. **The `note:` block**, printed only when a matched directory is not the one
+   your shell landed in. It is the answer to
+   [§3](#3-the-block-fired-but-ran-somewhere-else) before you have asked the
+   question.
+3. **The block lines** — what would fire, in order, each naming the file and
    line it came from. Nothing listed means nothing matched: see
    [the pattern doesn't match](#2-the-pattern-doesnt-match-a-whole-segment).
-3. **Any extra line** — `envoke debug` reports the off switch here too.
+4. **Any extra line** — `envoke debug` reports the off switch here too.
 
 **On PowerShell and tcsh, name the directory you came from.** `$OLDPWD` is a
 POSIX shell convention, and neither of those two follows it. PowerShell has no
@@ -421,8 +428,12 @@ refused before the walk starts, rather than being read as though it were the one
 fragment:
 
 ```
-envoke: read /home/you/notes.txt: /home/you/notes.txt is a regular file, not a directory of config fragments; point $ENVOKERC_D at a directory, or $ENVOKERC at a single config file
+envoke: /home/you/notes.txt is a regular file, not a directory of config fragments; point $ENVOKERC_D at a directory, or $ENVOKERC at a single config file
 ```
+
+(The three errors above name the directory the walk was in — `read <dir>:` —
+because the walk had already started. This one is refused before it starts, so
+there is no directory to name.)
 
 **Fix:** point `$ENVOKERC_D` at a directory that holds only configs, flatten the
 nesting, or remove the file the error names. If you meant to load a single file,
