@@ -23,6 +23,12 @@ Two tests, covering different halves, and knowing which is which is the point:
   reverse, so a completion candidate for a command that no longer exists passes.
 - `TestCompletion_ListsEverySubcommand` (`internal/shellinit`) checks every name
   in the `subcommands` slice against all three generated scripts.
+- `dagger call -m .dagger docs-links` compares `docs/llms.txt`'s site URLs
+  against `mkdocs.yml`'s nav, **both** directions, reading the site URL and the
+  page list out of `mkdocs.yml` rather than hardcoding either. It closes the gap
+  the strict build leaves: `llms.txt` is a `.txt`, so `omitted_files` never
+  walks it, and its links are absolute, so `validation.links` never resolves
+  them. It does not check the notes beside those links — item 10.
 
 Nothing machine-checks the dispatcher against `usage()`, `usage()` against
 `docs/reference.md`, or `docs/reference.md` against README — those are below.
@@ -103,28 +109,13 @@ Work through these; each is a diff between two sources of truth.
    pages the change left alone and ask why each was exempt. That is how a page
    predating a whole subsystem gets found; nothing else surfaces it.
 
-10. **`docs/llms.txt` against `mkdocs.yml`'s nav.** `llms.txt` is hand-written
-    and published at the site root, so it is the one page-list nothing builds
-    from the nav: a page added, removed or renamed leaves it stale and
-    `mkdocs build --strict` will not notice, because a `.txt` is copied
-    verbatim and the nav-omission rule only sees `.md`. Both lists are
-    derivable, so the diff is mechanical:
-
-    ```
-    diff <(sed -n '/^nav:/,$p' mkdocs.yml | grep -oE '[a-z0-9-]+\.md' \
-             | sed 's/\.md$//; s/^index$//' | sort -u) \
-         <(grep -oE 'https://neirda24\.github\.io/envoke/[a-z0-9-]*' docs/llms.txt \
-             | sed 's|.*/envoke/||' | sort -u)
-    ```
-
-    Empty output is the pass. A `<` line is a page llms.txt never mentions; a
-    `>` line is a URL that now 404s.
-
-    **The one-line note per link is not covered by that diff**, and is the
-    half that rots quietly: it summarises what a page *holds*, so moving a
-    section between pages leaves both URLs valid and both notes wrong. Item 9
-    is the same question — when a page changes, ask what in `llms.txt` claimed
-    to describe it.
+10. **`docs/llms.txt`'s per-link notes.** The URL half is automated — see
+    `docs-links` under "Already automated" above — and the notes are not.
+    Each link carries a one-line summary of what that page *holds*, so moving
+    a section from one page to another leaves both URLs valid and both notes
+    wrong, which no diff of page lists can see. Item 9 is the same question
+    from the other end: when a page changes, ask what in `llms.txt` claimed to
+    describe it.
 
 ## The rule when two sources disagree
 

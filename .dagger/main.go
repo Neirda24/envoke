@@ -9,7 +9,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"regexp"
+	"slices"
+	"strings"
 
 	"dagger/envoke/internal/dagger"
 )
@@ -551,6 +555,137 @@ func (m *Envoke) DocsBuild(ctx context.Context) error {
 		WithExec([]string{"mkdocs", "build", "--strict"}).
 		Sync(ctx)
 	return err
+}
+
+// DocsLinks checks docs/llms.txt against mkdocs.yml's nav: every page in the
+// nav is listed there, and every site URL it lists is a page in the nav.
+//
+// llms.txt is published at the site root for LLM clients, and it is the one
+// list of pages nothing derives from the nav. It is a .txt, so
+// validation.nav.omitted_files never walks it, and its links are absolute URLs
+// rather than the relative ones validation.links resolves — so a page added,
+// removed or renamed leaves it stale with the strict build still green. That is
+// the gap this closes.
+//
+// Both site URL and page list are read out of mkdocs.yml rather than spelled
+// out here, so moving the site or renaming a page cannot leave this check
+// asserting against yesterday's layout.
+//
+// What it cannot check is the one-line note llms.txt carries per link. The note
+// describes what a page holds, so moving a section from one page to another
+// leaves both URLs valid and both notes wrong. That half stays a reading job.
+//
+// +check
+func (m *Envoke) DocsLinks(ctx context.Context) error {
+	mkdocs, err := m.Source.File("mkdocs.yml").Contents(ctx)
+	if err != nil {
+		return err
+	}
+	llms, err := m.Source.File("docs/llms.txt").Contents(ctx)
+	if err != nil {
+		return err
+	}
+
+	siteURL, err := siteURL(mkdocs)
+	if err != nil {
+		return err
+	}
+	want, err := navURLs(mkdocs, siteURL)
+	if err != nil {
+		return err
+	}
+	got := siteLinks(llms, siteURL)
+
+	var problems []string
+	for _, u := range want {
+		if !got[u] {
+			problems = append(problems, fmt.Sprintf("docs/llms.txt does not link %s, which mkdocs.yml's nav lists", u))
+		}
+	}
+	// The reverse direction, which is the one that 404s: a URL surviving in
+	// llms.txt after its page left the nav.
+	for u := range got {
+		if !slices.Contains(want, u) {
+			problems = append(problems, fmt.Sprintf("docs/llms.txt links %s, which is not a page in mkdocs.yml's nav", u))
+		}
+	}
+	if len(problems) > 0 {
+		slices.Sort(problems)
+		return fmt.Errorf("docs/llms.txt and mkdocs.yml's nav disagree:\n  %s", strings.Join(problems, "\n  "))
+	}
+	return nil
+}
+
+// siteURLRe and navPageRe read mkdocs.yml by pattern rather than as YAML: the
+// .dagger module has no YAML dependency and this needs two scalars and a list
+// of filenames. The nav is scanned from its own key onward, because the prose
+// comment above `validation:` mentions ".md" while describing the rule.
+var (
+	siteURLRe = regexp.MustCompile(`(?m)^site_url:[ \t]*(\S+)[ \t]*$`)
+	navPageRe = regexp.MustCompile(`([A-Za-z0-9._-]+)\.md`)
+)
+
+func siteURL(mkdocs string) (string, error) {
+	m := siteURLRe.FindStringSubmatch(mkdocs)
+	if m == nil {
+		return "", errors.New("mkdocs.yml has no top-level site_url, so there is nothing to build page URLs from")
+	}
+	return strings.TrimSuffix(m[1], "/") + "/", nil
+}
+
+// navURLs is the published URL of every page the nav lists, in nav order.
+// use_directory_urls is MkDocs' default and is not overridden, so `foo.md`
+// publishes at `foo/` and `index.md` at the site root itself.
+func navURLs(mkdocs, siteURL string) ([]string, error) {
+	nav := navSection(mkdocs)
+	if nav == "" {
+		return nil, errors.New("mkdocs.yml has no top-level nav: key")
+	}
+
+	var urls []string
+	seen := make(map[string]bool)
+	for _, m := range navPageRe.FindAllStringSubmatch(nav, -1) {
+		url := siteURL
+		if m[1] != "index" {
+			url += m[1] + "/"
+		}
+		if seen[url] {
+			continue
+		}
+		seen[url] = true
+		urls = append(urls, url)
+	}
+	if len(urls) == 0 {
+		return nil, errors.New("mkdocs.yml's nav lists no .md pages, which cannot be right")
+	}
+	return urls, nil
+}
+
+// navSection is everything from the nav: key to the end of the file. The nav
+// is last in mkdocs.yml and adding a key after it would silently widen this,
+// so anything the widening picked up would have to look like a page filename
+// to matter.
+func navSection(mkdocs string) string {
+	const key = "nav:"
+	for i := 0; i+len(key) <= len(mkdocs); i++ {
+		if (i == 0 || mkdocs[i-1] == '\n') && strings.HasPrefix(mkdocs[i:], key) {
+			return mkdocs[i:]
+		}
+	}
+	return ""
+}
+
+// siteLinks is every markdown link in llms.txt that points at this site.
+// Links elsewhere are left alone: llms.txt may legitimately cite something
+// external, and nothing here can check that.
+func siteLinks(llms, siteURL string) map[string]bool {
+	found := make(map[string]bool)
+	for _, m := range regexp.MustCompile(`\]\((https?://[^)\s]+)\)`).FindAllStringSubmatch(llms, -1) {
+		if strings.HasPrefix(m[1], siteURL) {
+			found[m[1]] = true
+		}
+	}
+	return found
 }
 
 // Docs starts a live-reloading mkdocs dev server for the docs/ site, bound

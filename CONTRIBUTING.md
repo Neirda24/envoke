@@ -61,7 +61,8 @@ Pick the command that matches what you changed:
 | `.goreleaser.yaml` | `dagger call -m .dagger snapshot` — runs the whole release pipeline (cross-compile, archives, `.deb`/`.rpm`, SBOMs, checksums) without touching GitHub |
 | `.github/workflows/*.yml` | `dagger -m .dagger call zizmor` and `dagger -m .dagger call actions-up` (see below) |
 | `.github/ISSUE_TEMPLATE/`, `.github/DISCUSSION_TEMPLATE/`, or any other YAML under `.github/` | `dagger call -m .dagger yaml-lint` (also runs as part of the full `dagger check -m .dagger`) |
-| `docs/` or `mkdocs.yml` | `docs-build` — the same strict build the docs deploy runs, and the only thing that catches a page missing from the nav. To read the change instead of just validating it: `mkdocs serve`, or `dagger -m ./.dagger call docs up --ports 8000:8000` (see [Previewing documentation](#previewing-documentation-changes)) |
+| `docs/` or `mkdocs.yml` | `dagger call -m .dagger docs-build` — the same strict build the docs deploy runs, and the only thing that catches a page missing from the nav or a link to a heading that has been renamed. To read the change instead of just validating it: `mkdocs serve`, or `dagger -m ./.dagger call docs up --ports 8000:8000` (see [Previewing documentation](#previewing-documentation-changes)) |
+| Adding, removing or renaming a page | `dagger call -m .dagger docs-links` as well — the strict build cannot see `docs/llms.txt`, which is a `.txt` full of absolute URLs. It needs no container and finishes in well under a second |
 | `.dagger/main.go` itself | No dedicated check yet — build it manually (`docker run` against the pinned Go image, or `dagger develop -m .dagger` to confirm it still generates) |
 
 Before opening a PR, run the full suite:
@@ -167,7 +168,23 @@ dagger call -m .dagger docs-build
 ```
 
 Every `.md` file under `docs/` has to appear in `mkdocs.yml`'s nav, and this is
-what fails when one doesn't. The dev server and the Dagger `docs` service both
+what fails when one doesn't. It also fails on a link to a heading that has
+since been renamed.
+
+One list of pages it cannot check is `docs/llms.txt`, published at the site
+root for LLM clients: a `.txt` is copied verbatim, and its links are absolute
+URLs rather than the relative ones the strict build resolves. That is its own
+check:
+
+```sh
+dagger call -m .dagger docs-links
+```
+
+It compares llms.txt's site URLs against the nav in both directions, reads
+both lists out of `mkdocs.yml` rather than hardcoding them, and starts no
+container. What it cannot check is the one-line note llms.txt carries per
+link — that describes what a page *holds*, so moving a section between pages
+leaves the URL valid and the note wrong. The dev server and the Dagger `docs` service both
 render happily either way, and the deploy workflow — which runs the strict
 build on `main` — is where the omission would otherwise surface, after merge.
 `docs-build` is part of `dagger check -m .dagger`, so CI catches it on a pull
