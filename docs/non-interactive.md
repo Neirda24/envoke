@@ -18,12 +18,10 @@ variables set.
 envoke exec "$PWD" ~/Projects/my-app
 ```
 
-Both arguments are optional and may be relative, on the same terms as
-`envoke debug`. `<to>` defaults to the directory you are in. `<from>` cannot
-be inferred, so it defaults to `$OLDPWD` and the no-argument form needs a shell
-that exports a live one. PowerShell has no `$OLDPWD` and errors there; tcsh
-maintains `$owd` instead, so an `$OLDPWD` inherited from the shell that started
-it resolves a stale `<from>` with nothing to flag it. Pass `<from>` in either.
+Both arguments are optional and may be relative, on exactly the same terms as
+[`envoke debug`](debugging.md#envoke-debug): `<to>` defaults to the directory
+you are in, and `<from>` to `$OLDPWD`. On PowerShell and tcsh, name `<from>`
+yourself — neither maintains a usable `$OLDPWD`.
 
 A single argument is `<from>`, with `<to>` inferred, which is the form every
 shell can type:

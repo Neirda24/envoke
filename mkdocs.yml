@@ -55,7 +55,7 @@ nav:
   - Recipes: recipes.md
   - Trust Model: trust.md
   - Non-interactive Use: non-interactive.md
-  - Debugging: debugging.md
+  - Inspecting and switching off: debugging.md
   - Troubleshooting: troubleshooting.md
   - Reference: reference.md
   - Uninstalling: uninstall.md
