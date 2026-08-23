@@ -262,10 +262,11 @@ loads is one you put in your own config directory. That is a deliberate limit
   read in part. The regular-file rule above is a fragment rule only —
   `$ENVOKERC` is honoured verbatim and not checked, so pointing it at a FIFO
   hangs on every directory change.
-- **A fragment is cheap**: roughly 25µs per file per directory change on a
-  container runner, so fifty fragments cost about 1.3ms before trust
-  checking. Split by whatever makes the rules readable; the thing to avoid
-  is pointing `$ENVOKERC_D` at a tree rather than at a config directory.
+- **Split by whatever makes the rules readable.** Every file in the directory
+  is opened, parsed and hashed on every directory change, so the cost is per
+  file — which is what the bounds above are there to keep bounded. The thing
+  to avoid is pointing `$ENVOKERC_D` at a tree rather than at a config
+  directory.
 
 ### Bringing a project's own config in
 
