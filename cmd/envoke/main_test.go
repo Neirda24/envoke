@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -23,6 +24,89 @@ func runForStdin(t *testing.T, stdin string, args ...string) (stdout, stderr str
 	var out, errBuf bytes.Buffer
 	code = run(args, &out, &errBuf, strings.NewReader(stdin))
 	return out.String(), errBuf.String(), code
+}
+
+// tp makes a Unix-style test path absolute on the platform running the test:
+// on Windows "/a" becomes "C:/a", since filepath.IsAbs rejects a path with no
+// volume there and every subcommand taking a transition demands absolute
+// paths. Same helper, same name, as internal/matcher's — one convention, not
+// two.
+//
+// It returns forward slashes on both platforms, and that is what lets one
+// helper serve two different jobs. A *pattern* is a regex matched against
+// matcher.MatchPath, which is filepath.ToSlash, so a pattern is written with
+// `/` on every platform and a Windows volume there is spelled `C:/a`. A path
+// *argument* is native — but `C:/a` is already absolute as far as Go is
+// concerned, and filepath.Clean turns it into `C:\a` before anything compares
+// it. So tp is the right spelling for both, and np below is what the same path
+// looks like once envoke prints it back.
+func tp(p string) string {
+	if runtime.GOOS == "windows" {
+		return "C:" + p
+	}
+	return p
+}
+
+// np is tp in the platform's native form, for asserting on a path envoke
+// printed rather than one handed to it: a matched block's Dir has been through
+// filepath.Clean, which gives Windows its backslashes back. A block's
+// RawPattern has not — that is still the slash-written pattern, so assertions
+// on it use tp.
+func np(p string) string {
+	return filepath.Clean(tp(p))
+}
+
+// configBody prepares a fixture config for writing. It drops the newline a
+// raw-string literal starts with, and gives every Unix-style absolute pattern
+// in it the volume prefix tp adds, so a single fixture body works on both
+// platforms without every test spelling out the concatenation.
+//
+// Only a pattern beginning with `/` is rewritten. A `./src` resolves against
+// the config's own directory and must stay relative, a pattern built from a
+// real directory already carries its volume, and a deliberately malformed one
+// has to stay malformed.
+func configBody(body string) string {
+	body = strings.TrimPrefix(body, "\n")
+	if runtime.GOOS != "windows" {
+		return body
+	}
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		for _, kw := range []string{"enter ", "leave "} {
+			if strings.HasPrefix(line, kw) && strings.HasPrefix(line[len(kw):], "/") {
+				lines[i] = kw + tp(line[len(kw):])
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// requirePOSIXShell skips when there is no `sh` on PATH. Only `envoke exec`
+// needs one — it is the single subcommand that runs a block rather than
+// printing it — and on Windows that means Git Bash, WSL or MSYS2, which is
+// documented rather than worked around. The counterparts in internal/executor
+// and internal/envoke say the same thing about the same dependency.
+func requirePOSIXShell(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no POSIX sh on PATH; `envoke exec` requires one")
+	}
+}
+
+// requirePermissionBits skips a test that asserts one of the "writable by
+// group/other" warnings, where there is no such thing to warn about.
+// internal/fsperm answers false on Windows on purpose -- Go's os.Stat
+// synthesises the permission word there from the read-only attribute alone, so
+// testing 0o022 against it would report every config as world-writable -- and
+// a test expecting the warning would fail for that reason and no other.
+//
+// It deliberately does not skip as root: the mode bits are still readable
+// there, so the warning still fires, and the CI container runs as root.
+func requirePermissionBits(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("no permission bits to warn about on Windows -- internal/fsperm reports nothing there")
+	}
 }
 
 func TestRun_Version(t *testing.T) {
@@ -68,6 +152,62 @@ func TestRun_Help(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "shell-init") {
 		t.Errorf("expected usage to mention shell-init, got %q", stdout)
+	}
+}
+
+// `help` is a dispatched verb like any other, and the usage text is the only
+// list of them a user ever sees -- a verb missing from it is a verb that does
+// not exist as far as anyone reading is concerned.
+func TestUsage_ListsHelpAsASubcommand(t *testing.T) {
+	stdout, _, code := runFor(t, "help")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "envoke help ") {
+		t.Errorf("expected `help` to be listed as a subcommand, got %q", stdout)
+	}
+}
+
+// The order the paths are listed in is the order config.Locate consults them,
+// so a reader can stop at the first one that applies to them. Listing the
+// override second reads as a fallback, which is the opposite of what it is.
+func TestUsage_ListsConfigLocationsInPrecedenceOrder(t *testing.T) {
+	stdout, _, code := runFor(t, "help")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	for _, group := range [][2]string{
+		{"$ENVOKERC,", "~/.envokerc or"},
+		{"$ENVOKERC_D,", "~/.envokerc.d or"},
+	} {
+		first, second := strings.Index(stdout, group[0]), strings.Index(stdout, group[1])
+		if first < 0 || second < 0 {
+			t.Fatalf("expected both %q and %q in the usage text, got %q", group[0], group[1], stdout)
+		}
+		if first > second {
+			t.Errorf("%s takes precedence over %s and must be listed first", group[0], group[1])
+		}
+	}
+}
+
+// cmdList reconciles two things, and a synopsis promising only "every trusted
+// config" describes the version that just dumped the store.
+func TestUsage_ListLineDescribesTheReconciliation(t *testing.T) {
+	stdout, _, code := runFor(t, "help")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	var line string
+	for _, l := range strings.Split(stdout, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "envoke list ") {
+			line = l
+		}
+	}
+	if line == "" {
+		t.Fatalf("no `envoke list` line in the usage text, got %q", stdout)
+	}
+	if !strings.Contains(line, "would load") || !strings.Contains(line, "left over") {
+		t.Errorf("the list line must cover both halves of what it reports, got %q", line)
 	}
 }
 
@@ -147,7 +287,7 @@ func TestRun_ShellInitWrongArgCount(t *testing.T) {
 
 func TestRun_ShellHookNoConfigIsSilentNoOp(t *testing.T) {
 	isolateHome(t)
-	stdout, stderr, code := runFor(t, "shell-hook", "/a", "/b")
+	stdout, stderr, code := runFor(t, "shell-hook", tp("/a"), tp("/b"))
 	if code != 0 || stdout != "" || stderr != "" {
 		t.Errorf("shell-hook with no config: stdout=%q stderr=%q code=%d, want all empty/0", stdout, stderr, code)
 	}
@@ -160,7 +300,7 @@ enter /a
     echo should-not-run > `+filepath.Join(home, "marker")+`
 `)
 
-	stdout, stderr, code := runFor(t, "shell-hook", "/", "/a")
+	stdout, stderr, code := runFor(t, "shell-hook", tp("/"), tp("/a"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -185,7 +325,7 @@ enter /a
 		t.Fatalf("allow failed")
 	}
 
-	stdout, stderr, code := runFor(t, "shell-hook", "/", "/a")
+	stdout, stderr, code := runFor(t, "shell-hook", tp("/"), tp("/a"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -215,7 +355,7 @@ enter /b
     echo bye
 `)
 
-	stdout, stderr, code := runFor(t, "shell-hook", "/", "/a")
+	stdout, stderr, code := runFor(t, "shell-hook", tp("/"), tp("/a"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -234,7 +374,7 @@ enter /never/matches
     echo hi
 `)
 
-	stdout, stderr, code := runFor(t, "shell-hook", "/", "/a")
+	stdout, stderr, code := runFor(t, "shell-hook", tp("/"), tp("/a"))
 	if code != 0 || stdout != "" || stderr != "" {
 		t.Errorf("shell-hook with no match: stdout=%q stderr=%q code=%d, want all empty/0", stdout, stderr, code)
 	}
@@ -248,7 +388,7 @@ func TestRun_ShellHookMissingEnvokercIsSilent(t *testing.T) {
 	home := isolateHome(t)
 	t.Setenv("ENVOKERC", filepath.Join(home, "not-written-yet"))
 
-	stdout, stderr, code := runFor(t, "shell-hook", "/", "/a")
+	stdout, stderr, code := runFor(t, "shell-hook", tp("/"), tp("/a"))
 	if code != 0 || stdout != "" || stderr != "" {
 		t.Errorf("shell-hook with a missing $ENVOKERC: stdout=%q stderr=%q code=%d, want all empty/0", stdout, stderr, code)
 	}
@@ -257,6 +397,13 @@ func TestRun_ShellHookMissingEnvokercIsSilent(t *testing.T) {
 // A config that exists but is unreadable is the opposite case: something is
 // wrong with a config its owner believes is in effect, so it stays loud.
 func TestRun_ShellHookUnreadableConfigStillReportsError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// os.Chmod there sets the read-only attribute and nothing else, so a
+		// 0o000 config still opens and reads fine. Making a file genuinely
+		// unreadable needs a DACL, which is the same advapi32 dependency
+		// internal/fsperm declined to take on for a warning.
+		t.Skip("a config cannot be made unreadable through os.Chmod on Windows")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("running as root, permission bits are not enforced")
 	}
@@ -266,7 +413,7 @@ func TestRun_ShellHookUnreadableConfigStillReportsError(t *testing.T) {
 		t.Fatalf("Chmod: %v", err)
 	}
 
-	_, stderr, code := runFor(t, "shell-hook", "/", "/a")
+	_, stderr, code := runFor(t, "shell-hook", tp("/"), tp("/a"))
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
@@ -279,7 +426,7 @@ func TestRun_ShellHookInvalidConfigReportsError(t *testing.T) {
 	home := isolateHome(t)
 	writeConfig(t, home, "not a valid block\n")
 
-	_, stderr, code := runFor(t, "shell-hook", "/", "/a")
+	_, stderr, code := runFor(t, "shell-hook", tp("/"), tp("/a"))
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
@@ -289,7 +436,7 @@ func TestRun_ShellHookInvalidConfigReportsError(t *testing.T) {
 }
 
 func TestRun_ShellHookWrongArgCount(t *testing.T) {
-	_, _, code := runFor(t, "shell-hook", "/only-one")
+	_, _, code := runFor(t, "shell-hook", tp("/only-one"))
 	if code != 2 {
 		t.Errorf("exit code = %d, want 2", code)
 	}
@@ -309,8 +456,8 @@ enter /a
 	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
 		t.Fatalf("allow failed")
 	}
-	t.Setenv("ENVOKE_FROM", "/")
-	t.Setenv("ENVOKE_TO", "/a")
+	t.Setenv("ENVOKE_FROM", tp("/"))
+	t.Setenv("ENVOKE_TO", tp("/a"))
 
 	stdout, stderr, code := runFor(t, "shell-hook", "--shell", "tcsh")
 	if code != 0 {
@@ -334,10 +481,10 @@ enter /a
 	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
 		t.Fatalf("allow failed")
 	}
-	t.Setenv("ENVOKE_FROM", "/")
-	t.Setenv("ENVOKE_TO", "/a")
+	t.Setenv("ENVOKE_FROM", tp("/"))
+	t.Setenv("ENVOKE_TO", tp("/a"))
 
-	stdout, _, code := runFor(t, "shell-hook", "/", "/never/matches")
+	stdout, _, code := runFor(t, "shell-hook", tp("/"), tp("/never/matches"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -369,7 +516,7 @@ enter /a
 		t.Fatalf("allow failed")
 	}
 
-	stdout, _, code := runFor(t, "shell-hook", "--shell", "fish", "/", "/a")
+	stdout, _, code := runFor(t, "shell-hook", "--shell", "fish", tp("/"), tp("/a"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -388,7 +535,7 @@ enter /a
 		t.Fatalf("allow failed")
 	}
 
-	stdout, _, code := runFor(t, "shell-hook", "/", "/a")
+	stdout, _, code := runFor(t, "shell-hook", tp("/"), tp("/a"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -411,7 +558,7 @@ enter /a
 		t.Fatalf("allow failed")
 	}
 
-	stdout, stderr, code := runFor(t, "shell-hook", "--shell", "fsh", "/", "/a")
+	stdout, stderr, code := runFor(t, "shell-hook", "--shell", "fsh", tp("/"), tp("/a"))
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2", code)
 	}
@@ -445,7 +592,7 @@ func TestRun_DisableStopsShellHookSilently(t *testing.T) {
 		t.Fatalf("disable exit code = %d, want 0", code)
 	}
 
-	stdout, stderr, code := runFor(t, "shell-hook", "/", "/a")
+	stdout, stderr, code := runFor(t, "shell-hook", tp("/"), tp("/a"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -469,7 +616,7 @@ func TestRun_EnableRestoresShellHook(t *testing.T) {
 		t.Fatalf("enable failed")
 	}
 
-	stdout, _, code := runFor(t, "shell-hook", "/", "/a")
+	stdout, _, code := runFor(t, "shell-hook", tp("/"), tp("/a"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -484,7 +631,7 @@ func TestRun_EnvDisableOverridesTheFlag(t *testing.T) {
 	allowedConfig(t)
 
 	t.Setenv("ENVOKE_DISABLE", "1")
-	stdout, _, _ := runFor(t, "shell-hook", "/", "/a")
+	stdout, _, _ := runFor(t, "shell-hook", tp("/"), tp("/a"))
 	if stdout != "" {
 		t.Errorf("ENVOKE_DISABLE=1 must stop the hook, got %q", stdout)
 	}
@@ -493,7 +640,7 @@ func TestRun_EnvDisableOverridesTheFlag(t *testing.T) {
 		t.Fatalf("disable failed")
 	}
 	t.Setenv("ENVOKE_DISABLE", "0")
-	stdout, _, _ = runFor(t, "shell-hook", "/", "/a")
+	stdout, _, _ = runFor(t, "shell-hook", tp("/"), tp("/a"))
 	if !strings.Contains(stdout, "echo hi") {
 		t.Errorf("ENVOKE_DISABLE=0 must re-enable this shell, got %q", stdout)
 	}
@@ -526,7 +673,7 @@ func TestRun_ExecReportsBeingDisabled(t *testing.T) {
 	// Exit 0: the user asked for envoke to be off, which is not a failure.
 	// But exec is invoked deliberately, so silence would leave a script
 	// mysteriously missing its environment.
-	_, stderr, code := runFor(t, "exec", "/", "/a")
+	_, stderr, code := runFor(t, "exec", tp("/"), tp("/a"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -541,7 +688,7 @@ func TestRun_DebugStillWorksWhenDisabled(t *testing.T) {
 		t.Fatalf("disable failed")
 	}
 
-	stdout, _, code := runFor(t, "debug", "/", "/a")
+	stdout, _, code := runFor(t, "debug", tp("/"), tp("/a"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -581,7 +728,7 @@ leave /a
 	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
 		t.Fatalf("allow failed")
 	}
-	t.Setenv("PWD", "/a/b")
+	t.Setenv("PWD", tp("/a/b"))
 
 	stdout, _, code := runFor(t, "reload")
 	if code != 0 {
@@ -603,7 +750,7 @@ func TestRun_ReloadRefusesUntrustedConfig(t *testing.T) {
 enter /a
     echo hi
 `)
-	t.Setenv("PWD", "/a")
+	t.Setenv("PWD", tp("/a"))
 
 	stdout, stderr, code := runFor(t, "reload")
 	// Unlike shell-hook, which only notes it: this was typed, so silence
@@ -628,7 +775,7 @@ enter /a
 	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
 		t.Fatalf("allow failed")
 	}
-	t.Setenv("PWD", "/a")
+	t.Setenv("PWD", tp("/a"))
 
 	stdout, _, code := runFor(t, "reload", "--shell", "fish")
 	if code != 0 {
@@ -641,7 +788,7 @@ enter /a
 
 func TestRun_ReloadRejectsArgumentsAndUnknownShell(t *testing.T) {
 	isolateHome(t)
-	if _, _, code := runFor(t, "reload", "/a"); code != 2 {
+	if _, _, code := runFor(t, "reload", tp("/a")); code != 2 {
 		t.Errorf("positional argument: exit code = %d, want 2", code)
 	}
 	if _, _, code := runFor(t, "reload", "--shell", "fsh"); code != 2 {
@@ -681,7 +828,7 @@ func TestRun_AllowLocatedConfig(t *testing.T) {
 func TestRun_AllowExplicitPath(t *testing.T) {
 	home := isolateHome(t)
 	path := filepath.Join(home, "custom-config")
-	if err := os.WriteFile(path, []byte("enter /a\n    echo hi\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(configBody("enter /a\n    echo hi\n")), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -745,7 +892,7 @@ func TestRun_AllowDefaultAbortsOnNoConfirmation(t *testing.T) {
 		t.Errorf("must not report trusted after aborting, got %q", stdout)
 	}
 
-	debugOut, _, dcode := runFor(t, "debug", "/", "/a")
+	debugOut, _, dcode := runFor(t, "debug", tp("/"), tp("/a"))
 	if dcode != 0 {
 		t.Fatalf("debug exit code = %d, want 0", dcode)
 	}
@@ -766,7 +913,7 @@ func TestRun_AllowDefaultAbortsOnEmptyStdin(t *testing.T) {
 		t.Errorf("expected stderr to report the abort, got %q", stderr)
 	}
 
-	debugOut, _, dcode := runFor(t, "debug", "/", "/a")
+	debugOut, _, dcode := runFor(t, "debug", tp("/"), tp("/a"))
 	if dcode != 0 {
 		t.Fatalf("debug exit code = %d, want 0", dcode)
 	}
@@ -787,7 +934,7 @@ func TestRun_AllowDefaultProceedsOnYesConfirmation(t *testing.T) {
 		t.Errorf("expected trusted confirmation, got %q", stdout)
 	}
 
-	debugOut, _, dcode := runFor(t, "debug", "/", "/a")
+	debugOut, _, dcode := runFor(t, "debug", tp("/"), tp("/a"))
 	if dcode != 0 {
 		t.Fatalf("debug exit code = %d, want 0", dcode)
 	}
@@ -840,7 +987,7 @@ func TestRun_AllowShortYesFlagSkipsPromptEntirely(t *testing.T) {
 func TestRun_AllowYesFlagComposesWithPathBeforeOrAfter(t *testing.T) {
 	home := isolateHome(t)
 	path := filepath.Join(home, "custom-config")
-	if err := os.WriteFile(path, []byte("enter /a\n    echo hi\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(configBody("enter /a\n    echo hi\n")), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -868,7 +1015,7 @@ leave /b
 		t.Fatalf("exit code = %d, want 0", code)
 	}
 
-	for _, want := range []string{"enter /a", "echo hi", "echo bye", "leave /b", "deactivate"} {
+	for _, want := range []string{"enter " + tp("/a"), "echo hi", "echo bye", "leave " + tp("/b"), "deactivate"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("expected stdout to contain %q for review, got %q", want, stdout)
 		}
@@ -934,7 +1081,7 @@ func TestRun_AllowReallowUnchangedSkipsPromptAndReview(t *testing.T) {
 		t.Errorf("unchanged re-allow should report the already-trusted state, not re-announce trust, got %q", stdout)
 	}
 
-	debugOut, _, dcode := runFor(t, "debug", "/", "/a")
+	debugOut, _, dcode := runFor(t, "debug", tp("/"), tp("/a"))
 	if dcode != 0 {
 		t.Fatalf("debug exit code = %d, want 0", dcode)
 	}
@@ -1012,7 +1159,7 @@ func TestRun_AllowReallowChangedStillHonorsAbort(t *testing.T) {
 		t.Errorf("must not report trusted after aborting a changed re-allow, got %q", stdout)
 	}
 
-	debugOut, _, dcode := runFor(t, "debug", "/", "/a")
+	debugOut, _, dcode := runFor(t, "debug", tp("/"), tp("/a"))
 	if dcode != 0 {
 		t.Fatalf("debug exit code = %d, want 0", dcode)
 	}
@@ -1069,7 +1216,7 @@ func TestDiffLines(t *testing.T) {
 }
 
 func TestRun_DebugWrongArgCount(t *testing.T) {
-	_, _, code := runFor(t, "debug", "/only-one")
+	_, _, code := runFor(t, "debug", tp("/a"), tp("/b"), tp("/c"))
 	if code != 2 {
 		t.Errorf("exit code = %d, want 2", code)
 	}
@@ -1078,7 +1225,7 @@ func TestRun_DebugWrongArgCount(t *testing.T) {
 func TestRun_DebugNoConfigFound(t *testing.T) {
 	isolateHome(t)
 
-	_, stderr, code := runFor(t, "debug", "/a", "/b")
+	_, stderr, code := runFor(t, "debug", tp("/a"), tp("/b"))
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
@@ -1087,11 +1234,60 @@ func TestRun_DebugNoConfigFound(t *testing.T) {
 	}
 }
 
+// "You have no envokerc.d" and "you have one and nothing in it counted" are the
+// same empty set but opposite next moves, so the message has to tell them
+// apart: a user staring at a directory full of files does not need to be told
+// it isn't there.
+func TestRun_DebugDistinguishesAnEmptyFragmentDirFromNoneAtAll(t *testing.T) {
+	t.Run("no directory at all", func(t *testing.T) {
+		isolateHome(t)
+
+		_, stderr, code := runFor(t, "debug", tp("/a"), tp("/b"))
+		if code != 1 {
+			t.Fatalf("exit code = %d, want 1", code)
+		}
+		if !strings.Contains(stderr, "no envokerc.d directory") {
+			t.Errorf("expected the message to report a missing directory, got %q", stderr)
+		}
+	})
+
+	t.Run("a directory whose every file was skipped", func(t *testing.T) {
+		isolateHome(t)
+		dir := fragmentDir(t)
+		writeFragment(t, dir, "10-work~", "enter /work\n    echo hi\n")
+
+		_, stderr, code := runFor(t, "debug", tp("/a"), tp("/b"))
+		if code != 1 {
+			t.Fatalf("exit code = %d, want 1", code)
+		}
+		if strings.Contains(stderr, "no envokerc.d directory") {
+			t.Errorf("the directory exists -- the message must not deny it, got %q", stderr)
+		}
+		if !strings.Contains(stderr, dir) || !strings.Contains(stderr, "skipped") {
+			t.Errorf("expected the message to name the directory and say why it looks empty, got %q", stderr)
+		}
+	})
+
+	t.Run("a directory that does not exist", func(t *testing.T) {
+		isolateHome(t)
+		missing := filepath.Join(t.TempDir(), "envokerc.d")
+		t.Setenv("ENVOKERC_D", missing)
+
+		_, stderr, code := runFor(t, "debug", tp("/a"), tp("/b"))
+		if code != 1 {
+			t.Fatalf("exit code = %d, want 1", code)
+		}
+		if !strings.Contains(stderr, missing) {
+			t.Errorf("$ENVOKERC_D is honoured verbatim, so the message must name it, got %q", stderr)
+		}
+	})
+}
+
 func TestRun_DebugInvalidConfigReportsError(t *testing.T) {
 	home := isolateHome(t)
 	writeConfig(t, home, "not a valid block\n")
 
-	_, stderr, code := runFor(t, "debug", "/", "/a")
+	_, stderr, code := runFor(t, "debug", tp("/"), tp("/a"))
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
@@ -1111,11 +1307,11 @@ enter /a
 		t.Fatalf("allow failed")
 	}
 
-	stdout, stderr, code := runFor(t, "debug", "/", "/a")
+	stdout, stderr, code := runFor(t, "debug", tp("/"), tp("/a"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
 	}
-	if !strings.Contains(stdout, "enter") || !strings.Contains(stdout, "/a") {
+	if !strings.Contains(stdout, "enter") || !strings.Contains(stdout, tp("/a")) {
 		t.Errorf("expected the matched enter block described in stdout, got %q", stdout)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
@@ -1130,7 +1326,7 @@ enter /a
     echo hi
 `)
 
-	stdout, _, code := runFor(t, "debug", "/", "/a")
+	stdout, _, code := runFor(t, "debug", tp("/"), tp("/a"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -1149,7 +1345,7 @@ enter /a
 		t.Fatalf("allow failed")
 	}
 
-	stdout, _, code := runFor(t, "debug", "/", "/a")
+	stdout, _, code := runFor(t, "debug", tp("/"), tp("/a"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -1165,7 +1361,7 @@ enter /never/matches
     echo hi
 `)
 
-	stdout, _, code := runFor(t, "debug", "/", "/a")
+	stdout, _, code := runFor(t, "debug", tp("/"), tp("/a"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -1182,7 +1378,7 @@ enter /a
     echo bye
 `)
 
-	stdout, _, code := runFor(t, "debug", "/", "/a")
+	stdout, _, code := runFor(t, "debug", tp("/"), tp("/a"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -1190,7 +1386,7 @@ enter /a
 		t.Errorf("expected stdout to include the matched block's script body, got %q", stdout)
 	}
 
-	summaryIdx := strings.Index(stdout, "enter /a")
+	summaryIdx := strings.Index(stdout, "enter "+np("/a"))
 	scriptIdx := strings.Index(stdout, "echo hi")
 	if summaryIdx == -1 || scriptIdx == -1 || summaryIdx > scriptIdx {
 		t.Errorf("expected the script body to appear after the block's summary line, got %q", stdout)
@@ -1207,12 +1403,12 @@ enter /b
     echo hi
 `)
 
-	stdout, _, code := runFor(t, "debug", "/a", "/b")
+	stdout, _, code := runFor(t, "debug", tp("/a"), tp("/b"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
-	leaveIdx := strings.Index(stdout, "leave /a")
-	enterIdx := strings.Index(stdout, "enter /b")
+	leaveIdx := strings.Index(stdout, "leave "+np("/a"))
+	enterIdx := strings.Index(stdout, "enter "+np("/b"))
 	if leaveIdx == -1 || enterIdx == -1 || leaveIdx > enterIdx {
 		t.Errorf("expected leave block reported before enter block, got %q", stdout)
 	}
@@ -1229,7 +1425,7 @@ enter /a
     echo hi
 `)
 
-	deep, _, code := runFor(t, "debug", "/", "/a/b/c")
+	deep, _, code := runFor(t, "debug", tp("/"), tp("/a/b/c"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -1237,7 +1433,7 @@ enter /a
 		t.Errorf("expected a working-directory note when landing below the match, got %q", deep)
 	}
 
-	exact, _, code := runFor(t, "debug", "/", "/a")
+	exact, _, code := runFor(t, "debug", tp("/"), tp("/a"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -1247,6 +1443,7 @@ enter /a
 }
 
 func TestRun_ShellHookWarnsOnUnsafeConfigPermissions(t *testing.T) {
+	requirePermissionBits(t)
 	home := isolateHome(t)
 	writeConfig(t, home, `
 enter /a
@@ -1257,7 +1454,7 @@ enter /a
 		t.Fatalf("Chmod: %v", err)
 	}
 
-	_, stderr, code := runFor(t, "shell-hook", "/", "/a")
+	_, stderr, code := runFor(t, "shell-hook", tp("/"), tp("/a"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -1277,7 +1474,7 @@ enter /never/matches
 		t.Fatalf("Chmod: %v", err)
 	}
 
-	_, stderr, code := runFor(t, "shell-hook", "/", "/a")
+	_, stderr, code := runFor(t, "shell-hook", tp("/"), tp("/a"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -1287,6 +1484,7 @@ enter /never/matches
 }
 
 func TestRun_AllowWarnsOnUnsafeConfigPermissions(t *testing.T) {
+	requirePermissionBits(t)
 	home := isolateHome(t)
 	writeConfig(t, home, "enter /a\n    echo hi\n")
 	path := filepath.Join(home, ".envokerc")
@@ -1304,6 +1502,7 @@ func TestRun_AllowWarnsOnUnsafeConfigPermissions(t *testing.T) {
 }
 
 func TestRun_DebugWarnsOnUnsafeConfigPermissions(t *testing.T) {
+	requirePermissionBits(t)
 	home := isolateHome(t)
 	writeConfig(t, home, `
 enter /a
@@ -1314,7 +1513,7 @@ enter /a
 		t.Fatalf("Chmod: %v", err)
 	}
 
-	_, stderr, code := runFor(t, "debug", "/", "/a")
+	_, stderr, code := runFor(t, "debug", tp("/"), tp("/a"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -1372,6 +1571,7 @@ func TestDiffLines_ReportsOnlyChangedLines(t *testing.T) {
 // approval outright. Allow's 0o700 does not cover it, because os.MkdirAll
 // only applies its mode to directories it creates.
 func TestRun_WarnsWhenTrustStoreIsGroupWritable(t *testing.T) {
+	requirePermissionBits(t)
 	if os.Geteuid() == 0 {
 		t.Skip("running as root, permission bits are not enforced")
 	}
@@ -1386,12 +1586,50 @@ func TestRun_WarnsWhenTrustStoreIsGroupWritable(t *testing.T) {
 		t.Fatalf("Chmod: %v", err)
 	}
 
-	_, stderr, code := runFor(t, "shell-hook", "/", "/a")
+	_, stderr, code := runFor(t, "shell-hook", tp("/"), tp("/a"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0 -- this warns, it never blocks", code)
 	}
 	if !strings.Contains(stderr, "trust store") || !strings.Contains(stderr, "forge") {
 		t.Errorf("expected a warning that the store is writable, got %q", stderr)
+	}
+}
+
+// The store check stats the store's ancestors, on the path every `cd` goes
+// through, to warn about a forged approval -- which can only take effect where
+// a block would actually run. Hence its position below the zero-match
+// early-out, and hence both halves asserted together: the cheap version that
+// warns about nothing is one line away from the one that warns about nothing
+// ever.
+func TestRun_ShellHookChecksTheTrustStoreOnlyWhereABlockWouldRun(t *testing.T) {
+	requirePermissionBits(t)
+	if os.Geteuid() == 0 {
+		t.Skip("running as root, permission bits are not enforced")
+	}
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /a\n    echo hi\n")
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+	store := filepath.Join(home, ".local", "share", "envoke", "allow")
+	if err := os.Chmod(store, 0o777); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+
+	_, stderr, code := runFor(t, "shell-hook", "--", tp("/x"), tp("/y"))
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if strings.Contains(stderr, "trust store") {
+		t.Errorf("a cd that matches nothing must not pay for the store check, got %q", stderr)
+	}
+
+	_, stderr, code = runFor(t, "shell-hook", "--", tp("/"), tp("/a"))
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stderr, "trust store") {
+		t.Errorf("a matching cd must still be warned, got %q", stderr)
 	}
 }
 
@@ -1450,7 +1688,7 @@ func TestRun_ListRevokePruneLifecycle(t *testing.T) {
 			t.Errorf("expected the config to read as untrusted after revoke, got %q", stdout)
 		}
 		// shell-hook must actually stop acting on it, not just stop listing it.
-		if stdout, _, _ := runFor(t, "shell-hook", "/", "/a"); stdout != "" {
+		if stdout, _, _ := runFor(t, "shell-hook", tp("/"), tp("/a")); stdout != "" {
 			t.Errorf("a revoked config must not render, got %q", stdout)
 		}
 	})
@@ -1522,6 +1760,41 @@ func TestRun_RevokeExplicitPath(t *testing.T) {
 	}
 }
 
+// A path that is not a config envoke would load is still revocable: the store
+// is keyed on paths, and a record for a file outside the set is exactly what a
+// user pointing $ENVOKERC somewhere else leaves behind.
+func TestRun_RevokeExplicitPathOutsideTheSet(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /a\n    echo hi\n")
+	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow failed")
+	}
+	other := filepath.Join(t.TempDir(), "elsewhere.conf")
+
+	stdout, stderr, code := runFor(t, "revoke", other)
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "nothing to revoke") || !strings.Contains(stdout, other) {
+		t.Errorf("expected a named no-op for %s, got %q", other, stdout)
+	}
+	// Naming a path must not touch anything else, least of all the set.
+	if got := trustRecords(t, home); len(got) != 1 {
+		t.Errorf("expected the central config's record untouched, store holds %v", got)
+	}
+}
+
+// revoke prompts for nothing, so it has no --yes to pick back out of the
+// positionals the way allow does: an unknown flag after a path stays a usage
+// error rather than being read as a second path.
+func TestRun_RevokeWrongArgCount(t *testing.T) {
+	for _, args := range [][]string{{"revoke", "a", "b"}, {"revoke", "a", "--yes"}, {"revoke", "--yes"}} {
+		if _, _, code := runFor(t, args...); code != 2 {
+			t.Errorf("%v: exit code = %d, want 2", args, code)
+		}
+	}
+}
+
 func TestRun_VersionFlagsMatchVersionSubcommand(t *testing.T) {
 	want, _, _ := runFor(t, "version")
 	for _, arg := range []string{"--version", "-V"} {
@@ -1576,6 +1849,14 @@ func TestRun_ShellInitUndetectableShellIsError(t *testing.T) {
 // hooks pass `--`: without it, a directory whose name starts with `-` would
 // be parsed as a flag by the very command meant to react to entering it.
 func TestRun_ShellHookDoubleDashSeparatesPaths(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The literals here stay Unix-only rather than going through tp,
+		// because an absolute path on Windows always begins with a volume or
+		// `\\`: no directory argument shell-hook could ever be handed starts
+		// with `-`, so there is nothing for `--` to separate and no way to
+		// spell the case this asserts.
+		t.Skip("no absolute Windows path can look like a flag")
+	}
 	home := isolateHome(t)
 	writeConfig(t, home, "enter /--shell\n    echo hi\n")
 	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
@@ -1609,11 +1890,11 @@ func TestRun_AllowAcceptsYesAfterPath(t *testing.T) {
 // TestTransitionArgs covers the argument handling `exec` and `debug` share.
 // Both are typed by a human, unlike shell-hook which only ever receives
 // generated arguments — so both take relative paths (`envoke debug . /tmp`
-// used to fail outright with "not absolute") and both default to the
-// shell's own last transition.
+// used to fail outright with "not absolute"), both infer <to> when it is left
+// off, and both fill in <from> from $OLDPWD where the shell exports one.
 func TestTransitionArgs(t *testing.T) {
 	t.Run("relative paths are made absolute", func(t *testing.T) {
-		from, to, err := transitionArgs([]string{".", "sub"})
+		from, to, err := transitionArgs("debug", []string{".", "sub"})
 		if err != nil {
 			t.Fatalf("transitionArgs: %v", err)
 		}
@@ -1626,28 +1907,53 @@ func TestTransitionArgs(t *testing.T) {
 	})
 
 	t.Run("no arguments uses OLDPWD and PWD", func(t *testing.T) {
-		t.Setenv("OLDPWD", "/tmp/from")
-		t.Setenv("PWD", "/tmp/to")
-		from, to, err := transitionArgs(nil)
+		t.Setenv("OLDPWD", tp("/tmp/from"))
+		t.Setenv("PWD", tp("/tmp/to"))
+		from, to, err := transitionArgs("debug", nil)
 		if err != nil {
 			t.Fatalf("transitionArgs: %v", err)
 		}
-		if from != "/tmp/from" || to != "/tmp/to" {
+		if from != np("/tmp/from") || to != np("/tmp/to") {
 			t.Errorf("got %q -> %q, want /tmp/from -> /tmp/to", from, to)
 		}
 	})
 
-	t.Run("no arguments and no OLDPWD is an error", func(t *testing.T) {
-		t.Setenv("OLDPWD", "")
-		t.Setenv("PWD", "/tmp/to")
-		if _, _, err := transitionArgs(nil); err == nil {
-			t.Errorf("expected an error when there's no transition to infer")
+	// The asymmetric half of the pair: <to> is inferable and <from> is not, so
+	// the single argument can only be <from>.
+	t.Run("one argument is from, with to inferred", func(t *testing.T) {
+		t.Setenv("PWD", tp("/tmp/here"))
+		unsetEnv(t, "OLDPWD")
+		from, to, err := transitionArgs("debug", []string{tp("/tmp/from")})
+		if err != nil {
+			t.Fatalf("transitionArgs: %v", err)
+		}
+		if from != np("/tmp/from") || to != np("/tmp/here") {
+			t.Errorf("got %q -> %q, want /tmp/from -> /tmp/here", from, to)
 		}
 	})
 
-	t.Run("one argument is an error", func(t *testing.T) {
-		if _, _, err := transitionArgs([]string{"/only-one"}); err == nil {
-			t.Errorf("expected an error for a single argument")
+	// PowerShell's state on every invocation: neither variable exists, since
+	// $PWD there is a shell variable and there is no OLDPWD at all.
+	t.Run("with neither variable set the error names the one-argument form", func(t *testing.T) {
+		unsetEnv(t, "OLDPWD")
+		unsetEnv(t, "PWD")
+		_, _, err := transitionArgs("debug", nil)
+		if err == nil {
+			t.Fatalf("expected an error when there's no previous directory to infer")
+		}
+		if !strings.Contains(err.Error(), "envoke debug <from>") {
+			t.Errorf("the error must say what to type instead, got %q", err)
+		}
+		// `envoke debug $OLDPWD $PWD` is exactly what cannot be typed in the
+		// shell that produces this error, on any platform.
+		if strings.Contains(err.Error(), "$PWD") {
+			t.Errorf("the error must not suggest a POSIX-only form, got %q", err)
+		}
+	})
+
+	t.Run("three arguments is an error", func(t *testing.T) {
+		if _, _, err := transitionArgs("debug", []string{tp("/a"), tp("/b"), tp("/c")}); err == nil {
+			t.Errorf("expected an error for three arguments")
 		}
 	})
 }
@@ -1658,7 +1964,7 @@ func TestRun_DebugDefaultsToShellTransition(t *testing.T) {
 	if err := os.Mkdir(target, 0o755); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	writeConfig(t, home, "enter "+target+"\n    echo hi\n")
+	writeConfig(t, home, "enter "+filepath.ToSlash(target)+"\n    echo hi\n")
 
 	t.Setenv("OLDPWD", home)
 	t.Setenv("PWD", target)
@@ -1672,14 +1978,62 @@ func TestRun_DebugDefaultsToShellTransition(t *testing.T) {
 	}
 }
 
+// `envoke debug <from>` is the form every shell can type: PowerShell exports
+// neither OLDPWD nor PWD, so the no-argument form can never work there, and
+// there is no way to spell `$PWD` as an argument either.
+func TestRun_DebugInfersOnlyTheDestination(t *testing.T) {
+	home := isolateHome(t)
+	target := filepath.Join(home, "proj")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	writeConfig(t, home, "enter "+filepath.ToSlash(target)+"\n    echo hi\n")
+
+	unsetEnv(t, "OLDPWD")
+	t.Setenv("PWD", target)
+
+	stdout, stderr, code := runFor(t, "debug", home)
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "envoke debug: "+home+" -> "+target) {
+		t.Errorf("expected the current directory to be used as <to>, got %q", stdout)
+	}
+	if !strings.Contains(stdout, "enter "+target) {
+		t.Errorf("expected the enter block for %s to be listed, got %q", target, stdout)
+	}
+}
+
+// The message a Windows user gets for `envoke debug` with no arguments. It has
+// to name a command they can actually retype, which rules out both variables:
+// the one that is missing is why they are reading this, and the other has no
+// argument spelling in PowerShell.
+func TestRun_DebugWithNothingToInferSaysWhatToType(t *testing.T) {
+	isolateHome(t)
+	unsetEnv(t, "OLDPWD")
+	unsetEnv(t, "PWD")
+
+	_, stderr, code := runFor(t, "debug")
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2 (stderr %q)", code, stderr)
+	}
+	if !strings.Contains(stderr, "envoke debug <from>") {
+		t.Errorf("expected the error to name the form that works, got %q", stderr)
+	}
+	if strings.Contains(stderr, "$PWD") {
+		t.Errorf("expected no POSIX-only form to be suggested, got %q", stderr)
+	}
+}
+
 func TestRun_ExecRunsTrustedBlocksInSubprocesses(t *testing.T) {
+	requirePOSIXShell(t)
 	home := isolateHome(t)
 	target := filepath.Join(home, "proj")
 	if err := os.Mkdir(target, 0o755); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
 	marker := filepath.Join(home, "marker")
-	writeConfig(t, home, "enter "+target+"\n    echo ran > "+marker+"\n")
+	writeConfig(t, home, "enter "+filepath.ToSlash(target)+"\n    echo ran > "+filepath.ToSlash(marker)+"\n")
 	if _, _, code := runFor(t, "allow", "--yes"); code != 0 {
 		t.Fatalf("allow failed")
 	}
@@ -1703,7 +2057,7 @@ func TestRun_ExecRefusesUntrustedConfig(t *testing.T) {
 		t.Fatalf("Mkdir: %v", err)
 	}
 	marker := filepath.Join(home, "marker")
-	writeConfig(t, home, "enter "+target+"\n    echo ran > "+marker+"\n")
+	writeConfig(t, home, "enter "+filepath.ToSlash(target)+"\n    echo ran > "+filepath.ToSlash(marker)+"\n")
 
 	_, stderr, code := runFor(t, "exec", home, target)
 	if code != 1 {
@@ -1718,14 +2072,92 @@ func TestRun_ExecRefusesUntrustedConfig(t *testing.T) {
 }
 
 func TestRun_ExecWrongArgCount(t *testing.T) {
-	if _, _, code := runFor(t, "exec", "/only-one"); code != 2 {
+	if _, _, code := runFor(t, "exec", tp("/a"), tp("/b"), tp("/c")); code != 2 {
 		t.Errorf("exit code = %d, want 2", code)
 	}
 }
 
+// One argument is <from>: the half of the pair envoke cannot work out for
+// itself. Asserted here as well as in TestTransitionArgs because exec shares
+// that resolver with debug, and a form only one of the two accepts is a form
+// the shared path has stopped being shared. No config exists, so this fails on
+// the config set rather than on the arguments -- which is the point.
+func TestRun_ExecAcceptsFromAlone(t *testing.T) {
+	home := isolateHome(t)
+
+	_, stderr, code := runFor(t, "exec", home)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1 (stderr %q)", code, stderr)
+	}
+	if !strings.Contains(stderr, "no central config") {
+		t.Errorf("expected the argument form to be accepted and the missing config reported, got %q", stderr)
+	}
+}
+
+// `envoke exec <from>` can be read as "run the blocks for this directory",
+// which is the opposite direction and, for exec, means running that
+// directory's leave blocks. debug leads with the pair it resolved; this is
+// exec's equivalent, and it is scoped to the one form whose meaning a reader
+// can get backwards. The negative half is what protects existing callers: a
+// script using the no-argument or two-argument form must go on printing
+// exactly what it printed before.
+//
+// On stderr, which is also the only stream run hands cmdExec: stdout belongs
+// to the blocks, and a caller capturing it must not collect a diagnostic.
+func TestRun_ExecEchoesTheTransitionOnlyForTheOneArgumentForm(t *testing.T) {
+	t.Run("one argument echoes the resolved pair", func(t *testing.T) {
+		home := isolateHome(t)
+		here := filepath.Join(home, "here")
+		if err := os.Mkdir(here, 0o755); err != nil {
+			t.Fatalf("Mkdir: %v", err)
+		}
+		unsetEnv(t, "OLDPWD")
+		t.Setenv("PWD", here)
+
+		// No config, so nothing runs: the echo is printed before the set is
+		// even loaded, and exit 1 confirms these got past argument handling
+		// rather than failing on it, which is what would make the two negative
+		// cases below pass for the wrong reason.
+		_, stderr, code := runFor(t, "exec", home)
+		if code != 1 {
+			t.Fatalf("exit code = %d, want 1 (stderr %q)", code, stderr)
+		}
+		if !strings.Contains(stderr, "envoke exec: "+home+" -> "+here) {
+			t.Errorf("expected the inferred transition echoed, got %q", stderr)
+		}
+	})
+
+	t.Run("two arguments echo nothing", func(t *testing.T) {
+		home := isolateHome(t)
+
+		_, stderr, code := runFor(t, "exec", home, filepath.Join(home, "here"))
+		if code != 1 {
+			t.Fatalf("exit code = %d, want 1 (stderr %q)", code, stderr)
+		}
+		if strings.Contains(stderr, "envoke exec:") {
+			t.Errorf("the two-argument form states the pair already, got %q", stderr)
+		}
+	})
+
+	t.Run("no arguments echo nothing", func(t *testing.T) {
+		home := isolateHome(t)
+		here := filepath.Join(home, "here")
+		t.Setenv("OLDPWD", home)
+		t.Setenv("PWD", here)
+
+		_, stderr, code := runFor(t, "exec")
+		if code != 1 {
+			t.Fatalf("exit code = %d, want 1 (stderr %q)", code, stderr)
+		}
+		if strings.Contains(stderr, "envoke exec:") {
+			t.Errorf("a script on the no-argument form must see no new output, got %q", stderr)
+		}
+	})
+}
+
 func TestRun_ExecNoConfigIsError(t *testing.T) {
 	isolateHome(t)
-	_, stderr, code := runFor(t, "exec", "/a", "/b")
+	_, stderr, code := runFor(t, "exec", tp("/a"), tp("/b"))
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
@@ -1743,7 +2175,7 @@ func TestRun_AllowRecordsTheContentItReviewed(t *testing.T) {
 
 	writeConfig(t, home, "enter /a\n    echo swapped-in-after-review\n")
 
-	stdout, stderr, code := runFor(t, "shell-hook", "/", "/a")
+	stdout, stderr, code := runFor(t, "shell-hook", tp("/"), tp("/a"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -1795,7 +2227,7 @@ func TestRun_AllowReapprovesWhenTrustRecordIsHalfWritten(t *testing.T) {
 		t.Errorf("expected the config to be re-trusted, got %q", stdout)
 	}
 
-	if stdout, _, code := runFor(t, "shell-hook", "/", "/a"); code != 0 || !strings.Contains(stdout, "echo hi") {
+	if stdout, _, code := runFor(t, "shell-hook", tp("/"), tp("/a")); code != 0 || !strings.Contains(stdout, "echo hi") {
 		t.Errorf("expected the re-approved config to run, got stdout %q code %d", stdout, code)
 	}
 }
@@ -1815,6 +2247,11 @@ func isolateHome(t *testing.T) (home string) {
 	// TestRun_ShellInitWrongArgCount asserted the wrong thing for a while
 	// and passed anyway, purely because the Linux CI container has no
 	// $SHELL, and only the macOS runner ever showed it.
+	//
+	// currentDir reads $PWD ahead of os.Getwd, so exec, debug and reload take
+	// their <to> from it on every form that leaves it off. Tests that care set it
+	// to what they mean; this is so the rest don't read the ambient shell's.
+	t.Setenv("PWD", home)
 	unsetEnv(t, "ENVOKE_FROM")
 	unsetEnv(t, "ENVOKE_TO")
 	unsetEnv(t, "ENVOKE_DISABLE")
@@ -1906,16 +2343,24 @@ func TestRun_CompletionDetectsShellAndRejectsUnsupported(t *testing.T) {
 	})
 }
 
-// writeConfig writes the central config, ~/.envokerc.
+// writeConfig writes the central config, ~/.envokerc. The body goes through
+// configBody, so a pattern written as "/a" is one the platform can match.
 func writeConfig(t *testing.T, home, body string) {
 	t.Helper()
 	path := filepath.Join(home, ".envokerc")
-	if err := os.WriteFile(path, []byte(strings.TrimPrefix(body, "\n")), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(configBody(body)), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 }
 
-// fragmentDir points $ENVOKERC_D at a fresh directory and returns it.
+// fragmentDir points $ENVOKERC_D at a fresh directory and returns it, in the
+// spelling envoke will report the files it finds there.
+//
+// Resolved, because the fragment walk resolves the directory before walking it
+// (see resolvedPath): a test comparing its own $TMPDIR-derived path against
+// that output otherwise depends on $TMPDIR being neither a symlink -- it is one
+// on every Mac -- nor an 8.3 short name, which %TMP% on a Windows runner
+// usually is (`C:\Users\RUNNER~1\...`).
 func fragmentDir(t *testing.T) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "envokerc.d")
@@ -1927,30 +2372,13 @@ func fragmentDir(t *testing.T) string {
 	return dir
 }
 
-// resolvedPath is the spelling envoke reports for a file reached through the
-// fragment walk, which resolves the config directory before walking it. A test
-// comparing its own $TMPDIR-derived path against that output passes only where
-// $TMPDIR happens not to be a symlink: on macOS it is one (/var ->
-// /private/var), on GitHub's macOS runner included.
-//
-// The central config is deliberately not put through this: config.Locate hands
-// back ~/.envokerc as spelled, so envoke reports the unresolved path there.
-func resolvedPath(t *testing.T, path string) string {
-	t.Helper()
-	resolved, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		t.Fatalf("EvalSymlinks(%s): %v", path, err)
-	}
-	return resolved
-}
-
 func writeFragment(t *testing.T, dir, name, body string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(path, []byte(strings.TrimPrefix(body, "\n")), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(configBody(body)), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	return path
@@ -1965,7 +2393,7 @@ func TestRun_ShellHookRunsATrustedFragment(t *testing.T) {
 		t.Fatalf("allow exit code = %d: %s", code, stderr)
 	}
 
-	stdout, stderr, code := runFor(t, "shell-hook", "--", "/", "/work")
+	stdout, stderr, code := runFor(t, "shell-hook", "--", tp("/"), tp("/work"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr %q)", code, stderr)
 	}
@@ -1983,7 +2411,7 @@ func TestRun_ShellHookReportsAnUntrustedFragmentWithoutAsking(t *testing.T) {
 
 	var out, errBuf bytes.Buffer
 	stdin := strings.NewReader("y\ny\n")
-	code := run([]string{"shell-hook", "--", "/", "/work"}, &out, &errBuf, stdin)
+	code := run([]string{"shell-hook", "--", tp("/"), tp("/work")}, &out, &errBuf, stdin)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -2009,7 +2437,7 @@ func TestRun_ShellHookAppliesFragmentsInFilenameOrder(t *testing.T) {
 		t.Fatalf("allow exit code = %d: %s", code, stderr)
 	}
 
-	stdout, _, code := runFor(t, "shell-hook", "--", "/", "/work")
+	stdout, _, code := runFor(t, "shell-hook", "--", tp("/"), tp("/work"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -2030,7 +2458,7 @@ func TestRun_ShellHookAppliesCentralConfigBeforeFragments(t *testing.T) {
 		t.Fatalf("allow exit code = %d: %s", code, stderr)
 	}
 
-	stdout, _, code := runFor(t, "shell-hook", "--", "/", "/work")
+	stdout, _, code := runFor(t, "shell-hook", "--", tp("/"), tp("/work"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -2080,7 +2508,12 @@ func TestRun_SymlinkedFragmentCannotMatchOutsideItsProject(t *testing.T) {
 	outside := t.TempDir()
 
 	target := filepath.Join(project, "envoke.conf")
-	body := "enter " + filepath.ToSlash(outside) + "\n    export ESCAPED=1\n"
+	// The pattern names the resolved spelling of the directory it must not
+	// reach: for a confined config both the bound and the pattern apply to the
+	// symlink-resolved path, so a pattern written any other way would fail to
+	// match for a reason other than the bound -- and pass this test without
+	// exercising it.
+	body := "enter " + filepath.ToSlash(resolvedPath(t, outside)) + "\n    export ESCAPED=1\n"
 	if err := os.WriteFile(target, []byte(body), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -2124,6 +2557,12 @@ func TestRun_AllowCoversEveryFragment(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("list exit code = %d", code)
 	}
+	// "untrusted" contains "trusted", so the count on its own was satisfied by two
+	// trusted configs and one that was not -- and this is the only thing the test
+	// asserts about the result of approving the set.
+	if strings.Contains(listOut, "untrusted") {
+		t.Errorf("no config in the set may read as untrusted, got %q", listOut)
+	}
 	if got := strings.Count(listOut, "trusted"); got != 3 {
 		t.Errorf("expected all three configs trusted, got %d in %q", got, listOut)
 	}
@@ -2148,22 +2587,520 @@ func TestRun_AllowReportsABrokenFragmentAndApprovesTheRest(t *testing.T) {
 	}
 }
 
+// trustRecords reports the config paths the trust store currently holds a trust
+// token for, keyed by path. It reads the store off disk rather than through
+// internal/trust so a test asserting what revoke removed doesn't go through the
+// code that removed it, and it keys off the hash record rather than the .path
+// sibling because the hash record is the token: a record whose siblings survived
+// is still no approval.
+func trustRecords(t *testing.T, home string) map[string]bool {
+	t.Helper()
+	dir := filepath.Join(home, ".local", "share", "envoke", "allow")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatalf("ReadDir trust store: %v", err)
+	}
+
+	paths := make(map[string]bool)
+	for _, e := range entries {
+		if e.IsDir() || strings.Contains(e.Name(), ".") {
+			continue
+		}
+		recorded, err := os.ReadFile(filepath.Join(dir, e.Name()+".path"))
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+		paths[string(recorded)] = true
+	}
+	return paths
+}
+
+// recordedPath is the store's record for the config whose path ends in name.
+//
+// A fragment's recorded path is not always the string writeFragment returned:
+// the fragment walk resolves the directory before walking it, so under a $TMPDIR
+// that is itself a symlink the two differ by prefix. Asserting against the
+// recorded path tests what envoke actually keyed on.
+func recordedPath(t *testing.T, home, name string) string {
+	t.Helper()
+	var found string
+	for path := range trustRecords(t, home) {
+		if filepath.Base(path) != name {
+			continue
+		}
+		if found != "" {
+			t.Fatalf("two records end in %s: %s and %s", name, found, path)
+		}
+		found = path
+	}
+	if found == "" {
+		t.Fatalf("no trust record for a config named %s", name)
+	}
+	return found
+}
+
+// With no path, revoke covers the whole set, for the same reason allow does --
+// otherwise the headline command of the fragment feature has no inverse.
+func TestRun_RevokeCoversTheWholeSet(t *testing.T) {
+	home := isolateHome(t)
+	dir := fragmentDir(t)
+	writeConfig(t, home, "enter /a\n    echo central\n")
+	writeFragment(t, dir, "10-one", "enter /a\n    echo one\n")
+	writeFragment(t, dir, "20-two", "enter /a\n    echo two\n")
+
+	if _, stderr, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow exit code = %d: %s", code, stderr)
+	}
+	allowed := trustRecords(t, home)
+	if len(allowed) != 3 {
+		t.Fatalf("expected three records after allow, store holds %v", allowed)
+	}
+
+	stdout, stderr, code := runFor(t, "revoke")
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
+	}
+	// Every path allow recorded is a path revoke reports removing, which is the
+	// equality the store keys on.
+	for path := range allowed {
+		if !strings.Contains(stdout, "revoked trust for "+path) {
+			t.Errorf("expected %s named as revoked, got %q", path, stdout)
+		}
+	}
+	if got := trustRecords(t, home); len(got) != 0 {
+		t.Errorf("expected an empty trust store, it holds %v", got)
+	}
+	// The set must actually stop running, not merely stop being listed.
+	if out, _, _ := runFor(t, "shell-hook", tp("/"), tp("/a")); out != "" {
+		t.Errorf("a revoked set must not render, got %q", out)
+	}
+}
+
+// The case that used to fail outright: with fragments and no central config,
+// revoke resolved a single path through config.Locate and reported "no config
+// found", leaving no way to withdraw what allow had granted.
+func TestRun_RevokeWithoutACentralConfig(t *testing.T) {
+	home := isolateHome(t)
+	dir := fragmentDir(t)
+	writeFragment(t, dir, "10-work", "enter /a\n    echo fragment\n")
+
+	if _, stderr, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow exit code = %d: %s", code, stderr)
+	}
+	fragment := recordedPath(t, home, "10-work")
+
+	stdout, stderr, code := runFor(t, "revoke")
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "revoked trust for "+fragment) {
+		t.Errorf("expected the fragment named as revoked, got %q", stdout)
+	}
+	if got := trustRecords(t, home); len(got) != 0 {
+		t.Errorf("expected an empty trust store, it holds %v", got)
+	}
+}
+
+// Only part of a set is normally approved, so a file with no record to remove is
+// reported and skipped -- and revoking nothing at all still succeeds, since the
+// end state revoke asks for already holds.
+func TestRun_RevokePartlyTrustedSet(t *testing.T) {
+	home := isolateHome(t)
+	dir := fragmentDir(t)
+	writeConfig(t, home, "enter /a\n    echo central\n")
+	writeFragment(t, dir, "10-one", "enter /a\n    echo one\n")
+
+	if _, stderr, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow exit code = %d: %s", code, stderr)
+	}
+	approved := trustRecords(t, home)
+	if len(approved) != 2 {
+		t.Fatalf("expected two records after allow, store holds %v", approved)
+	}
+	// A fragment that joined the set after the approval -- a `git pull` in a
+	// dotfiles repository is all it takes -- has no record to remove.
+	writeFragment(t, dir, "20-two", "enter /a\n    echo two\n")
+
+	stdout, stderr, code := runFor(t, "revoke")
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
+	}
+	for path := range approved {
+		if !strings.Contains(stdout, "revoked trust for "+path) {
+			t.Errorf("expected %s named as revoked, got %q", path, stdout)
+		}
+	}
+	// Matched on the trailing path element for the reason recordedPath explains.
+	if !strings.Contains(stdout, "20-two was not trusted") {
+		t.Errorf("expected the unapproved fragment reported as nothing to revoke, got %q", stdout)
+	}
+	if got := trustRecords(t, home); len(got) != 0 {
+		t.Errorf("expected an empty trust store, it holds %v", got)
+	}
+
+	// Nothing left to remove anywhere in the set: still a success.
+	stdout, _, code = runFor(t, "revoke")
+	if code != 0 {
+		t.Errorf("revoking an untrusted set: exit code = %d, want 0", code)
+	}
+	if strings.Contains(stdout, "revoked trust for") {
+		t.Errorf("expected no revocations reported, got %q", stdout)
+	}
+}
+
+// A path narrows revoke to that one file, so a set can still be withdrawn a
+// piece at a time.
+func TestRun_RevokeExplicitPathLeavesTheRestOfTheSet(t *testing.T) {
+	home := isolateHome(t)
+	dir := fragmentDir(t)
+	writeConfig(t, home, "enter /a\n    echo central\n")
+	writeFragment(t, dir, "10-one", "enter /a\n    echo one\n")
+	writeFragment(t, dir, "20-two", "enter /a\n    echo two\n")
+
+	if _, stderr, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow exit code = %d: %s", code, stderr)
+	}
+	one := recordedPath(t, home, "10-one")
+	two := recordedPath(t, home, "20-two")
+
+	stdout, stderr, code := runFor(t, "revoke", one)
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
+	}
+	if strings.Contains(stdout, two) {
+		t.Errorf("revoking one path must not mention another config, got %q", stdout)
+	}
+	got := trustRecords(t, home)
+	if len(got) != 2 {
+		t.Errorf("expected the other two records kept, store holds %v", got)
+	}
+	for path := range got {
+		if path == one {
+			t.Errorf("expected %s revoked, it still has a record", one)
+		}
+	}
+}
+
+// Trust is keyed on the path envoke reached the file by, and the fragment walk
+// resolves the config directory before walking it -- so in the ordinary dotfiles
+// layout, where envokerc.d is a symlink into a repository, both allow and revoke
+// must key on the file inside that repository. Anything that computed one key
+// from the link and the other from its target would leave a revoked config still
+// trusted.
+func TestRun_RevokeMatchesAllowThroughASymlinkedFragmentDir(t *testing.T) {
+	home := isolateHome(t)
+	dotfiles := t.TempDir()
+	realDir := filepath.Join(dotfiles, "envokerc.d")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	link := filepath.Join(t.TempDir(), "envokerc.d")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	t.Setenv("ENVOKERC_D", link)
+
+	writeFragment(t, realDir, "10-work", "enter /a\n    echo fragment\n")
+	// A fragment that is itself a symlink into a project: the walk reports the
+	// link, not its target, and the record follows the link's own path.
+	project := t.TempDir()
+	target := filepath.Join(project, "envoke.conf")
+	if err := os.WriteFile(target, []byte("enter ./src\n    echo project\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.Symlink(target, filepath.Join(realDir, "20-project")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if _, stderr, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow exit code = %d: %s", code, stderr)
+	}
+	allowed := trustRecords(t, home)
+	if len(allowed) != 2 {
+		t.Fatalf("expected a record per fragment, store holds %v", allowed)
+	}
+
+	stdout, stderr, code := runFor(t, "revoke")
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
+	}
+	// Every path allow recorded is a path revoke reports, which is the same
+	// equality the store keys on.
+	for path := range allowed {
+		if !strings.Contains(stdout, "revoked trust for "+path) {
+			t.Errorf("expected %s named as revoked, got %q", path, stdout)
+		}
+	}
+	if got := trustRecords(t, home); len(got) != 0 {
+		t.Errorf("expected an empty trust store, it holds %v", got)
+	}
+	if out, _, _ := runFor(t, "shell-hook", tp("/"), tp("/a")); out != "" {
+		t.Errorf("a revoked fragment must not render, got %q", out)
+	}
+}
+
+// The set's spelling of a file and the user's are not the same string, and only
+// the set's is the one the hook looks up. config.Fragments resolves the config
+// directory before walking it, so in the ordinary dotfiles layout -- envokerc.d
+// a symlink into a repository -- `envoke allow <link>/<fragment>`, which is what
+// tab completion hands you, names a file the set holds under another name.
+//
+// Matched on the path text that fell out of the set entirely: the review then
+// described a standalone file with no bound and a "./" base taken from the link's
+// own directory, and the record landed under a key nothing reads -- so allow
+// printed "trusted" and the next cd still ran nothing.
+func TestRun_AllowThroughASymlinkedFragmentDirTrustsWhatTheHookLooksUp(t *testing.T) {
+	home := isolateHome(t)
+	realDir := filepath.Join(t.TempDir(), "envokerc.d")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	link := filepath.Join(t.TempDir(), "envokerc.d")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	t.Setenv("ENVOKERC_D", link)
+
+	// A fragment symlinked in from a project, so there is a bound to state and a
+	// "./" base that differs between the link's directory and the target's.
+	project := t.TempDir()
+	target := filepath.Join(project, "envoke.conf")
+	if err := os.WriteFile(target, []byte("enter ./src\n    export IN_SRC=1\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(project, "src"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.Symlink(target, filepath.Join(realDir, "20-project")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	stdout, stderr, code := runFor(t, "allow", "--yes", filepath.Join(link, "20-project"))
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr %q)", code, stderr)
+	}
+	// Both notes come from the set and from nowhere else, so their absence is how
+	// this used to show in the review a user is asked to approve.
+	for _, want := range []string{
+		"symlink to " + resolvedPath(t, target),
+		"confined to " + resolvedPath(t, project),
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("the review should state %q, got %q", want, stdout)
+		}
+	}
+
+	if got, want := recordedPath(t, home, "20-project"), filepath.Join(resolvedPath(t, realDir), "20-project"); got != want {
+		t.Errorf("trust record keyed on %s, want the name the set reaches it by, %s", got, want)
+	}
+	// The assertion that cannot pass by accident: the hook renders the block.
+	hookOut, stderr, code := runFor(t, "shell-hook", "--", project, filepath.Join(project, "src"))
+	if code != 0 {
+		t.Fatalf("shell-hook exit code = %d (stderr %q)", code, stderr)
+	}
+	if !strings.Contains(hookOut, "export IN_SRC=1") {
+		t.Errorf("the approved fragment must run on the next cd, got %q (stderr %q)", hookOut, stderr)
+	}
+}
+
+// The inverse spelling, for the reason configTargets exists: a record allow
+// wrote under the set's name has to come off by the name the user has.
+func TestRun_RevokeThroughASymlinkedFragmentDirRemovesTheSetsRecord(t *testing.T) {
+	home := isolateHome(t)
+	realDir := filepath.Join(t.TempDir(), "envokerc.d")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	link := filepath.Join(t.TempDir(), "envokerc.d")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	t.Setenv("ENVOKERC_D", link)
+	writeFragment(t, realDir, "10-work", "enter /a\n    echo fragment\n")
+
+	if _, stderr, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow exit code = %d: %s", code, stderr)
+	}
+	recorded := recordedPath(t, home, "10-work")
+
+	stdout, stderr, code := runFor(t, "revoke", filepath.Join(link, "10-work"))
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "revoked trust for "+recorded) {
+		t.Errorf("expected the set's own record named as revoked, got %q", stdout)
+	}
+	if got := trustRecords(t, home); len(got) != 0 {
+		t.Errorf("expected an empty trust store, it holds %v", got)
+	}
+}
+
+// A record can be keyed on a spelling the set does not use, because trust is
+// keyed on the path text and the central config is honoured exactly as written.
+// Withdrawing the file has to take that record too: `prune` only drops records
+// whose config file is gone and this one's is not, and nothing else in the CLI
+// can name it, so what would be left behind is a plaintext copy of a config the
+// user believes they have withdrawn.
+func TestRun_RevokeAlsoWithdrawsARecordUnderTheSpellingTyped(t *testing.T) {
+	home := isolateHome(t)
+	realDir := filepath.Join(t.TempDir(), "envokerc.d")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	link := filepath.Join(t.TempDir(), "envokerc.d")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	t.Setenv("ENVOKERC_D", link)
+	writeFragment(t, realDir, "10-work", "enter /a\n    echo fragment\n")
+
+	// $ENVOKERC pointed at the file through the link: the set then reaches one
+	// file two ways, keeps the central spelling, and keys the record on it. That
+	// also exercises the dedup -- one record, and the blocks reviewed once.
+	typed := filepath.Join(link, "10-work")
+	t.Setenv("ENVOKERC", typed)
+	stdout, stderr, code := runFor(t, "allow", "--yes")
+	if code != 0 {
+		t.Fatalf("allow exit code = %d: %s", code, stderr)
+	}
+	if got := strings.Count(stdout, "echo fragment"); got != 1 {
+		t.Errorf("one file reached twice must be reviewed once, got %d dumps in %q", got, stdout)
+	}
+	t.Setenv("ENVOKERC", "")
+	if got := trustRecords(t, home); len(got) != 1 || !got[typed] {
+		t.Fatalf("expected one record keyed on %s, store holds %v", typed, got)
+	}
+
+	stdout, stderr, code = runFor(t, "revoke", typed)
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "revoked trust for "+filepath.Join(resolvedPath(t, realDir), "10-work")) {
+		t.Errorf("expected the file reported under the name the set reaches it by, got %q", stdout)
+	}
+	if got := trustRecords(t, home); len(got) != 0 {
+		t.Errorf("expected an empty trust store, it holds %v", got)
+	}
+}
+
+// Identity is asked only about a target no name in the set matches, and this is
+// the shape that tells the two orders apart: a fragment hard-linked to the
+// central config is one inode the set holds under two names, which the dedup's
+// EvalSymlinks key cannot collapse because neither path is a symlink. Matching
+// such a target on identity first answers with whichever entry the inode reaches
+// first -- so the whole-set form recorded the central config, took the fragment
+// for a file it had already reviewed, and left the name the hook looks up for it
+// untrusted. Each entry is keyed on its own name.
+func TestRun_AllowKeysEachEntryOfAHardLinkedConfigOnItsOwnName(t *testing.T) {
+	home := isolateHome(t)
+	dir := fragmentDir(t)
+	writeConfig(t, home, "enter /a\n    echo shared\n")
+	central := filepath.Join(home, ".envokerc")
+	fragment := filepath.Join(dir, "10-hardlink")
+	if err := os.Link(central, fragment); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+
+	if _, stderr, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow exit code = %d: %s", code, stderr)
+	}
+	records := trustRecords(t, home)
+	for _, want := range []string{central, fragment} {
+		if !records[want] {
+			t.Errorf("expected a record keyed on %s, store holds %v", want, records)
+		}
+	}
+	// The assertion that cannot pass by accident: the set loads the file under
+	// both names, so a record under only one of them stops a block from running.
+	if _, stderr, _ := runFor(t, "shell-hook", "--", tp("/"), tp("/a")); strings.Contains(stderr, "not trusted") {
+		t.Errorf("every name the set loads the file under must be trusted, got %q", stderr)
+	}
+
+	// And naming one of the two withdraws that one: revoke acts on the file the
+	// record is keyed on, not on every path that shares its inode.
+	if _, stderr, code := runFor(t, "revoke", fragment); code != 0 {
+		t.Fatalf("revoke exit code = %d: %s", code, stderr)
+	}
+	if got := trustRecords(t, home); len(got) != 1 || !got[central] {
+		t.Errorf("expected only %s still trusted, store holds %v", central, got)
+	}
+}
+
+// `envoke allow --yes` is what a dotfiles bootstrap runs, on a machine whose
+// $ENVOKERC may name a file it does not have. The hot path calls that state
+// ordinary and stays silent about it; allow approved every fragment and then
+// exited 1, which under `set -e` fails the bootstrap on a success.
+func TestRun_AllowSucceedsWithAMissingCentralConfigAndFragments(t *testing.T) {
+	home := isolateHome(t)
+	dir := fragmentDir(t)
+	t.Setenv("ENVOKERC", filepath.Join(t.TempDir(), "not-written-yet"))
+	writeFragment(t, dir, "10-work", "enter /a\n    echo fragment\n")
+
+	stdout, stderr, code := runFor(t, "allow", "--yes")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr %q)", code, stderr)
+	}
+	if strings.Contains(stderr, "not-written-yet") {
+		t.Errorf("a central config nobody has written yet is not a failure, got %q", stderr)
+	}
+	if !strings.Contains(stdout, "trusted "+recordedPath(t, home, "10-work")) {
+		t.Errorf("expected the fragment approved, got %q", stdout)
+	}
+
+	// The exemption is for a path envoke chose, not for one a user typed: that
+	// one is a typo and still has to fail.
+	typo := filepath.Join(t.TempDir(), "typo")
+	_, stderr, code = runFor(t, "allow", "--yes", typo)
+	if code != 1 {
+		t.Errorf("a typed missing path: exit code = %d, want 1 (stderr %q)", code, stderr)
+	}
+	if !strings.Contains(stderr, typo) {
+		t.Errorf("expected the typed path named in the error, got %q", stderr)
+	}
+}
+
+// resolvedPath is the spelling envoke reports for a file reached through the
+// fragment walk, which resolves the config directory before walking it. A test
+// comparing its own $TMPDIR-derived path against that output passes only where
+// $TMPDIR happens not to be a symlink: on macOS it is one (/var ->
+// /private/var), on GitHub's macOS runner included.
+//
+// The central config is deliberately not put through this: config.Locate hands
+// back ~/.envokerc as spelled, so envoke reports the unresolved path there.
+func resolvedPath(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%s): %v", path, err)
+	}
+	return resolved
+}
+
 func TestRun_DebugListsEveryConfigInTheSetWithItsStatus(t *testing.T) {
 	home := isolateHome(t)
 	dir := fragmentDir(t)
 	writeConfig(t, home, "enter /work\n    echo central\n")
-	fragment := writeFragment(t, dir, "10-work", "enter /work\n    echo fragment\n")
+	fragment := resolvedPath(t, writeFragment(t, dir, "10-work", "enter /work\n    echo fragment\n"))
 
 	central := filepath.Join(home, ".envokerc")
 	if _, _, code := runFor(t, "allow", central, "--yes"); code != 0 {
 		t.Fatalf("allow exit code = %d", code)
 	}
 
-	stdout, _, code := runFor(t, "debug", "/", "/work")
+	stdout, _, code := runFor(t, "debug", tp("/"), tp("/work"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
-	for _, want := range []string{central, fragment, "trusted", "NOT trusted"} {
+	// Each status is asserted against the config it belongs to: "NOT trusted"
+	// contains "trusted", so checking the two words as bare substrings never
+	// established that the central config was the trusted one.
+	for _, want := range []string{
+		"config " + central + " (trusted)",
+		"config " + fragment + " (NOT trusted",
+	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("debug output should mention %q, got %q", want, stdout)
 		}
@@ -2171,14 +3108,167 @@ func TestRun_DebugListsEveryConfigInTheSetWithItsStatus(t *testing.T) {
 	if !strings.Contains(stdout, "line 1 of "+fragment) {
 		t.Errorf("expected each block to name its config, got %q", stdout)
 	}
+	// Neither the central config nor a fragment that really lives in envokerc.d
+	// is a symlink or confined, so neither gets any of that reported about it.
+	for _, unwanted := range []string{"symlink to", "confined to"} {
+		if strings.Contains(stdout, unwanted) {
+			t.Errorf("debug should not mention %q for an ordinary config set, got %q", unwanted, stdout)
+		}
+	}
+}
+
+// The case that used to be undiagnosable: a fragment symlinked into a project,
+// approved, listing as trusted, whose pattern points out of that project -- so
+// matcher.NewMatch refuses every match and nothing ever fires. debug is where a
+// user goes when a block doesn't fire, so debug has to name the bound.
+func TestRun_DebugReportsTheBoundOnAConfinedFragment(t *testing.T) {
+	isolateHome(t)
+	dir := fragmentDir(t)
+	project := t.TempDir()
+	outside := t.TempDir()
+
+	target := filepath.Join(project, "envoke.conf")
+	// The pattern names the resolved spelling of the directory it must not
+	// reach: for a confined config both the bound and the pattern apply to the
+	// symlink-resolved path, so a pattern written any other way would fail to
+	// match for a reason other than the bound -- and pass this test without
+	// exercising it.
+	body := "enter " + filepath.ToSlash(resolvedPath(t, outside)) + "\n    export ESCAPED=1\n"
+	if err := os.WriteFile(target, []byte(body), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "project")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, stderr, code := runFor(t, "allow", "--yes"); code != 0 {
+		t.Fatalf("allow exit code = %d: %s", code, stderr)
+	}
+
+	stdout, _, code := runFor(t, "debug", filepath.Dir(outside), outside)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	// Trusted, loaded, and firing nothing: the bound is the only thing that
+	// explains the combination. "NOT trusted" contains "trusted", so the whole
+	// premise of the test rests on excluding it too.
+	if !strings.Contains(stdout, "(trusted)") || strings.Contains(stdout, "NOT trusted") {
+		t.Fatalf("expected a trusted config, got %q", stdout)
+	}
+	if !strings.Contains(stdout, "no blocks would fire") {
+		t.Fatalf("expected a trusted config that fires nothing, got %q", stdout)
+	}
+	for _, want := range []string{
+		"symlink to " + resolvedPath(t, target),
+		"confined to " + resolvedPath(t, project),
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("debug should report %q, got %q", want, stdout)
+		}
+	}
+}
+
+// A fragment that is a symlink to a file inside the config directory is not
+// confined -- it is a file that really lives there, reached by another name -- so
+// its target is reported and no bound is.
+func TestRun_DebugReportsNoBoundForALinkInsideTheConfigDir(t *testing.T) {
+	isolateHome(t)
+	dir := fragmentDir(t)
+	// A dotfile so the walk skips the target itself: were it listed too, the
+	// set's dedup would drop the link and there would be no entry to report on.
+	target := writeFragment(t, dir, ".shared.conf", "enter /work\n    echo shared\n")
+	if err := os.Symlink(target, filepath.Join(dir, "10-link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	stdout, _, code := runFor(t, "debug", tp("/"), tp("/work"))
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "symlink to "+resolvedPath(t, target)) {
+		t.Errorf("debug should report the link's target, got %q", stdout)
+	}
+	if strings.Contains(stdout, "confined to") {
+		t.Errorf("a link inside the config directory is not confined, got %q", stdout)
+	}
+}
+
+// Approving a fragment means approving content whose effective meaning is set by
+// the file it links to and the tree it is bounded to, so the review has to state
+// both -- before the confirmation, on a first approval and on a re-approval
+// after someone else's commit rewrote it alike.
+func TestRun_AllowReviewStatesAFragmentsBound(t *testing.T) {
+	isolateHome(t)
+	dir := fragmentDir(t)
+	project := t.TempDir()
+
+	target := filepath.Join(project, "envoke.conf")
+	if err := os.WriteFile(target, []byte("enter ./src\n    export FIRST=1\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "project")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	wantLink := "symlink to " + resolvedPath(t, target)
+	wantBound := "confined to " + resolvedPath(t, project)
+
+	stdout, stderr, code := runForStdin(t, "y\n", "allow")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr %q)", code, stderr)
+	}
+	for _, want := range []string{wantLink, wantBound} {
+		at := strings.Index(stdout, want)
+		if at < 0 {
+			t.Fatalf("the review should state %q, got %q", want, stdout)
+		}
+		if prompt := strings.Index(stdout, "[y/N]"); prompt >= 0 && at > prompt {
+			t.Errorf("%q must be stated before the confirmation, got %q", want, stdout)
+		}
+	}
+
+	// The re-approval path shows a diff rather than the blocks, and is the one a
+	// rewritten project config actually goes through.
+	if err := os.WriteFile(target, []byte("enter ./src\n    export SECOND=1\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	stdout, stderr, code = runForStdin(t, "y\n", "allow")
+	if code != 0 {
+		t.Fatalf("re-approval exit code = %d, want 0 (stderr %q)", code, stderr)
+	}
+	if !strings.Contains(stdout, "+ ") {
+		t.Fatalf("expected a diff on re-approval, got %q", stdout)
+	}
+	for _, want := range []string{wantLink, wantBound} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("the re-approval review should state %q, got %q", want, stdout)
+		}
+	}
+}
+
+// The same output must not appear where it means nothing: a central config that
+// is a plain file is neither symlinked nor confined.
+func TestRun_AllowReviewSaysNothingAboutTheBoundForACentralConfig(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, home, "enter /work\n    echo central\n")
+
+	stdout, stderr, code := runForStdin(t, "y\n", "allow")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr %q)", code, stderr)
+	}
+	for _, unwanted := range []string{"symlink to", "confined to"} {
+		if strings.Contains(stdout, unwanted) {
+			t.Errorf("the review should not mention %q for a central config, got %q", unwanted, stdout)
+		}
+	}
 }
 
 func TestRun_ExecRunsATrustedFragment(t *testing.T) {
+	requirePOSIXShell(t)
 	isolateHome(t)
 	dir := fragmentDir(t)
 	work := t.TempDir()
 	marker := filepath.Join(work, "marker")
-	writeFragment(t, dir, "10-work", "enter "+filepath.ToSlash(work)+"\n    touch "+filepath.ToSlash(marker)+"\n")
+	writeFragment(t, dir, "10-work", "enter "+filepath.ToSlash(work)+"\n    echo ran > "+filepath.ToSlash(marker)+"\n")
 
 	if _, stderr, code := runFor(t, "allow", "--yes"); code != 0 {
 		t.Fatalf("allow exit code = %d: %s", code, stderr)
@@ -2194,12 +3284,13 @@ func TestRun_ExecRunsATrustedFragment(t *testing.T) {
 
 // One untrusted config must not stop the trusted ones.
 func TestRun_ExecRunsTrustedConfigsDespiteAnUntrustedOne(t *testing.T) {
+	requirePOSIXShell(t)
 	isolateHome(t)
 	dir := fragmentDir(t)
 	work := t.TempDir()
 	marker := filepath.Join(work, "marker")
 
-	trusted := writeFragment(t, dir, "10-trusted", "enter "+filepath.ToSlash(work)+"\n    touch "+filepath.ToSlash(marker)+"\n")
+	trusted := writeFragment(t, dir, "10-trusted", "enter "+filepath.ToSlash(work)+"\n    echo ran > "+filepath.ToSlash(marker)+"\n")
 	writeFragment(t, dir, "20-untrusted", "enter "+filepath.ToSlash(work)+"\n    echo untrusted\n")
 	if _, _, code := runFor(t, "allow", trusted, "--yes"); code != 0 {
 		t.Fatalf("allow exit code = %d", code)
@@ -2247,7 +3338,7 @@ func TestRun_ShellHookReportsABrokenFragmentSymlink(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	_, stderr, code := runFor(t, "shell-hook", "--", "/", "/work")
+	_, stderr, code := runFor(t, "shell-hook", "--", tp("/"), tp("/work"))
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
@@ -2262,7 +3353,7 @@ func TestRun_ShellHookStaysSilentForAMissingCentralConfig(t *testing.T) {
 	isolateHome(t)
 	t.Setenv("ENVOKERC", filepath.Join(t.TempDir(), "not-written-yet"))
 
-	stdout, stderr, code := runFor(t, "shell-hook", "--", "/", "/work")
+	stdout, stderr, code := runFor(t, "shell-hook", "--", tp("/"), tp("/work"))
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}
@@ -2329,7 +3420,7 @@ func TestRun_EscapesControlCharactersInLoadErrors(t *testing.T) {
 	dir := fragmentDir(t)
 	writeFragment(t, dir, "10-broken", "enter (\x1b[1Aunclosed\n    echo hi\n")
 
-	_, stderr, code := runFor(t, "shell-hook", "--", "/", "/work")
+	_, stderr, code := runFor(t, "shell-hook", "--", tp("/"), tp("/work"))
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1", code)
 	}
@@ -2343,15 +3434,13 @@ func TestRun_EscapesControlCharactersInLoadErrors(t *testing.T) {
 // check alone misses: the config looks safe, the directory it sits in doesn't.
 func writableFragmentDir(t *testing.T) (dir, fragment string) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("Unix permission bits are not modelled on Windows")
-	}
+	requirePermissionBits(t)
 	dir = filepath.Join(t.TempDir(), "envokerc.d")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	fragment = filepath.Join(dir, "10-work")
-	if err := os.WriteFile(fragment, []byte("enter /work\n    echo hi\n"), 0o600); err != nil {
+	if err := os.WriteFile(fragment, []byte(configBody("enter /work\n    echo hi\n")), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	if err := os.Chmod(dir, 0o777); err != nil {
@@ -2378,7 +3467,7 @@ func TestRun_DebugWarnsAboutAWritableConfigDirectory(t *testing.T) {
 	isolateHome(t)
 	dir, _ := writableFragmentDir(t)
 
-	_, stderr, code := runFor(t, "debug", "/", "/work")
+	_, stderr, code := runFor(t, "debug", tp("/"), tp("/work"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr %q)", code, stderr)
 	}
@@ -2397,7 +3486,7 @@ func TestRun_ShellHookDoesNotStatTheConfigDirectory(t *testing.T) {
 		t.Fatalf("Chmod: %v", err)
 	}
 
-	_, stderr, code := runFor(t, "shell-hook", "--", "/", "/work")
+	_, stderr, code := runFor(t, "shell-hook", "--", tp("/"), tp("/work"))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -2421,7 +3510,7 @@ func TestRun_ListSeparatesTheConfigSetFromLeftoverRecords(t *testing.T) {
 
 	// A record for a config that is not in the set at all.
 	gone := filepath.Join(t.TempDir(), "old-config")
-	if err := os.WriteFile(gone, []byte("enter /c\n    echo old\n"), 0o644); err != nil {
+	if err := os.WriteFile(gone, []byte(configBody("enter /c\n    echo old\n")), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	if _, _, code := runFor(t, "allow", gone, "--yes"); code != 0 {
@@ -2494,7 +3583,7 @@ func TestRun_EscapesControlCharactersInAConfigPath(t *testing.T) {
 	isolateHome(t)
 	dir := fragmentDir(t)
 	good := "10-\x1b[1Awork"
-	if err := os.WriteFile(filepath.Join(dir, good), []byte("enter /work\n    echo hi\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, good), []byte(configBody("enter /work\n    echo hi\n")), 0o644); err != nil {
 		t.Skipf("cannot create a file with an escape in its name: %v", err)
 	}
 	writeFragment(t, dir, "20-\x1b[1Abroken", "this is not a block\n")
@@ -2509,7 +3598,7 @@ func TestRun_EscapesControlCharactersInAConfigPath(t *testing.T) {
 	}
 
 	// A second approval takes the diff path rather than the full dump.
-	if err := os.WriteFile(filepath.Join(dir, good), []byte("enter /work\n    echo bye\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, good), []byte(configBody("enter /work\n    echo bye\n")), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	diffOut, diffErr, _ := runForStdin(t, "y\n", "allow")
@@ -2518,7 +3607,7 @@ func TestRun_EscapesControlCharactersInAConfigPath(t *testing.T) {
 
 	// debug names every config in the set, including the one that fails to
 	// load -- whose error embeds the path rather than being it.
-	debugOut, debugErr, _ := runFor(t, "debug", "/", "/work")
+	debugOut, debugErr, _ := runFor(t, "debug", tp("/"), tp("/work"))
 	assertNoControlChars(t, "debug stdout", debugOut)
 	assertNoControlChars(t, "debug stderr", debugErr)
 
@@ -2559,6 +3648,28 @@ func TestRun_EscapesTheDirectoryNameInDebugsWorkingDirNote(t *testing.T) {
 	assertNoControlChars(t, "debug stdout", stdout)
 }
 
+// A symlink's target is filesystem-derived like every other path envoke prints,
+// and for a link that cannot be followed what gets printed is the link's own
+// text -- whatever was written into the filesystem, escape sequences included.
+func TestRun_EscapesASymlinkTargetInDebugsOutput(t *testing.T) {
+	isolateHome(t)
+	dir := fragmentDir(t)
+	target := filepath.Join(t.TempDir(), "gone\x1b[1A.conf")
+	if err := os.Symlink(target, filepath.Join(dir, "10-project")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	stdout, stderr, code := runFor(t, "debug", tp("/"), tp("/work"))
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1 for a fragment that fails to load (stderr %q)", code, stderr)
+	}
+	if !strings.Contains(stdout, "symlink to ") || !strings.Contains(stdout, `\x1b`) {
+		t.Errorf("expected the link's target shown, escaped, got %q", stdout)
+	}
+	assertNoControlChars(t, "debug stdout", stdout)
+	assertNoControlChars(t, "debug stderr", stderr)
+}
+
 // The counterweight to every test above: the subcommands whose stdout is
 // shell code for the caller to eval must emit it byte for byte. Escaping it
 // would corrupt any script containing a byte outside printable ASCII, and the
@@ -2575,7 +3686,7 @@ func TestRun_GeneratedShellCodeIsNeverEscaped(t *testing.T) {
 		t.Fatalf("allow exit code = %d: %s", code, stderr)
 	}
 
-	hookOut, _, code := runFor(t, "shell-hook", "--", "/", "/work")
+	hookOut, _, code := runFor(t, "shell-hook", "--", tp("/"), tp("/work"))
 	if code != 0 {
 		t.Fatalf("shell-hook exit code = %d", code)
 	}
@@ -2583,7 +3694,7 @@ func TestRun_GeneratedShellCodeIsNeverEscaped(t *testing.T) {
 		t.Errorf("shell-hook mangled the script body: %q", hookOut)
 	}
 
-	t.Setenv("PWD", "/work")
+	t.Setenv("PWD", tp("/work"))
 	reloadOut, _, code := runFor(t, "reload")
 	if code != 0 {
 		t.Fatalf("reload exit code = %d", code)
