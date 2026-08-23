@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -148,7 +149,7 @@ func TestRun_CancelledContextReturnsError(t *testing.T) {
 // carry no groups and quietly stop testing ENVOKE_MATCH at all.
 func mustMatch(t *testing.T, dir string, b config.Block) matcher.Match {
 	t.Helper()
-	m, ok := matcher.NewMatch(b, dir)
+	m, ok := matcher.NewMatch(&config.Config{}, b, dir)
 	if !ok {
 		t.Fatalf("block pattern %v does not match %s", b.Pattern, dir)
 	}
@@ -162,4 +163,72 @@ func readFile(t *testing.T, path string) string {
 		t.Fatalf("ReadFile(%s): %v", path, err)
 	}
 	return string(b)
+}
+
+// Windows has no `sh` unless Git for Windows, MSYS2 or WSL put one there, and
+// `exec: "sh": executable file not found in %PATH%` names a program the user
+// never mentioned. Emptying PATH reproduces that on any platform.
+func TestRun_ReportsAMissingPosixShell(t *testing.T) {
+	dir := t.TempDir()
+	m := mustMatch(t, dir, config.Block{
+		Type:    config.Enter,
+		Pattern: regexp.MustCompile(`^` + regexp.QuoteMeta(filepath.ToSlash(dir)) + `$`),
+		Script:  `echo hi`,
+	})
+
+	t.Setenv("PATH", "")
+	err := Run(context.Background(), m)
+	if err == nil {
+		t.Fatal("expected an error with no shell on PATH")
+	}
+	if !errors.Is(err, ErrNoShell) {
+		t.Errorf("Run error = %v, want it to wrap ErrNoShell", err)
+	}
+}
+
+// A block that captured nothing must not see an ENVOKE_MATCH_1 the caller
+// happened to have. Render unsets after every block for exactly this reason;
+// Run appended to os.Environ() and inherited whatever was there.
+func TestRun_DoesNotInheritBlockVarsFromTheCaller(t *testing.T) {
+	requirePOSIXShell(t)
+	dir := t.TempDir()
+	m := mustMatch(t, dir, config.Block{
+		Type:    config.Enter,
+		Pattern: regexp.MustCompile(`^` + regexp.QuoteMeta(filepath.ToSlash(dir)) + `$`),
+		Script:  `echo "[${ENVOKE_MATCH_1-unset}][${ENVOKE_MATCH_12-unset}][${ENVOKE_MATCHES-kept}]" > out.txt`,
+	})
+
+	t.Setenv("ENVOKE_MATCH_1", "stale")
+	t.Setenv("ENVOKE_MATCH_12", "stale")
+	// Not one of the block's variables despite the prefix: nothing may strip
+	// a variable that merely looks related.
+	t.Setenv("ENVOKE_MATCHES", "kept")
+
+	if err := Run(context.Background(), m); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := strings.TrimSpace(readFile(t, filepath.Join(dir, "out.txt"))); got != "[unset][unset][kept]" {
+		t.Errorf("block environment = %s, want [unset][unset][kept]", got)
+	}
+}
+
+func TestIsBlockVar(t *testing.T) {
+	for name, want := range map[string]bool{
+		"ENVOKE_DIR":      true,
+		"ENVOKE_TYPE":     true,
+		"ENVOKE_MATCH":    true,
+		"ENVOKE_MATCH_1":  true,
+		"ENVOKE_MATCH_42": true,
+		"ENVOKE_MATCH_":   false,
+		"ENVOKE_MATCH_1a": false,
+		"ENVOKE_MATCHES":  false,
+		"ENVOKE_DISABLE":  false,
+		"ENVOKE_FROM":     false,
+		"PATH":            false,
+		"":                false,
+	} {
+		if got := isBlockVar(name); got != want {
+			t.Errorf("isBlockVar(%q) = %v, want %v", name, got, want)
+		}
+	}
 }

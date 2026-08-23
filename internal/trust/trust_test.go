@@ -3,6 +3,7 @@ package trust
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -531,5 +532,87 @@ func TestIsTrusted_And_PreviousContent_HandlePreUpgradeHashOnlyRecord(t *testing
 	}
 	if content != "" {
 		t.Errorf("expected empty content, got %q", content)
+	}
+}
+
+// A 0700 store inside a 0777 parent is a 0777 store: whoever can write the
+// parent can rename the store away and put their own there, records and all.
+// The check used to stat the store directory alone and call that clean.
+func TestUnsafeStorePermissions_AncestorOfTheStore(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits are not modelled on Windows")
+	}
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+
+	if err := Allow(filepath.Join(t.TempDir(), "config"), []byte("enter /x\n")); err != nil {
+		t.Fatalf("Allow: %v", err)
+	}
+
+	middle := filepath.Join(dataHome, "envoke")
+	if err := os.Chmod(middle, 0o777); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+
+	unsafe, mode, path, err := UnsafeStorePermissions()
+	if err != nil {
+		t.Fatalf("UnsafeStorePermissions: %v", err)
+	}
+	if !unsafe {
+		t.Fatal("a world-writable directory between the store and the data home went unreported")
+	}
+	if path != middle {
+		t.Errorf("reported %s, want the directory that is actually writable (%s)", path, middle)
+	}
+	if mode.Perm() != 0o777 {
+		t.Errorf("mode = %o, want 777", mode.Perm())
+	}
+}
+
+// The data home is the top of the walk: above it, a writable directory means
+// your whole home is writable, which is not a fact about envoke.
+func TestUnsafeStorePermissions_StopsAtTheDataHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits are not modelled on Windows")
+	}
+	parent := t.TempDir()
+	dataHome := filepath.Join(parent, "data")
+	if err := os.Mkdir(dataHome, 0o700); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	t.Setenv("XDG_DATA_HOME", dataHome)
+
+	if err := Allow(filepath.Join(t.TempDir(), "config"), []byte("enter /x\n")); err != nil {
+		t.Fatalf("Allow: %v", err)
+	}
+	if err := os.Chmod(parent, 0o777); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
+
+	unsafe, _, path, err := UnsafeStorePermissions()
+	if err != nil {
+		t.Fatalf("UnsafeStorePermissions: %v", err)
+	}
+	if unsafe {
+		t.Errorf("walked past the data home and reported %s", path)
+	}
+}
+
+// A trailing separator on $XDG_DATA_HOME must not stop the walk recognising
+// the data home, which would send it all the way to the filesystem root.
+func TestUnsafeStorePermissions_DataHomeWithTrailingSeparator(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome+string(filepath.Separator))
+
+	chain, err := storeChain()
+	if err != nil {
+		t.Fatalf("storeChain: %v", err)
+	}
+	if got := chain[len(chain)-1]; got != filepath.Clean(dataHome) {
+		t.Errorf("chain ends at %s, want the data home %s", got, filepath.Clean(dataHome))
+	}
+	if len(chain) != 3 {
+		t.Errorf("chain = %v, want the store, its parent and the data home", chain)
 	}
 }

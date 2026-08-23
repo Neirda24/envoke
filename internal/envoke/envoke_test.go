@@ -12,8 +12,17 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Neirda24/envoke/internal/configset"
 	"github.com/Neirda24/envoke/internal/trust"
 )
+
+// set loads path as the whole config set, the way cmd/envoke does before
+// calling Transition. Reloaded at every call site rather than shared, so a
+// test that edits its config between two transitions gets the new content.
+func set(t *testing.T, path string) []configset.Entry {
+	t.Helper()
+	return configset.Load(path, "")
+}
 
 // requirePOSIXShell skips when there is no `sh` on PATH -- Transition runs
 // every block through executor.Run, which uses `sh -c`. See that function's
@@ -45,10 +54,10 @@ leave $ENVOKE_IT_ROOT/Projects/([^/]+)
 `)
 
 	ctx := context.Background()
-	if err := Transition(ctx, cfg, root, projectDir); err != nil {
+	if err := Transition(ctx, set(t, cfg), root, projectDir); err != nil {
 		t.Fatalf("Transition (enter): %v", err)
 	}
-	if err := Transition(ctx, cfg, projectDir, root); err != nil {
+	if err := Transition(ctx, set(t, cfg), projectDir, root); err != nil {
 		t.Fatalf("Transition (leave): %v", err)
 	}
 
@@ -82,10 +91,10 @@ leave $ENVOKE_IT_ROOT/a
 	ctx := context.Background()
 	// Jumping straight from root to a/b (never stopping at a/) must still
 	// fire a's rule on the way in — this is ondir's traverse behavior.
-	if err := Transition(ctx, cfg, root, deep); err != nil {
+	if err := Transition(ctx, set(t, cfg), root, deep); err != nil {
 		t.Fatalf("Transition (enter): %v", err)
 	}
-	if err := Transition(ctx, cfg, deep, root); err != nil {
+	if err := Transition(ctx, set(t, cfg), deep, root); err != nil {
 		t.Fatalf("Transition (leave): %v", err)
 	}
 
@@ -114,12 +123,12 @@ enter $ENVOKE_IT_ROOT/foo
 	ctx := context.Background()
 	// Regression: ondir's basename-prefix bug — entering /root/foobar must
 	// not trigger a rule written for /root/foo.
-	if err := Transition(ctx, cfg, root, foobar); err != nil {
+	if err := Transition(ctx, set(t, cfg), root, foobar); err != nil {
 		t.Fatalf("Transition: %v", err)
 	}
 	assertLog(t, root, "")
 
-	if err := Transition(ctx, cfg, foobar, foo); err != nil {
+	if err := Transition(ctx, set(t, cfg), foobar, foo); err != nil {
 		t.Fatalf("Transition: %v", err)
 	}
 	assertLog(t, root, "entered-foo\n")
@@ -143,7 +152,7 @@ enter $ENVOKE_IT_ROOT
     echo should-not-run >> "$ENVOKE_IT_ROOT/log.txt"
 `)
 
-	err := Transition(context.Background(), cfg, child, root)
+	err := Transition(context.Background(), set(t, cfg), child, root)
 	if err == nil {
 		t.Fatalf("expected error from failing leave block")
 	}
@@ -172,7 +181,7 @@ enter $ENVOKE_IT_ROOT/child
     echo should-not-run >> "$ENVOKE_IT_ROOT/log.txt"
 `)
 
-	err := Transition(context.Background(), cfg, root, child)
+	err := Transition(context.Background(), set(t, cfg), root, child)
 	if !errors.Is(err, ErrUntrusted) {
 		t.Fatalf("Transition on an unapproved config = %v, want ErrUntrusted", err)
 	}
@@ -199,7 +208,7 @@ enter $ENVOKE_IT_ROOT/child
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	err := Transition(context.Background(), cfg, root, child)
+	err := Transition(context.Background(), set(t, cfg), root, child)
 	if !errors.Is(err, ErrUntrusted) {
 		t.Fatalf("Transition on an edited config = %v, want ErrUntrusted", err)
 	}

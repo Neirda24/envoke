@@ -1,8 +1,7 @@
 // Package trust implements envoke's config trust store: a config file must
 // be explicitly approved with Allow before shell-hook will act on it, and
 // any change to the file's content — even whitespace — revokes that trust
-// until Allow runs again. This is what CLAUDE.md's trust-before-execution
-// principle requires: envoke must never auto-execute a new or modified
+// until Allow runs again: envoke must never auto-execute a new or modified
 // config.
 //
 // A record is three sibling files under the store directory, all named
@@ -33,21 +32,19 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Neirda24/envoke/internal/fsperm"
 	"github.com/Neirda24/envoke/internal/state"
 )
 
-// IsTrusted reports whether content — the config bytes the caller has
-// already read and is about to act on — matches the hash recorded by the
-// most recent Allow call for configPath. A config that was never allowed
-// reports false, not an error: "not trusted" is the normal, expected state
-// for anything that hasn't been through Allow yet.
+// IsTrusted reports whether content — the config bytes the caller has already
+// read and is about to act on — matches the hash recorded by the most recent
+// Allow call for configPath. A config that was never allowed reports false,
+// not an error.
 //
-// Taking the content rather than re-reading configPath is load-bearing.
-// The property envoke needs is that the bytes executed are the bytes
-// approved; a function that reads the file itself can only promise that
-// *some* version once matched, leaving the caller free to execute another.
-// Callers get their bytes from config.LoadFile, which reads once and hands
-// back both the parsed config and its source.
+// Taking the content rather than re-reading configPath is load-bearing: a
+// function that reads the file itself can only promise that *some* version
+// once matched, leaving the caller free to execute another. Callers get their
+// bytes from config.LoadFile.
 func IsTrusted(configPath string, content []byte) (bool, error) {
 	recorded, err := readRecord(configPath)
 	if err != nil {
@@ -60,14 +57,13 @@ func IsTrusted(configPath string, content []byte) (bool, error) {
 }
 
 // Allow records content as the trusted content for configPath, superseding
-// any previous approval for that path. It also persists a copy of that
-// content (see PreviousContent) so a later Allow call can show what changed
-// since the prior approval.
+// any previous approval, and persists a copy of it so a later Allow can show
+// what changed (see PreviousContent).
 //
-// Like IsTrusted, this takes the bytes the caller reviewed rather than
-// re-reading the file: re-reading would record a hash for content the user
-// was never shown, so an edit landing between the review and the
-// confirmation would be approved sight-unseen.
+// Like IsTrusted it takes the bytes the caller reviewed: re-reading the file
+// would record a hash for content the user was never shown, so an edit
+// landing between the review and the confirmation would be approved
+// sight-unseen.
 func Allow(configPath string, content []byte) error {
 	hash := hashContent(content)
 
@@ -83,11 +79,10 @@ func Allow(configPath string, content []byte) error {
 	if err := os.MkdirAll(filepath.Dir(recPath), 0o700); err != nil {
 		return fmt.Errorf("allow %s: %w", configPath, err)
 	}
-	// Siblings first, hash record last, so a torn write can only fail in the
-	// harmless direction: the record still holds the previous hash, the
-	// config reads as untrusted, and the newer siblings only affect which
-	// diff the next allow shows. The other order would leave a record
-	// claiming content is trusted while .content described something else.
+	// Siblings first, hash record last: a torn write then leaves the previous
+	// hash in place and the config reads as untrusted. The other order would
+	// leave a record claiming content is trusted while .content described
+	// something else.
 	if err := writeRecordFile(contentPath(recPath), content); err != nil {
 		return fmt.Errorf("allow %s: %w", configPath, err)
 	}
@@ -100,10 +95,9 @@ func Allow(configPath string, content []byte) error {
 	return nil
 }
 
-// writeRecordFile writes a store file atomically: a truncated hash record
-// would read as "trusted, but not against anything" and a truncated content
-// copy would produce a nonsense diff, so a crash mid-write must leave the
-// previous file intact rather than a half-written one.
+// writeRecordFile writes a store file atomically: a crash mid-write must
+// leave the previous file intact, not a truncated hash record reading as
+// "trusted, but not against anything".
 func writeRecordFile(path string, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp*")
 	if err != nil {
@@ -128,9 +122,8 @@ func writeRecordFile(path string, data []byte) error {
 // Record describes one trusted config as the store knows it.
 type Record struct {
 	// ConfigPath is the absolute path that was approved, or "" for a record
-	// written before the store started recording it (see the package
-	// comment) — such a record can't be resolved back to a file, which is
-	// why List reports it rather than hiding it.
+	// written before the store recorded it. Such a record can't be resolved
+	// back to a file, which is why List reports it rather than hiding it.
 	ConfigPath string
 	// Hash is the approved content's SHA-256.
 	Hash string
@@ -189,10 +182,9 @@ func List() ([]Record, error) {
 	return records, nil
 }
 
-// Revoke deletes configPath's trust record and its siblings, so the config
-// goes back to needing an explicit Allow. found reports whether there was
-// anything to revoke; revoking an untrusted config is a no-op, not an error
-// — the requested end state (this config is not trusted) already holds.
+// Revoke deletes configPath's trust record and its siblings. found reports
+// whether there was anything to revoke; revoking an untrusted config is a
+// no-op, not an error — the requested end state already holds.
 func Revoke(configPath string) (found bool, err error) {
 	recPath, err := recordPath(configPath)
 	if err != nil {
@@ -201,9 +193,9 @@ func Revoke(configPath string) (found bool, err error) {
 	return removeRecord(recPath)
 }
 
-// removeRecord deletes a hash record and its siblings. The hash record goes
-// first: it is the trust token, so if only part of the removal succeeds the
-// config must end up untrusted rather than trusted with no content copy.
+// removeRecord deletes a hash record and its siblings, the hash record first:
+// a partial removal must leave the config untrusted, not trusted with no
+// content copy.
 func removeRecord(recPath string) (found bool, err error) {
 	for i, p := range []string{recPath, contentPath(recPath), pathPath(recPath)} {
 		if err := os.Remove(p); err != nil {
@@ -219,11 +211,10 @@ func removeRecord(recPath string) (found bool, err error) {
 	return found, nil
 }
 
-// Prune deletes the records of configs that no longer exist on disk,
-// returning the ones it removed. Records with no recorded path (see Record)
-// are left alone and returned in skipped: without the path there is no way
-// to tell whether the config is gone or simply predates the store recording
-// it, and deleting a trust record on a guess is the wrong way to be wrong.
+// Prune deletes the records of configs that no longer exist on disk. Records
+// with no recorded path are left alone and returned in skipped: without the
+// path there is no telling whether the config is gone or the record simply
+// predates the store recording it.
 func Prune() (removed, skipped []Record, err error) {
 	records, err := List()
 	if err != nil {
@@ -248,14 +239,9 @@ func Prune() (removed, skipped []Record, err error) {
 	return removed, skipped, nil
 }
 
-// PreviousContent returns the content that was approved by the most
-// recent Allow call for configPath, and whether a prior approval exists at
-// all. A config that was never approved reports ok=false, not an error —
-// same "not an error" convention as IsTrusted for the equivalent case. A
-// config whose approval predates this feature (a hash record with no
-// content file yet, see the package doc comment) also reports ok=false
-// rather than erroring, since that's a legitimate pre-upgrade state, not
-// corruption.
+// PreviousContent returns the content approved by the most recent Allow call
+// for configPath. ok=false — never an error — covers both a config that was
+// never approved and one approved before the store kept content copies.
 func PreviousContent(configPath string) (content string, ok bool, err error) {
 	recPath, err := recordPath(configPath)
 	if err != nil {
@@ -287,8 +273,8 @@ func readRecord(configPath string) (string, error) {
 }
 
 // recordPath maps a config path to its trust record file, named by the hash
-// of its own absolute path so distinct configs never collide. The format is
-// kept stable: changing it would revoke every existing approval.
+// of its own absolute path so distinct configs never collide. Changing the
+// scheme would revoke every existing approval.
 func recordPath(configPath string) (string, error) {
 	dir, err := storeDir()
 	if err != nil {
@@ -302,9 +288,8 @@ func recordPath(configPath string) (string, error) {
 	return filepath.Join(dir, hex.EncodeToString(sum[:])), nil
 }
 
-// contentPath is the sibling holding the approved content, for
-// PreviousContent's diff. Derived from recPath so the two stay tied
-// together mechanically.
+// contentPath is the sibling holding the approved content, derived from
+// recPath so the two stay tied together mechanically.
 func contentPath(recPath string) string {
 	return recPath + ".content"
 }
@@ -319,30 +304,62 @@ func hashContent(content []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// UnsafeStorePermissions reports whether the trust store directory is
-// writable by group or other. That matters more than the config's own
-// permissions: anyone who can write here can drop in a record making any
+// UnsafeStorePermissions reports whether the trust store, or any directory
+// between it and the data home, is writable by group or other, and names the
+// one that is. Anyone who can write there can drop in a record making any
 // config read as trusted, forging an approval that was never given.
 //
-// Checked rather than enforced because os.MkdirAll only applies its mode to
-// directories it creates, so a pre-existing store keeps whatever mode it
-// had and Allow's 0o700 is not the guarantee it looks like.
+// Ancestors count because a `0700` store inside a `0777` parent is a `0777`
+// store. The walk stops at the data home: above it, a writable directory
+// means your whole home is writable, which is not a fact about envoke.
 //
-// A store that doesn't exist yet is safe, not an error.
+// Checked rather than enforced because os.MkdirAll only applies its mode to
+// directories it creates, so Allow's 0o700 is not the guarantee it looks
+// like. A directory that doesn't exist yet is safe, not an error.
 func UnsafeStorePermissions() (unsafe bool, mode os.FileMode, path string, err error) {
-	dir, err := storeDir()
+	chain, err := storeChain()
 	if err != nil {
 		return false, 0, "", err
 	}
-	info, err := os.Stat(dir)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return false, 0, dir, nil
+
+	for _, dir := range chain {
+		unsafe, mode, err := fsperm.Unsafe(dir)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return false, 0, dir, fmt.Errorf("trust: %w", err)
 		}
-		return false, 0, dir, fmt.Errorf("trust: %w", err)
+		if unsafe {
+			return true, mode, dir, nil
+		}
 	}
-	perm := info.Mode().Perm()
-	return perm&0o022 != 0, perm, dir, nil
+	return false, 0, chain[0], nil
+}
+
+// storeChain lists the store directory and each ancestor up to and including
+// the data home, innermost first. Derived, so moving the store deeper cannot
+// leave a level unchecked.
+func storeChain() ([]string, error) {
+	dir, err := storeDir()
+	if err != nil {
+		return nil, err
+	}
+	base, err := state.DataHome()
+	if err != nil {
+		return nil, err
+	}
+	// $XDG_DATA_HOME is used as given, so it may carry a trailing separator
+	// that would never compare equal to a walked-up path.
+	base = filepath.Clean(base)
+
+	var chain []string
+	for p := dir; ; p = filepath.Dir(p) {
+		chain = append(chain, p)
+		if p == base || filepath.Dir(p) == p {
+			return chain, nil
+		}
+	}
 }
 
 // storeDir is envoke's data home plus "envoke/allow" — see state.DataHome

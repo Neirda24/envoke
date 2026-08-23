@@ -6,10 +6,16 @@ import (
 	"testing"
 )
 
+// fuzzBase stands in for the directory a config file lives in, so
+// "./"-relative patterns compile rather than being rejected for want of a
+// base — the substitution splices text into a regex, which is the part worth
+// fuzzing.
+const fuzzBase = "/home/fuzz.user/projects/app"
+
 // FuzzParse fuzzes the hand-rolled config parser. It is the one component in
 // envoke that consumes a whole file of unstructured text and turns it into
 // something that decides what shell code runs, and it is hand-rolled by
-// deliberate design choice (see CLAUDE.md) rather than generated from a
+// deliberate design choice rather than generated from a
 // grammar — which is exactly the combination Go's native fuzzing exists for.
 //
 // The properties asserted are the ones the rest of the codebase relies on
@@ -38,9 +44,11 @@ func FuzzParse(f *testing.F) {
 	f.Add("enter $NOPE/x\n    echo hi\n")
 	f.Add("enter /a\r\n    echo crlf\r\n")
 	f.Add("enter \x00/a\n    echo nul\n")
+	f.Add("enter ./src\n    echo relative\n")
+	f.Add("enter ../../x\n    echo up\n")
 
 	f.Fuzz(func(t *testing.T, input string) {
-		cfg, err := Parse(strings.NewReader(input))
+		cfg, err := Parse(strings.NewReader(input), fuzzBase)
 
 		if err != nil {
 			if cfg != nil {
@@ -81,10 +89,11 @@ func FuzzParseBytesMatchesParse(f *testing.F) {
 	f.Add([]byte("enter /a\n    echo hi\n"))
 	f.Add([]byte("leave /b\n\techo bye\n"))
 	f.Add([]byte("garbage"))
+	f.Add([]byte("enter ./src\n\techo relative\n"))
 
 	f.Fuzz(func(t *testing.T, input []byte) {
-		fromReader, errReader := Parse(strings.NewReader(string(input)))
-		fromBytes, errBytes := Parse(bytes.NewReader(input))
+		fromReader, errReader := Parse(strings.NewReader(string(input)), fuzzBase)
+		fromBytes, errBytes := Parse(bytes.NewReader(input), fuzzBase)
 
 		if (errReader == nil) != (errBytes == nil) {
 			t.Fatalf("disagreement on error: %v vs %v (input %q)", errReader, errBytes, input)
@@ -123,11 +132,18 @@ func FuzzCompilePattern(f *testing.F) {
 	f.Add("$1")
 	f.Add("(((((((((((")
 	f.Add("a{1000000}")
+	f.Add("./src/([^/]+)")
+	f.Add("../../..")
+	f.Add("...")
+	// Found by this target: unbalanced parens used to close the anchoring
+	// group early, so `^(?:)|()$` matched every path at offset 0.
+	f.Add(")|(")
+	f.Add(")$|^(")
 
 	home := func() (string, error) { return "/home/fuzz.user", nil }
 
 	f.Fuzz(func(t *testing.T, pattern string) {
-		re, err := compilePattern(pattern, home)
+		re, err := compilePattern(pattern, home, fuzzBase)
 		if err != nil {
 			if re != nil {
 				t.Fatalf("compilePattern returned both a regexp and an error %v", err)

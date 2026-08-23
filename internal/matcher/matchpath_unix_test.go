@@ -33,7 +33,7 @@ func TestNewMatch_BackslashInDirectoryNameIsMatchable(t *testing.T) {
 	const dir = `/home/you/back\slash`
 	b := config.Block{Type: config.Enter, Pattern: regexp.MustCompile(`^/home/you/(back\\slash)$`)}
 
-	m, ok := NewMatch(b, dir)
+	m, ok := NewMatch(&config.Config{}, b, dir)
 	if !ok {
 		t.Fatalf("expected %q to match", dir)
 	}
