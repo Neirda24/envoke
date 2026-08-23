@@ -359,7 +359,7 @@ the store away and put their own in its place, records and all. The walk
 stops at the data home, because a writable directory above that means your
 whole home is writable, which is not a fact about envoke.
 
-!!! info "None of these warnings fire on Windows"
+??? info "None of these warnings fire on Windows"
 
     They are a Unix answer to a Unix question. Windows governs access
     through ACLs, which Go's `os.Stat` does not report: it makes the
