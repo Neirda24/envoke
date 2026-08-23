@@ -35,25 +35,40 @@ envoke shell-init tcsh | source /dev/stdin   # delete this line
 
 Worth doing rather than skipping: the trust store keeps a **plaintext copy
 of every config you approved**, and configs commonly export project-scoped
-secrets. While the binary is still around, the tidy way is:
+secrets. While the binary is still around:
 
 ```sh
-envoke list     # see what's there
-envoke revoke   # withdraw trust, removing the record and its content copy
+envoke list     # what's in the set, then any other records the store holds
+envoke revoke   # withdraw trust for the whole set, records and content copies
+envoke prune    # drop records whose config file is already gone
 ```
 
-Otherwise, remove the directory outright:
+`envoke revoke` with no path covers exactly what `envoke allow` covers — your
+central config plus every `envokerc.d` fragment. Anything `envoke list` showed
+under *other trust records* sits outside that set and needs its own
+`envoke revoke <path>`. Or skip the bookkeeping and remove the store outright,
+which is complete by construction:
 
 ```sh
 # Trust records (SHA-256 hashes + approved content per config path), and
 # the disable flag if you ever ran `envoke disable`
 rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/envoke"
 
-# Your config file, if you don't want to keep it
+# Your central config, if you don't want to keep it
 rm ~/.envokerc
 # or, if you used the XDG path instead:
 rm "${XDG_CONFIG_HOME:-$HOME/.config}/envoke/config"
+
+# The fragment directory, if you used one. Its entries may be symlinks into
+# projects; deleting them leaves each project's own config file untouched.
+rm -rf ~/.envokerc.d
+# or, under the XDG path:
+rm -rf "${XDG_CONFIG_HOME:-$HOME/.config}/envoke/envokerc.d"
 ```
+
+If you pointed `$ENVOKERC` or `$ENVOKERC_D` somewhere of your own, those are
+the paths to remove instead — and drop the variables from your rc file while
+you are in there.
 
 Leaving the config or trust records in place is safe even after the binary
 is gone — nothing reads them without `envoke` itself.
@@ -65,7 +80,7 @@ Pick the method matching how you installed it (see
 
 ```sh
 # Homebrew (macOS/Linux)
-brew uninstall --cask envoke
+brew uninstall envoke
 # and, if you no longer want the tap itself:
 brew untap neirda24/tap
 

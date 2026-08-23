@@ -39,14 +39,24 @@ markdown_extensions:
   - toc:
       permalink: true
 
+# An .md file that is absent from the nav still builds and publishes at its own
+# URL; MkDocs only logs it at INFO, which --strict ignores. Raising it to a
+# warning is what stops a draft, a handoff or a contributor note dropped into
+# docs/ from going online unnoticed.
+validation:
+  nav:
+    omitted_files: warn
+
 nav:
   - Home: index.md
   - envoke vs. direnv: vs-direnv.md
   - Getting Started: getting-started.md
   - Configuration: configuration.md
+  - Recipes: recipes.md
   - Trust Model: trust.md
   - Non-interactive Use: non-interactive.md
   - Debugging: debugging.md
+  - Troubleshooting: troubleshooting.md
   - Reference: reference.md
   - Uninstalling: uninstall.md
   - Design Notes: design-notes.md
