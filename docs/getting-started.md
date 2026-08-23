@@ -132,12 +132,16 @@ worth knowing before you rely on it:
   `envoke debug C:\work\api`. Spell it out — PowerShell passes `~` to a native
   command literally, and envoke expands `~` in patterns only.
 
-Windows is tested on a real `windows-latest` CI runner, not just
-cross-compiled: the whole test suite runs there, the CLI itself included, and so
-does the PowerShell hook, driven through a real PowerShell. The end-to-end tests
-that drive bash/zsh/fish/tcsh still run on Linux and macOS only, since those
-shells aren't what a Windows user is running anyway. Please
-[open an issue](https://github.com/Neirda24/envoke/issues) if something
+??? info "How the Windows support is tested"
+
+    Windows is tested on a real `windows-latest` CI runner, not just
+    cross-compiled: the whole test suite runs there, the CLI itself included,
+    and so does the PowerShell hook, driven through a real PowerShell. The
+    end-to-end tests that drive bash/zsh/fish/tcsh still run on Linux and
+    macOS only, since those shells aren't what a Windows user is running
+    anyway.
+
+Please [open an issue](https://github.com/Neirda24/envoke/issues) if something
 behaves differently than documented here.
 
 ## Checking your version
