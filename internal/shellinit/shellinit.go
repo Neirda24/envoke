@@ -27,6 +27,18 @@ func Generate(shell string) (string, error) {
 // bashHook polls PWD from PROMPT_COMMAND, since bash has no native "on cd"
 // hook. It appends rather than redefining cd.
 //
+// Nothing is installed in a non-interactive shell: the rc file a hook lives
+// in is not read only by interactive ones — bash reads `.bashrc` for a shell
+// named by `BASH_ENV` and for `ssh host 'cmd'`, and `.zshenv`/`.cshrc` are
+// read by every shell of their kind. `envoke exec` is the deliberate
+// non-interactive entry point and is unaffected.
+//
+// The guard wraps the installation rather than returning early because this
+// text is evaluated inside the caller's rc file: `return` inside `eval` inside
+// a sourced file pops the sourced file's own frame, skipping every later line
+// of the user's `.bashrc` with status 0, and `exit` ends an executed script
+// outright.
+//
 // The baseline is seeded at install time, not lazily on the first call: a
 // hook that seeds itself compares the first cd's destination against itself
 // and misses it.
@@ -35,7 +47,8 @@ func Generate(shell string) (string, error) {
 // PROMPT_COMMAND, where the common `PROMPT_COMMAND='__status=$?; ...'`
 // idiom reads it. Without that, every exit-code-colouring prompt would
 // start reporting envoke's status instead of the user's last command.
-const bashHook = `_envoke_hook() {
+const bashHook = `case $- in *i*)
+_envoke_hook() {
   local __envoke_status=$?
   local envoke_prev="${__envoke_prev_pwd:-$PWD}"
   if [ "$envoke_prev" != "$PWD" ]; then
@@ -52,15 +65,21 @@ case ";${PROMPT_COMMAND-};" in
   *";_envoke_hook;"*) ;;
   *) PROMPT_COMMAND="_envoke_hook${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
 esac
+;; esac
 `
 
 // zshHook uses zsh's native chpwd_functions array. No baseline to seed —
 // zsh maintains $OLDPWD itself.
 //
+// Guarded on interactivity like bash's (see bashHook): `.zshrc` is
+// interactive-only, but `.zshenv` is read by every zsh including `zsh -c`,
+// and nothing stops a user putting the hook there.
+//
 // The status save/restore is the mirror of bash's concern (see bashHook):
 // chpwd_functions run as part of the cd, so a hook returning its own status
 // would make `cd foo && ...` stop short whenever a block failed.
-const zshHook = `_envoke_hook() {
+const zshHook = `if [[ -o interactive ]]; then
+_envoke_hook() {
   local __envoke_status=$?
   eval "$(command envoke shell-hook -- "${OLDPWD:-$PWD}" "$PWD")"
   return $__envoke_status
@@ -69,18 +88,23 @@ typeset -ag chpwd_functions
 if [[ -z "${chpwd_functions[(r)_envoke_hook]}" ]]; then
   chpwd_functions+=(_envoke_hook)
 fi
+fi
 `
 
 // fishHook uses fish's --on-variable PWD event. Fish's $OLDPWD is
 // inconsistent across versions, so this tracks the previous directory
 // itself and seeds it at install time, like bash.
 //
+// fish reads config.fish for non-interactive shells too, so without the guard
+// every `fish -c` that cds would run enter/leave blocks.
+//
 // `string collect` (fish 3.4+) is required: a bare command substitution
 // splits output into one list element per line, which would turn a
 // multi-line script into several unrelated single-line evals.
 //
 // $status is saved and returned, as in bash and zsh.
-const fishHook = `function _envoke_hook --on-variable PWD
+const fishHook = `if status is-interactive
+function _envoke_hook --on-variable PWD
   set -l __envoke_status $status
   set -l script (command envoke shell-hook --shell fish -- "$__envoke_prev_pwd" "$PWD" | string collect)
   if test -n "$script"
@@ -92,10 +116,15 @@ end
 if not set -q __envoke_prev_pwd
   set -g __envoke_prev_pwd "$PWD"
 end
+end
 `
 
 // tcshHook uses tcsh's cwdcmd alias, csh's equivalent of chpwd_functions.
 // tcsh maintains $owd/$cwd itself, so there is no baseline to seed.
+//
+// `$?prompt` is csh's interactivity test. `.cshrc` is read by non-interactive
+// tcsh — verified — so an unguarded hook fires for every `tcsh -c` that
+// changes directory.
 //
 // Four tcsh quirks, each verified against a real tcsh — don't undo one
 // without re-testing end to end:
@@ -127,14 +156,21 @@ end
 // cwdcmd is tcsh's only directory-change slot. A .tcshrc that already
 // aliases it (setting the xterm title, say) loses that alias — fold the
 // existing body into _envoke_hook by hand.
-const tcshHook = `alias _envoke_hook 'setenv ENVOKE_FROM "$owd" ; setenv ENVOKE_TO "$cwd" ; eval "\envoke shell-hook --shell tcsh | source /dev/stdin" ; unsetenv ENVOKE_FROM ; unsetenv ENVOKE_TO'
+const tcshHook = `if ($?prompt) then
+alias _envoke_hook 'setenv ENVOKE_FROM "$owd" ; setenv ENVOKE_TO "$cwd" ; eval "\envoke shell-hook --shell tcsh | source /dev/stdin" ; unsetenv ENVOKE_FROM ; unsetenv ENVOKE_TO'
 alias cwdcmd _envoke_hook
+endif
 `
 
 // powershellHook wraps the prompt function, PowerShell's idiomatic
-// customization point. The previous prompt is saved and always called
-// through to, so this composes with anything installed before it;
+// customization point. The previous prompt is saved and always called through
+// to, so this composes with anything installed before it;
 // $_envokeHookInstalled prevents double-wrapping on a re-source.
+//
+// The one hook with no interactivity guard, deliberately: `prompt` is only
+// ever called by an interactive host, so the hook point is the guard.
+// [Environment]::UserInteractive is true for any process with a desktop and
+// would read as protection it isn't.
 //
 // Out-String joins the possibly-multi-line stdout before
 // Invoke-Expression — the same concern as fish's `string collect`.
@@ -143,16 +179,37 @@ alias cwdcmd _envoke_hook
 // command and overwrites it. `$?` cannot be: PowerShell makes it read-only,
 // so a prompt reading `$?` rather than $LASTEXITCODE still sees this hook's
 // own result.
+//
+// A PowerShell location need not be a filesystem path: `Set-Location HKLM:`
+// makes it `HKLM:\SOFTWARE`, which `envoke shell-hook` rejects as
+// non-absolute — from inside `prompt`, twice per round trip. Hence the
+// FileSystem test.
+//
+// ProviderPath, not .Path, because under the FileSystem provider .Path is
+// still the PowerShell spelling: drive-qualified for a user-created PSDrive
+// (`Repos:\proj`) and provider-qualified for UNC
+// (`Microsoft.PowerShell.Core\FileSystem::\\host\share`). Neither is
+// absolute, and a one-letter PSDrive name is worse than an error — absolute,
+// and pointing somewhere that does not exist.
+//
+// $_envokePrevPwd is left alone while the location is off the filesystem, so
+// coming back reports the transition from the last filesystem directory — the
+// one whose leave blocks are owed — instead of passing a provider path as
+// `from`. An unseeded value suppresses the call for the same reason.
 const powershellHook = `if (-not $global:_envokeHookInstalled) {
   $global:_envokeHookInstalled = $true
-  $global:_envokePrevPwd = (Get-Location).Path
+  $global:_envokePrevPwd = $null
+  if ((Get-Location).Provider.Name -eq 'FileSystem') { $global:_envokePrevPwd = (Get-Location).ProviderPath }
   $global:_envokeOriginalPrompt = $function:prompt
   function global:prompt {
     $envokeLastExitCode = $global:LASTEXITCODE
-    $envokeCurPwd = (Get-Location).Path
-    if ($global:_envokePrevPwd -ne $envokeCurPwd) {
-      $envokeScript = & envoke shell-hook --shell powershell -- $global:_envokePrevPwd $envokeCurPwd | Out-String
-      if ($envokeScript) { Invoke-Expression $envokeScript }
+    $envokeLoc = Get-Location
+    if ($envokeLoc.Provider.Name -eq 'FileSystem') {
+      $envokeCurPwd = $envokeLoc.ProviderPath
+      if ($global:_envokePrevPwd -and $global:_envokePrevPwd -ne $envokeCurPwd) {
+        $envokeScript = & envoke shell-hook --shell powershell -- $global:_envokePrevPwd $envokeCurPwd | Out-String
+        if ($envokeScript) { Invoke-Expression $envokeScript }
+      }
       $global:_envokePrevPwd = $envokeCurPwd
     }
     $global:LASTEXITCODE = $envokeLastExitCode
@@ -184,9 +241,10 @@ func Completion(shell string) (string, error) {
 	}
 }
 
-// subcommands is the completion candidate list, cross-checked against
-// `envoke help` by TestRun_CompletionCoversEverySubcommand so a new
-// subcommand can't ship with tab completion silently missing it.
+// subcommands is the checklist that keeps the three completion scripts
+// complete. No generated script reads it — each hardcodes its own list in its
+// own syntax — and TestCompletion_ListsEverySubcommand asserts every name here
+// appears in all three. Adding a name here alone completes it in no shell.
 var subcommands = []string{
 	"allow", "completion", "debug", "disable", "enable", "exec", "help",
 	"list", "prune", "reload", "revoke", "shell-hook", "shell-init",
@@ -248,10 +306,10 @@ const zshCompletion = `_envoke() {
     'enable:undo disable'
     'exec:run matching blocks in subprocesses (scripts/CI)'
     'help:show usage'
-    'list:list every trusted config'
+    'list:reconcile the configs envoke would load with the trust store'
     'prune:drop trust records whose config no longer exists'
     'reload:re-apply the enter blocks for the current directory'
-    'revoke:withdraw trust for a config'
+    'revoke:withdraw trust for a config, or the whole set'
     'shell-hook:internal, called by the generated hook'
     'shell-init:print shell hook code to eval/source'
     'version:print version information'
@@ -291,10 +349,10 @@ complete -c envoke -n __fish_use_subcommand -a disable -d 'stop running blocks i
 complete -c envoke -n __fish_use_subcommand -a enable -d 'undo disable'
 complete -c envoke -n __fish_use_subcommand -a exec -d 'run matching blocks in subprocesses (scripts/CI)'
 complete -c envoke -n __fish_use_subcommand -a help -d 'show usage'
-complete -c envoke -n __fish_use_subcommand -a list -d 'list every trusted config'
+complete -c envoke -n __fish_use_subcommand -a list -d 'reconcile the configs envoke would load with the trust store'
 complete -c envoke -n __fish_use_subcommand -a prune -d 'drop trust records whose config no longer exists'
 complete -c envoke -n __fish_use_subcommand -a reload -d 're-apply the enter blocks for the current directory'
-complete -c envoke -n __fish_use_subcommand -a revoke -d 'withdraw trust for a config'
+complete -c envoke -n __fish_use_subcommand -a revoke -d 'withdraw trust for a config, or the whole set'
 complete -c envoke -n __fish_use_subcommand -a shell-hook -d 'internal, called by the generated hook'
 complete -c envoke -n __fish_use_subcommand -a shell-init -d 'print shell hook code to eval/source'
 complete -c envoke -n __fish_use_subcommand -a version -d 'print version information'
