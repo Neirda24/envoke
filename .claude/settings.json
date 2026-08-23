@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(go:*)",
+      "Bash(gofmt:*)",
+      "Bash(golangci-lint:*)",
+      "Bash(govulncheck:*)",
+      "Bash(goreleaser:*)",
+      "Bash(gotestsum:*)",
+      "Bash(dagger call -m .dagger publish:*)",
+      "Bash(dagger call -m ./.dagger publish:*)",
+      "Bash(dagger call --mod .dagger publish:*)",
+      "Bash(dagger call --mod ./.dagger publish:*)",
+      "Bash(dagger -m .dagger call publish:*)",
+      "Bash(dagger -m ./.dagger call publish:*)",
+      "Bash(dagger --mod .dagger call publish:*)",
+      "Bash(dagger --mod ./.dagger call publish:*)",
+      "Bash(dagger call publish:*)",
+      "Bash(dagger call -m .dagger autofix export:*)",
+      "Bash(dagger call -m .dagger snapshot export:*)"
+    ],
+    "allow": [
+      "Bash(dagger call -m .dagger:*)",
+      "Bash(dagger check -m .dagger:*)",
+      "Bash(dagger functions -m .dagger:*)",
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(git show:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git branch --list:*)"
+    ]
+  }
+}
