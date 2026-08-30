@@ -58,7 +58,7 @@ jobs:
           permission-contents: write
       - uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
         with:
-          version: "v0.21.8"
+          version: "v0.21.9"
           module: .dagger
           # GITHUB_TOKEN (ambient, contents: write above) authenticates the
           # envoke release itself. ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN are
