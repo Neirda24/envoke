@@ -20,12 +20,12 @@ import (
 
 const (
 	// renovate: datasource=docker
-	goImage = "golang:1.27-bookworm@sha256:484ef6066fa69acb059fdfeda7ba2b8f7391f2ef6abc6f9b8411e669ebd56466"
+	goImage = "golang:1.27-bookworm@sha256:648f440f42a0958804efb24df176f806f9d353b41f1c0627f666428e40310f6b"
 	// renovate.json has one regex manager per constant here, matching on the
 	// constant's name plus the module path spelled out in full. Renaming
 	// either, or splitting the version off into a value of its own, stops
 	// the manager matching and freezes that pin with nothing reporting it.
-	golangciLintPath = "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1"
+	golangciLintPath = "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2"
 	govulncheckPath  = "golang.org/x/vuln/cmd/govulncheck@v1.7.0"
 	// Set as GOCACHE/GOMODCACHE in goBase rather than left to the image's
 	// defaults: a mount that isn't where the toolchain looks caches nothing
@@ -33,14 +33,14 @@ const (
 	goBuildCachePath = "/root/.cache/go-build"
 	goModCachePath   = "/go/pkg/mod"
 	// renovate: datasource=docker
-	goreleaserImage = "goreleaser/goreleaser:v2.17.1@sha256:1098a0be4da1780f9616a85f4c5050447b53e3e74804d8017ec1e2bbb1fb697a"
+	goreleaserImage = "goreleaser/goreleaser:v2.18.1@sha256:92b918cc587dce6321b5fafc57ba93942a38592a7fbdb6cc3e300418b9f03a7e"
 	// renovate: datasource=docker
-	pythonImage     = "python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4"
+	pythonImage     = "python:3.14-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6"
 	yamllintVersion = "1.38.0"
 	// zizmorImage intentionally tracks :latest, not a pinned tag — no renovate hint.
 	zizmorImage = "ghcr.io/zizmorcore/zizmor:latest"
 	// renovate: datasource=docker
-	nodeImage = "node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43"
+	nodeImage = "node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf"
 	docsPort  = 8000
 )
 
