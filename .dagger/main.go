@@ -20,27 +20,27 @@ import (
 
 const (
 	// renovate: datasource=docker
-	goImage = "golang:1.27-bookworm@sha256:648f440f42a0958804efb24df176f806f9d353b41f1c0627f666428e40310f6b"
+	goImage = "golang:1.27-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61"
 	// renovate.json has one regex manager per constant here, matching on the
 	// constant's name plus the module path spelled out in full. Renaming
 	// either, or splitting the version off into a value of its own, stops
 	// the manager matching and freezes that pin with nothing reporting it.
-	golangciLintPath = "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2"
-	govulncheckPath  = "golang.org/x/vuln/cmd/govulncheck@v1.7.0"
+	golangciLintPath = "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0"
+	govulncheckPath  = "golang.org/x/vuln/cmd/govulncheck@v1.9.0"
 	// Set as GOCACHE/GOMODCACHE in goBase rather than left to the image's
 	// defaults: a mount that isn't where the toolchain looks caches nothing
 	// and says nothing.
 	goBuildCachePath = "/root/.cache/go-build"
 	goModCachePath   = "/go/pkg/mod"
 	// renovate: datasource=docker
-	goreleaserImage = "goreleaser/goreleaser:v2.18.1@sha256:92b918cc587dce6321b5fafc57ba93942a38592a7fbdb6cc3e300418b9f03a7e"
+	goreleaserImage = "goreleaser/goreleaser:v2.18.3@sha256:b61a4eedf5e3b1d283792dade34ee0f8c6cce3e6f1f65851d3b397b8f8a75b6d"
 	// renovate: datasource=docker
-	pythonImage     = "python:3.14-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6"
+	pythonImage     = "python:3.15-slim@sha256:2da676046630d7bf14c6764ae1143dc7fa0377a53f94bf5a642f0b214aca5bce"
 	yamllintVersion = "1.38.0"
 	// zizmorImage intentionally tracks :latest, not a pinned tag — no renovate hint.
 	zizmorImage = "ghcr.io/zizmorcore/zizmor:latest"
 	// renovate: datasource=docker
-	nodeImage = "node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf"
+	nodeImage = "node:24-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f"
 	docsPort  = 8000
 )
 
