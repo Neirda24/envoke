@@ -40,7 +40,7 @@ const (
 	// zizmorImage intentionally tracks :latest, not a pinned tag — no renovate hint.
 	zizmorImage = "ghcr.io/zizmorcore/zizmor:latest"
 	// renovate: datasource=docker
-	nodeImage = "node:24-alpine@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85"
+	nodeImage = "node:26-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5"
 	docsPort  = 8000
 )
 
