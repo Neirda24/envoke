@@ -151,9 +151,9 @@ homebrew_casks:
     description: "Runs shell scripts when you cd into or out of a directory"
     hooks:
       post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/envoke"]
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/envoke"]
           end
 
 scoops:
