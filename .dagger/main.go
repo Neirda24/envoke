@@ -20,7 +20,7 @@ import (
 
 const (
 	// renovate: datasource=docker
-	goImage = "golang:1.27-bookworm@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746924566079f36570ea"
+	goImage = "golang:1.27-bookworm@sha256:ce59b41415e2524ae99926fe1f37ce48ba8c194dcbd2a56a65436cdcefa2bd34"
 	// renovate.json has one regex manager per constant here, matching on the
 	// constant's name plus the module path spelled out in full. Renaming
 	// either, or splitting the version off into a value of its own, stops
@@ -33,9 +33,9 @@ const (
 	goBuildCachePath = "/root/.cache/go-build"
 	goModCachePath   = "/go/pkg/mod"
 	// renovate: datasource=docker
-	goreleaserImage = "goreleaser/goreleaser:v2.20.2@sha256:5d30bb36091b1a6d275ef450be05ee9c0d8c8b22955efe53dfe0974dd583cdc2"
+	goreleaserImage = "goreleaser/goreleaser:v2.20.3@sha256:3019e0e61c99808e42ce60c9cf77f7882685ffd2bd09d18ef6da8f9c9810e71c"
 	// renovate: datasource=docker
-	pythonImage     = "python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928"
+	pythonImage     = "python:3.15-slim@sha256:08a4c22c92b79ec821a7ad49768480039ee5b7accac3955228e75366e30abc8e"
 	yamllintVersion = "1.38.0"
 	// zizmorImage intentionally tracks :latest, not a pinned tag — no renovate hint.
 	zizmorImage = "ghcr.io/zizmorcore/zizmor:latest"
